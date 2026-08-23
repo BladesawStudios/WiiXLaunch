@@ -187,7 +187,11 @@ version = 7
                 continue
             if "R_PPC_ADDR32" in line or "R_PPC_RELATIVE" in line:
                 if len(parts) >= 1:
-                    reloc_offsets.append(int(parts[0], 16))
+                    offset = int(parts[0], 16)
+                    # The bootstrap keeps raw link-time constants on purpose;
+                    # excluded here for the same reason as the 16-bit halves.
+                    if not (bootstrap_start <= offset < bootstrap_end):
+                        reloc_offsets.append(offset)
                 continue
             for rtype, bucket in (("R_PPC_ADDR16_LO", lo_entries),
                                    ("R_PPC_ADDR16_HA", ha_entries),
@@ -210,39 +214,73 @@ version = 7
         binary_size = len(payload_data)
         entry_hook = int(cemu_cfg.get("entry_hook", "0x00000000"), 16)
 
-        codecave_base = 0x01804600
+        # --- Runtime relocation table ------------------------------------
+        #
+        # The payload used to be relocated here against a hardcoded code cave
+        # address. Cemu assigns code caves sequentially in graphic-pack load
+        # order, so that address depends on which packs the user has enabled
+        # and on the Cemu version - nothing this script can determine, and a
+        # value that is right on one machine and wrong on the next.
+        #
+        # Wrong meant every absolute address in the payload was off by the same
+        # delta: hooks jumped that far past their callbacks into unrelated
+        # code, globals read the wrong memory, and WIIXL_LOG resolved a bogus
+        # shim table so nothing was logged to explain it.
+        #
+        # So the payload now ships linked at base 0 and relocates itself. Each
+        # entry is a header word of (kind << 24 | offset) plus the relocation's
+        # link-time target; WiiXLaunch_Cemu_Relocate adds the real load address
+        # and writes them before any other code runs.
         payload_buf = bytearray(payload_data)
+        binary_size = len(payload_data)
 
-        # Apply 32-bit absolute relocations
+        RELOC_ADDR32, RELOC_HA, RELOC_HI, RELOC_LO = 0, 1, 2, 3
+        reloc_table = []
+
+        # ADDR32 sites already hold their own base-0 target, so it is read back
+        # out of the payload rather than recovered from the relocation entry.
         for offset in reloc_offsets:
-            if offset + 4 <= len(payload_buf):
-                val = struct.unpack_from(">I", payload_buf, offset)[0]
-                struct.pack_into(">I", payload_buf, offset, (val + codecave_base) & 0xFFFFFFFF)
+            if offset + 4 <= binary_size:
+                value = struct.unpack_from(">I", payload_buf, offset)[0]
+                reloc_table.append((RELOC_ADDR32, offset, value))
 
-        # Apply 16-bit LO relocations
-        for offset, s_plus_a in lo_entries:
-            if offset + 2 <= len(payload_buf):
-                target = (s_plus_a + codecave_base) & 0xFFFFFFFF
-                struct.pack_into(">H", payload_buf, offset, target & 0xFFFF)
+        # A 16-bit half cannot be recovered from the instruction - it is half an
+        # address, and HA additionally folds in a sign-extension carry - so
+        # these carry the relocation's own resolved S+Addend instead.
+        for kind, entries in ((RELOC_LO, lo_entries),
+                              (RELOC_HA, ha_entries),
+                              (RELOC_HI, hi_entries)):
+            for offset, s_plus_a in entries:
+                if offset + 2 <= binary_size:
+                    reloc_table.append((kind, offset, s_plus_a))
 
-        # Apply 16-bit HA relocations
-        for offset, s_plus_a in ha_entries:
-            if offset + 2 <= len(payload_buf):
-                target = (s_plus_a + codecave_base) & 0xFFFFFFFF
-                ha = ((target + 0x8000) >> 16) & 0xFFFF
-                struct.pack_into(">H", payload_buf, offset, ha)
+        for _, offset, _ in reloc_table:
+            if offset > 0x00FFFFFF:
+                raise RuntimeError(
+                    f"Relocation offset 0x{offset:X} does not fit the 24-bit field "
+                    f"in the table header - the payload has outgrown 16MB")
 
-        # Apply 16-bit HI relocations
-        for offset, s_plus_a in hi_entries:
-            if offset + 2 <= len(payload_buf):
-                target = (s_plus_a + codecave_base) & 0xFFFFFFFF
-                hi = (target >> 16) & 0xFFFF
-                struct.pack_into(">H", payload_buf, offset, hi)
+        reloc_bytes = b"".join(
+            struct.pack(">II", (kind << 24) | offset, value)
+            for kind, offset, value in reloc_table)
 
-        # Patch g_CodeCaveBase directly into payload
-        g_base_addr = sym_dict.get("g_CodeCaveBase")
-        if g_base_addr is not None and g_base_addr + 4 <= len(payload_buf):
-            struct.pack_into(">I", payload_buf, g_base_addr, codecave_base)
+        # The table sits immediately after the payload, so the payload's own
+        # size is both where the table starts and how much of the code cave the
+        # relocator has to flush from cache.
+        reloc_table_offset = binary_size
+        for symbol, value in (("g_CemuRelocTableOffset", reloc_table_offset),
+                              ("g_CemuRelocCount", len(reloc_table))):
+            addr = sym_dict.get(symbol)
+            if addr is None:
+                raise RuntimeError(f"{symbol} not found - is this built against a "
+                                   f"WiiXLaunch with runtime relocation support?")
+            struct.pack_into(">I", payload_buf, addr, value)
+
+        print(f"[Cemu] Payload relocates itself at load "
+              f"({len(reloc_table)} relocations, {len(reloc_bytes)} bytes of table)")
+
+        # g_CodeCaveBase is deliberately left at 0: the bootstrap computes it
+        # from the address it finds itself running at and stores it there.
 
         # src/cemu/*.asm goes immediately after wiixlaunch_binary's bytes
         cemu_asm_dirs = [os.path.join(root_dir, "src", "cemu")]
@@ -272,7 +310,7 @@ version = 7
 
         offset_symbol_re = re.compile(r"WIIXL_OFFSET_SYMBOL:\s*(\S+)")
         cemu_included_asm_content = ""
-        running_offset = binary_size
+        running_offset = binary_size + len(reloc_bytes)
         for asm_file_path in cemu_asm_files:
             with open(asm_file_path, "r", encoding="utf-8") as f:
                 asm_text = f.read()
@@ -295,12 +333,17 @@ version = 7
 
         payload_data = bytes(payload_buf)
 
-        cemu_asm_content += f"# --- WiiXLaunch Pre-Relocated C++ Payload ---\n"
+        cemu_asm_content += f"# --- WiiXLaunch C++ Payload (linked at 0, relocates itself on entry) ---\n"
         cemu_asm_content += ".origin = codecave\n"
         cemu_asm_content += "wiixlaunch_codecave_start:\n"
         cemu_asm_content += "wiixlaunch_binary:\n"
         for i in range(0, binary_size, 4):
             word = struct.unpack(">I", payload_data[i:i+4])[0]
+            cemu_asm_content += f"  .int 0x{word:08X}\n"
+
+        cemu_asm_content += "\n# --- Runtime relocation table (see WiiXLaunch_Cemu_Relocate) ---\n"
+        for i in range(0, len(reloc_bytes), 4):
+            word = struct.unpack(">I", reloc_bytes[i:i+4])[0]
             cemu_asm_content += f"  .int 0x{word:08X}\n"
 
         cemu_asm_content += cemu_included_asm_content

@@ -13,6 +13,22 @@ namespace Backend {
     extern "C" uintptr_t g_CodeCaveBase;
     extern "C" {
         __attribute__((section(".data"))) inline uint32_t g_CemuHeapOffset = 0;
+
+        // Runtime relocation table, patched by scripts/deploy.py.
+        //
+        // Cemu hands out code caves sequentially in graphic-pack load order, so
+        // the address this payload runs at depends on which packs the user has
+        // enabled and on the Cemu version. Nothing at build time can know it.
+        //
+        // So the payload ships linked at base 0 and relocates itself on entry:
+        // deploy.py emits every absolute reference as a table entry, and the
+        // bootstrap applies them against the address it finds itself loaded at
+        // before a single line of C++ runs. See WiiXLaunch_Cemu_Relocate.
+        // `used`, because the only reader is the bootstrap's assembly. Without
+        // it these inline definitions are discarded as unreferenced and the
+        // link fails on the asm's symbol references.
+        __attribute__((section(".data"), used)) inline uint32_t g_CemuRelocTableOffset = 0;
+        __attribute__((section(".data"), used)) inline uint32_t g_CemuRelocCount = 0;
     }
     
     inline void* AllocCemuHeap(size_t size, size_t align = 256) {

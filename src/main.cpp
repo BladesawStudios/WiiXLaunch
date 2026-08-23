@@ -78,15 +78,93 @@ extern "C" void WiiXLaunch_Init() {
 
 // NO TOUCHING BELOW THIS POINT. This is Cemu-specific code that handles the trampoline pool and code cave entry point. You don't need to touch this unless you know what you're doing.
 
-// Cemu code caves are position-independent, so the trampoline pool needs its
-// own runtime base address. g_CodeCaveBase holds that offset once computed below.
+// The address this payload is running at. Set by the bootstrap below, from the
+// address it finds itself loaded at - not baked in at deploy time.
 extern "C" uintptr_t g_CodeCaveBase;
 uintptr_t g_CodeCaveBase = 0;
 
 #if WIIXL_CEMU
+
+// Applies the relocation table scripts/deploy.py emitted after the payload.
+//
+// Cemu assigns code caves sequentially in graphic-pack load order, so the
+// address this payload runs at depends on which packs the user has enabled and
+// on the Cemu version. deploy.py used to guess it with a hardcoded constant,
+// which is fine until it is wrong - and when it is wrong, every absolute
+// address in the payload is off by the same delta. Hooks then jump that far
+// past their callbacks into unrelated code, globals read the wrong memory, and
+// WIIXL_LOG resolves a bogus shim table, so there is no log output to explain
+// any of it. The symptom is a crash seconds after boot with an empty log.
+//
+// So the payload now ships linked at base 0 and fixes itself up here.
+//
+// Three rules make this function safe to run before relocation has happened:
+// it touches no globals, contains no string literals, and calls nothing. Every
+// address it uses arrives in a parameter or is derived from `base`. The only
+// control transfer into it is the bootstrap's `bl`, which is PC-relative and so
+// correct at any load address.
+//
+// Entries are pairs: a header word of (kind << 24 | offset), and the
+// relocation's link-time target. Applying `base + target` from the table rather
+// than adding a delta to whatever is already stored makes this idempotent - the
+// entry hook running twice writes the same values the second time.
+extern "C" __attribute__((used, noinline))
+void WiiXLaunch_Cemu_Relocate(uint32_t base, uint32_t tableOffset, uint32_t count) {
+    const uint32_t* table = reinterpret_cast<const uint32_t*>(base + tableOffset);
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t header = table[i * 2];
+        uint32_t value = table[i * 2 + 1] + base;
+        uint8_t* site = reinterpret_cast<uint8_t*>(base + (header & 0x00FFFFFF));
+
+        switch (header >> 24) {
+            case 0:  // R_PPC_ADDR32 - a whole pointer
+                *reinterpret_cast<uint32_t*>(site) = value;
+                break;
+            case 1:  // R_PPC_ADDR16_HA - `lis` half, with the sign-extension carry
+                *reinterpret_cast<uint16_t*>(site) =
+                    static_cast<uint16_t>(((value + 0x8000) >> 16) & 0xFFFF);
+                break;
+            case 2:  // R_PPC_ADDR16_HI - `lis` half, plain
+                *reinterpret_cast<uint16_t*>(site) =
+                    static_cast<uint16_t>((value >> 16) & 0xFFFF);
+                break;
+            default:  // R_PPC_ADDR16_LO - `ori`/`addi` half
+                *reinterpret_cast<uint16_t*>(site) =
+                    static_cast<uint16_t>(value & 0xFFFF);
+                break;
+        }
+    }
+
+    // Half of those writes edited instruction immediates, so the payload's code
+    // has to be pushed out of the data cache and out of the instruction cache
+    // before any of it is executed. tableOffset is where the payload ends,
+    // which makes it the size of everything just patched. 32 bytes is the
+    // Espresso cache line.
+    for (uint32_t offset = 0; offset < tableOffset; offset += 32) {
+        uint8_t* line = reinterpret_cast<uint8_t*>(base + offset);
+        asm volatile("dcbst 0,%0" :: "r"(line) : "memory");
+    }
+    asm volatile("sync" ::: "memory");
+    for (uint32_t offset = 0; offset < tableOffset; offset += 32) {
+        uint8_t* line = reinterpret_cast<uint8_t*>(base + offset);
+        asm volatile("icbi 0,%0" :: "r"(line) : "memory");
+    }
+    asm volatile("isync" ::: "memory");
+}
+
 // Cemu's code cave entry point (hooks 0x03098928).
-// Preserves all registers, calls WiiXLaunch_Init,
-// restores all registers, executes replaced instruction, and branches to 0x0309892c.
+//
+// Preserves all registers, works out where it is loaded, relocates the payload,
+// calls WiiXLaunch_Init, restores all registers, executes the replaced
+// instruction and branches to 0x0309892c.
+//
+// The `@h`/`@l` immediates here are deliberately raw link-time constants:
+// cemu.ld brackets this section with __wiixl_bootstrap_start/end and deploy.py
+// skips that range, so these are the one place in the payload that still holds
+// base-0 values at run time. Adding the computed base to them is what turns
+// them into real addresses - which is exactly why the base has to be computed
+// before anything else here touches memory.
 asm(
     ".section .text.WiiXLaunch_Cemu_Init\n"
     ".global WiiXLaunch_Cemu_Init\n"
@@ -97,6 +175,37 @@ asm(
     "mfcr 0\n"
     "stw 0, 0x2008(1)\n"
     "stmw 2, 0x1F80(1)\n"
+
+    // r31 = load address. `bl` to the next instruction puts its runtime address
+    // in LR; the same label's link-time address is a base-0 constant, so the
+    // difference is where the payload actually got loaded.
+    "bl __wiixl_here\n"
+    "__wiixl_here:\n"
+    "mflr 31\n"
+    "lis 30, __wiixl_here@h\n"
+    "ori 30, 30, __wiixl_here@l\n"
+    "subf 31, 30, 31\n"
+
+    // WiiXLaunch_Cemu_Relocate(base, tableOffset, count)
+    "lis 3, g_CemuRelocTableOffset@h\n"
+    "ori 3, 3, g_CemuRelocTableOffset@l\n"
+    "add 3, 3, 31\n"
+    "lwz 4, 0(3)\n"
+    "lis 3, g_CemuRelocCount@h\n"
+    "ori 3, 3, g_CemuRelocCount@l\n"
+    "add 3, 3, 31\n"
+    "lwz 5, 0(3)\n"
+    "mr 3, 31\n"
+    "bl WiiXLaunch_Cemu_Relocate\n"
+
+    // Publish the base for the trampoline pool and the shim tables. Safe to
+    // write normally now, but still addressed the bootstrap way - this store
+    // is what everything downstream depends on.
+    "lis 3, g_CodeCaveBase@h\n"
+    "ori 3, 3, g_CodeCaveBase@l\n"
+    "add 3, 3, 31\n"
+    "stw 31, 0(3)\n"
+
     "bl WiiXLaunch_Init\n"
     "lmw 2, 0x1F80(1)\n"
     "lwz 0, 0x2008(1)\n"
