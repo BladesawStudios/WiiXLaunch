@@ -18,4 +18,5 @@ tools/symbol_port
 scratch
 mystufflol/
 scripts/__pycache__/
-/deploy/
+deploy/
+scripts/__pycache__
