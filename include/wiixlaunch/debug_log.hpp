@@ -10,7 +10,13 @@
 #elif WIIXL_WIIU
 #include <notifications/notifications.h>
 #elif WIIXL_CEMU
-#include <wiixlaunch/botw/cemu_logging.hpp>
+// Optional: only present when the BotW module (vendor/wiixlaunch-botw) is
+// installed. Base WiiXLaunch's own ring buffer below works without it -
+// this just adds a relay to the real OSReport when it's available.
+#if __has_include(<wiixlaunch/botw/platform/cemu_logging.hpp>)
+#include <wiixlaunch/botw/platform/cemu_logging.hpp>
+#define WIIXL_HAS_BOTW_CEMU_LOGGING 1
+#endif
 #endif
 
 // Platform-specific logging: Switch (SvcLogger), Wii U (toast), Cemu (ring buffer).
@@ -177,6 +183,7 @@ inline void DebugPrint(const char* fmt, ...) {
 #elif WIIXL_CEMU
     WriteRingEntry(text, len);
 
+#if WIIXL_HAS_BOTW_CEMU_LOGGING
     // Guard before resolving. CemuLoggingShimTable() is
     // g_CodeCaveBase + g_CemuLoggingShimTableOffset and ResolveCemuLogging
     // dereferences it unconditionally - unlike cemu_net.hpp's ResolveCemuNet,
@@ -196,6 +203,7 @@ inline void DebugPrint(const char* fmt, ...) {
             osReport("%s\n", text);
         }
     }
+#endif // WIIXL_HAS_BOTW_CEMU_LOGGING
 #endif
 }
 
