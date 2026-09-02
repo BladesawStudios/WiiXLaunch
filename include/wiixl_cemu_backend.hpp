@@ -31,13 +31,119 @@ namespace Backend {
         __attribute__((section(".data"), used)) inline uint32_t g_CemuRelocCount = 0;
     }
     
-    inline void* AllocCemuHeap(size_t size, size_t align = 256) {
-        static size_t s_allocated = 0;
-        uintptr_t base = g_CodeCaveBase + g_CemuHeapOffset;
-        uintptr_t current = base + s_allocated;
-        uintptr_t aligned = (current + (align - 1)) & ~(align - 1);
-        s_allocated = (aligned - base) + size;
+    // -----------------------------------------------------------------------
+    // Heap
+    // -----------------------------------------------------------------------
+    // The payload's memory comes from the code cave it is loaded into: the
+    // bootstrap sets g_CodeCaveBase, deploy.py patches g_CemuHeapOffset with
+    // the payload's own size, and everything past that is ours to hand out.
+    //
+    // How much is actually there, from Cemu's memory map (src/Cafe/HW/MMU/MMU.h):
+    //
+    //   0x01800000  MEMORY_CODECAVEAREA_ADDR, 4 MB - Cemu allocates the caves
+    //               for every enabled graphic pack out of this, sequentially
+    //   0x01C00000  end of that area; no Cemu region claims what follows
+    //   0x02000000  MEMORY_CODEAREA_ADDR - the game's own code
+    //
+    // Cemu gives a patch group only the bytes it emits, so the cave is the
+    // payload's size and nothing more, and the heap runs off the end of it
+    // through whatever is left of the cave AREA. That area's end is the wall.
+    //
+    // It is NOT 0x02000000. The gap from 0x01C00000 to the game's code area is
+    // unclaimed by any Cemu region, and an earlier version of this file treated
+    // "unclaimed" as "ours" - it is not mapped, and a payload that allocated
+    // past 0x01C00000 died silently on the first write. That is a real bug this
+    // found: with one font loaded the heap peaked around 2.4 MB and never
+    // reached the boundary, and adding three more fonts walked straight through
+    // it. Unclaimed address space is not memory.
+    //
+    // These are CEMU constants, the same for every Wii U title, which is why
+    // they can live in the generic backend when a game allocator's address
+    // could not.
+    constexpr uintptr_t kCemuCodeCaveAddr = 0x01800000;
+    constexpr uintptr_t kCemuCodeCaveSize = 0x00400000;   // 4 MB, ALL packs share it
+    constexpr uintptr_t kCemuCodeCaveEnd  = kCemuCodeCaveAddr + kCemuCodeCaveSize;
+    constexpr uintptr_t kCemuCodeAreaAddr = 0x02000000;   // the game's code; documentation only
+
+    // A game layer can install its own allocator here - BotW, for instance, has
+    // a MEM1 allocator inside the RPX that is not bounded by any of the above.
+    // Its address is a per-game fact, so the address stays in the game's own
+    // module and only the function pointer crosses into the framework. Null
+    // (the default) means the built-in code-cave heap below.
+    using HeapProvider = void* (*)(size_t size, size_t align);
+    __attribute__((section(".data"))) inline HeapProvider g_HeapProvider = nullptr;
+
+    // Set before the first allocation. Allocations already handed out by the
+    // previous provider stay valid - nothing here is ever freed - but mixing
+    // the two mid-run means the heap statistics only describe the built-in one.
+    inline void SetHeapProvider(HeapProvider provider) { g_HeapProvider = provider; }
+    inline HeapProvider GetHeapProvider() { return g_HeapProvider; }
+
+    // Built-in code-cave heap state.
+    __attribute__((section(".data"))) inline size_t g_HeapAllocated = 0;
+    __attribute__((section(".data"))) inline size_t g_HeapRefusedBytes = 0;
+    __attribute__((section(".data"))) inline uint32_t g_HeapRefusedCount = 0;
+    // A voluntary cap below the wall, for a mod that would rather fail early
+    // than find out at 0x02000000. 0 = use the whole distance to the wall.
+    __attribute__((section(".data"))) inline size_t g_HeapLimitOverride = 0;
+
+    inline void SetHeapLimit(size_t bytes) { g_HeapLimitOverride = bytes; }
+
+    inline uintptr_t CemuHeapBase() {
+        return g_CodeCaveBase + g_CemuHeapOffset;
+    }
+
+    // Bytes between the heap base and the wall, after any voluntary cap. 0 if
+    // the base is not known yet or is already past the wall - in which case
+    // every allocation is refused rather than guessed at.
+    inline size_t CemuHeapLimit() {
+        const uintptr_t base = CemuHeapBase();
+        if (base == 0 || base >= kCemuCodeCaveEnd) return 0;
+        size_t toWall = static_cast<size_t>(kCemuCodeCaveEnd - base);
+        if (g_HeapLimitOverride != 0 && g_HeapLimitOverride < toWall) {
+            toWall = g_HeapLimitOverride;
+        }
+        return toWall;
+    }
+
+    inline size_t CemuHeapUsed() { return g_HeapAllocated; }
+    inline size_t CemuHeapRemaining() {
+        const size_t limit = CemuHeapLimit();
+        return limit > g_HeapAllocated ? limit - g_HeapAllocated : 0;
+    }
+    // True once anything has been refused. The framework cannot log from here
+    // without dragging the logging headers into the backend, so a caller that
+    // gets a null pointer should report this.
+    inline bool CemuHeapExhausted() { return g_HeapRefusedCount != 0; }
+
+    // The built-in allocator: a bump pointer, bounded, never freed. Returns
+    // null when the request would cross the limit - it used to return a pointer
+    // regardless, which meant an over-allocating mod silently wrote through the
+    // end of the cave area and into whatever Cemu had placed after it.
+    inline void* AllocCemuHeapRaw(size_t size, size_t align) {
+        if (align == 0) align = 256;
+        const uintptr_t base = CemuHeapBase();
+        const size_t limit = CemuHeapLimit();
+        if (limit == 0) {
+            g_HeapRefusedBytes += size;
+            g_HeapRefusedCount++;
+            return nullptr;
+        }
+        const uintptr_t current = base + g_HeapAllocated;
+        const uintptr_t aligned = (current + (align - 1)) & ~static_cast<uintptr_t>(align - 1);
+        const size_t end = static_cast<size_t>(aligned - base) + size;
+        if (end > limit || end < g_HeapAllocated) {      // second test: overflow
+            g_HeapRefusedBytes += size;
+            g_HeapRefusedCount++;
+            return nullptr;
+        }
+        g_HeapAllocated = end;
         return reinterpret_cast<void*>(aligned);
+    }
+
+    inline void* AllocCemuHeap(size_t size, size_t align = 256) {
+        if (g_HeapProvider) return g_HeapProvider(size, align);
+        return AllocCemuHeapRaw(size, align);
     }
 
     inline void* AllocateTrampoline(size_t size) {
