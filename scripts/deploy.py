@@ -347,9 +347,17 @@ version = 7
             cemu_asm_content += f"  .int 0x{word:08X}\n"
 
         cemu_asm_content += cemu_included_asm_content
-        cemu_asm_content += "\n# Reserve 6MB codecave heap space for dynamic allocations\n"
-        cemu_asm_content += ".origin = codecave + 0x600000\n"
-        cemu_asm_content += "  .int 0x00000000\n"
+        # No heap reservation is emitted. An earlier version wrote one word at
+        # `codecave + 0x600000` under a comment claiming to reserve 6 MB; it
+        # reserved nothing. Cemu gives a patch group only the bytes it emits -
+        # its log line "Applying patch group ... (Codecave: <start>-<end>)" spans
+        # exactly the payload plus the relocation table - so that word landed past
+        # the end of the cave, and past 0x01C00000, the end of Cemu's code-cave
+        # area, which is not mapped at all.
+        #
+        # The payload's heap runs from g_CemuHeapOffset (patched above) to that
+        # 0x01C00000 boundary and is bounded at runtime, so nothing needs to be
+        # reserved here. See Backend::AllocCemuHeap in include/wiixl_cemu_backend.hpp.
 
         if entry_hook != 0:
             cemu_asm_content += f"\n# Entry Hook: redirect 0x{entry_hook:08X} -> wiixlaunch_codecave_start\n"
