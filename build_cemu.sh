@@ -46,5 +46,9 @@ echo "Building Cemu payload (PowerPC)..."
   -o build/wiixlaunch_cemu_hosttest
 python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
 
+# The .wxlm writer and the format header have to agree; a drift between them
+# is the one failure neither side can detect at runtime.
+python3 scripts/test_wxlm.py
+
 python3 scripts/deploy.py
 echo "Cemu build complete!"

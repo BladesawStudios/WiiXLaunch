@@ -68,6 +68,11 @@ if errorlevel 1 (
 python scripts\test_host.py build\wiixlaunch_cemu_hosttest
 if errorlevel 1 exit /b 1
 
+:: The .wxlm writer and the format header have to agree; a drift between them
+:: is the one failure neither side can detect at runtime. See test_wxlm.py.
+python scripts\test_wxlm.py
+if errorlevel 1 exit /b 1
+
 python scripts\deploy.py
 if errorlevel 1 exit /b 1
 echo Cemu build complete!
