@@ -92,10 +92,10 @@ NVN::DrawMesh(cmdBuf, dstTexture, vertices, vertexCount);
 
 ```cpp
 size_t readSize = 0;
-bool ok = WiiXLaunch::BotW::FS::ReadFile("WiiXLaunch/mydata.bin", buffer, sizeof(buffer), &readSize);
+bool ok = WiiXLaunch::FS::ReadFile("WiiXLaunch/mydata.bin", buffer, sizeof(buffer), &readSize);
 ```
 
-`FS::ReadFile(path, outBuffer, maxBufferSize, outReadSize = nullptr)` and `FS::WriteFile(path, buffer, size, outWrittenSize = nullptr)` are cross-platform file access, used internally by `GX2::LoadTexture`/`LoadMesh`, and also available directly for your own data files. On Cemu, `path` is tried as-is and then against a few likely prefixes (`/vol/content/`, `content/`, `/vol/content/WiiXLaunch/`) since a bare code cave has no working directory of its own to resolve relative paths against. On Wii U it's a normal `coreinit` filesystem call.
+`WiiXLaunch::FS` lives in base WiiXLaunch (`<wiixlaunch/fs.hpp>`), not in a game module - coreinit's filesystem is reachable in any Wii U title, and the loader needs it. `FS::ReadFile(path, outBuffer, maxBufferSize, outReadSize = nullptr)` and `FS::WriteFile(path, buffer, size, outWrittenSize = nullptr)` are cross-platform file access, used internally by `GX2::LoadTexture`/`LoadMesh`, and also available directly for your own data files. On Cemu, `path` is tried as-is and then against a few likely prefixes (`/vol/content/`, `content/`, `/vol/content/WiiXLaunch/`) since a bare code cave has no working directory of its own to resolve relative paths against. On Wii U it's a normal `coreinit` filesystem call.
 
 ## `OSLog`
 

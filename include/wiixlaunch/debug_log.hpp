@@ -10,13 +10,11 @@
 #elif WIIXL_WIIU
 #include <notifications/notifications.h>
 #elif WIIXL_CEMU
-// Optional: only present when the BotW module (vendor/wiixlaunch-botw) is
-// installed. Base WiiXLaunch's own ring buffer below works without it -
-// this just adds a relay to the real OSReport when it's available.
-#if __has_include(<wiixlaunch/botw/platform/cemu_logging.hpp>)
-#include <wiixlaunch/botw/platform/cemu_logging.hpp>
-#define WIIXL_HAS_BOTW_CEMU_LOGGING 1
-#endif
+// The coreinit OSReport shim table. This is base-framework plumbing: it used
+// to live in the BotW module and get pulled in with __has_include, which meant
+// the framework's own logger only reached Cemu's log window when someone
+// happened to have vendored a game module. OSReport is coreinit, not BotW.
+#include <wiixlaunch/cemu/cemu_logging.hpp>
 #endif
 
 // Platform-specific logging: Switch (SvcLogger), Wii U (toast), Cemu (ring buffer).
@@ -183,27 +181,26 @@ inline void DebugPrint(const char* fmt, ...) {
 #elif WIIXL_CEMU
     WriteRingEntry(text, len);
 
-#if WIIXL_HAS_BOTW_CEMU_LOGGING
     // Guard before resolving. CemuLoggingShimTable() is
     // g_CodeCaveBase + g_CemuLoggingShimTableOffset and ResolveCemuLogging
-    // dereferences it unconditionally - unlike cemu_net.hpp's ResolveCemuNet,
-    // which checks CemuNetAvailable() first. Both values are zero until
-    // deploy.py patches them, so calling this before that happens reads
-    // through a null pointer and takes the process down. That is reachable
-    // three ways: a host build (tools/ws_test compiles this header as the Cemu
-    // target), a log emitted before the codecave base is computed, and a build
-    // with src/cemu/cemu_logging.asm removed.
+    // dereferences it unconditionally. Both values are zero until deploy.py
+    // patches the offset in and the bootstrap computes the base, so calling
+    // this before that happens reads through a null pointer and takes the
+    // process down. That is reachable two ways: a host build (tools/ws_test
+    // compiles this header as the Cemu target), and a log emitted before the
+    // codecave base is computed.
     //
     // The ring buffer above is written either way, so nothing is lost when
     // this is skipped - tools that read the ring still see the entry.
-    if (WiiXLaunch::Backend::g_CodeCaveBase != 0 && ::g_CemuLoggingShimTableOffset != 0) {
+    if (WiiXLaunch::Backend::CemuLoggingAvailable()) {
         using OSReportFn = void (*)(const char*, ...);
         auto osReport = WiiXLaunch::Backend::ResolveCemuLogging<OSReportFn>(WiiXLaunch::Backend::CemuLogImport::OSReport);
         if (osReport) {
+            // Cemu's OSReport line-buffers and only flushes to the log on
+            // '\n', so the newline is not cosmetic.
             osReport("%s\n", text);
         }
     }
-#endif // WIIXL_HAS_BOTW_CEMU_LOGGING
 #endif
 }
 
