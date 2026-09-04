@@ -73,6 +73,27 @@ if errorlevel 1 exit /b 1
 python scripts\test_wxlm.py
 if errorlevel 1 exit /b 1
 
+:: Fuzz the loader. It reads data it did not produce and then writes to memory
+:: it executes, so it runs on every build rather than on request - a check that
+:: has to be remembered is a check that stops happening.
+::
+:: Exit 2 means no C++ toolchain here, which is a WARNING, not a pass. A test
+:: that silently vanishes on a machine without a toolchain is worse than no
+:: test, because the build still says OK.
+call tools\loader_fuzz\build.bat
+if errorlevel 2 (
+    echo.
+    echo ============================================================
+    echo [loader_fuzz] NOT RUN - no C++ toolchain found on this machine.
+    echo [loader_fuzz] The loader was NOT fuzzed for this build.
+    echo [loader_fuzz] Install Visual Studio with the C++ workload.
+    echo ============================================================
+    echo.
+) else if errorlevel 1 (
+    echo [loader_fuzz] FAILED - see above.
+    exit /b 1
+)
+
 :: --- the sample .wxlm module ---------------------------------------------
 :: Built with its own linker script: linked at 0 like the host payload, but
 :: keeping .init_array, because the loader is the only thing that will ever

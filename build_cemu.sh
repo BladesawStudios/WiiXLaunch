@@ -50,5 +50,24 @@ python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
 # is the one failure neither side can detect at runtime.
 python3 scripts/test_wxlm.py
 
+# Fuzz the loader. Runs on every build rather than on request - a check that
+# has to be remembered is a check that stops happening. Exit 2 means no
+# toolchain, which is a loud warning rather than a silent pass.
+set +e
+bash tools/loader_fuzz/build.sh
+FUZZ_RC=$?
+set -e
+if [ $FUZZ_RC -eq 2 ]; then
+    echo
+    echo ============================================================
+    echo "[loader_fuzz] NOT RUN - no C++ toolchain found on this machine."
+    echo "[loader_fuzz] The loader was NOT fuzzed for this build."
+    echo ============================================================
+    echo
+elif [ $FUZZ_RC -ne 0 ]; then
+    echo "[loader_fuzz] FAILED - see above."
+    exit 1
+fi
+
 python3 scripts/deploy.py
 echo "Cemu build complete!"

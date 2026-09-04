@@ -139,6 +139,15 @@ success without the mechanism running. Anything the loader writes at runtime -
 imports, relocated pointers, zeroed `.bss` - must be `volatile` in a module that
 checks it.
 
+**The header sweep is judged by an independent oracle**, not by a list of which
+fields matter. That list would be the loader's own model of the format restated,
+and a test built from it can only confirm what the loader already believes. The
+oracle re-derives well-formedness from the mutated bytes using the format rules
+alone, and a flip is a failure only when the two disagree. The first version did
+use a field list, reported 12 failures, and was mostly wrong - most of what it
+flagged were flips producing a different but still valid module. See the rule in
+[Modules](modules.md).
+
 ## Failure modes the loader must handle
 
 - **No modules present** — clean, logged no-op. The game boots normally. This is
