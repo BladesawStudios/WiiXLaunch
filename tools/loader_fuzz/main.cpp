@@ -150,6 +150,9 @@ static uint32_t Fnv1a(const char* s) {
 static void Put32(std::vector<uint8_t>& v, uint32_t at, uint32_t value) {
     std::memcpy(v.data() + at, &value, 4);
 }
+static void Put16(std::vector<uint8_t>& v, uint32_t at, uint16_t value) {
+    std::memcpy(v.data() + at, &value, 2);
+}
 static uint32_t Get32(const std::vector<uint8_t>& v, uint32_t at) {
     uint32_t out; std::memcpy(&out, v.data() + at, 4); return out;
 }
@@ -252,7 +255,7 @@ static int g_Accepted = 0, g_Rejected = 0;
 // rule) was invisible partly because THE CASE COUNT DID NOT MOVE - there was no
 // number that a disarmed suite would have changed. This is that number. Raise
 // it when cases are added; never lower it to make a build go green.
-static const int kExpectedCases = 1171;
+static const int kExpectedCases = 1179;
 
 // And a floor on how many of them are ACCEPTED.
 //
@@ -261,8 +264,8 @@ static const int kExpectedCases = 1171;
 // suite still passed, but accepted collapsed from 293 to 8 because the loader
 // was refusing valid modules for a reason that had nothing to do with them. A
 // suite that only counts how many times it ran cannot see that.
-static const int kExpectedAccepted = 293;
-static const int kExpectedRejected = 878;
+static const int kExpectedAccepted = 295;
+static const int kExpectedRejected = 884;
 
 // Both halves of the containment property must actually be exercised, or the
 // pair reduces to the single check that went vacuous last time.
@@ -709,6 +712,124 @@ int main() {
         Put32(v, OFF(payloadSize), 0xFFFFFF00u);
         Put32(v, OFF(bssSize), 0x200u);
         Case("payloadSize huge, bss pushes it over", v, Reject::None);
+    }
+
+    // --- surface version refusal --------------------------------------------
+    //
+    // Until now the only evidence the version check worked was that everything
+    // resolved - which is the same shape as a refusal path nothing reaches.
+    // wiixl.core has been bumped three times in three stages and every module
+    // kept loading, so the ACCEPT direction is thoroughly demonstrated and the
+    // REFUSE direction had never once been exercised.
+    //
+    // The host here registers wiixl.core v1.3, the same as the real one.
+    //
+    // RequiredSurface is { nameOffset:4, versionMajor:2, versionMinor:2 }, so
+    // the version fields sit at +4 and +6.
+    std::printf("=== surface version refusal (host has wiixl.core v1.3) ===\n");
+    {
+        const uint32_t majorAt = base.requiredOffset + 4;
+        const uint32_t minorAt = base.requiredOffset + 6;
+
+        {
+            // A mod needing a symbol appended AFTER this host was built. The
+            // minor-at-least rule refuses it: the host cannot supply what it
+            // does not have.
+            auto v = base.bytes;
+            Put16(v, minorAt, 4);
+            Case("requires v1.4, host has v1.3 - too new", v, Reject::MissingSurface);
+        }
+        {
+            // A major bump means a symbol changed or was removed, so a mod
+            // built against the old shape would call the wrong function. This
+            // must be refused even though the host's major is LOWER, because
+            // incompatible is not the same as older.
+            auto v = base.bytes;
+            Put16(v, majorAt, 2);
+            Put16(v, minorAt, 0);
+            Case("requires v2.0, host has v1.x - incompatible major", v,
+                 Reject::MissingSurface);
+        }
+        {
+            // The reverse major direction, in case anyone ever writes the
+            // comparison as a < rather than a !=.
+            auto v = base.bytes;
+            Put16(v, majorAt, 0);
+            Put16(v, minorAt, 0);
+            Case("requires v0.0, host has v1.x - incompatible major", v,
+                 Reject::MissingSurface);
+        }
+        {
+            // A surface nobody registered, which is the third way to fail and
+            // shares a Reject code with the two above - so the LOG has to
+            // distinguish them even though the code does not.
+            auto v = base.bytes;
+            // Point the name at the symbol string ("Log"), which is not a
+            // registered surface name.
+            Put32(v, base.requiredOffset, base.stringSize - 4);
+            Case("requires a surface that is not registered", v,
+                 Reject::MissingSurface);
+        }
+
+        // --- and the accept side, so this is not a check that refuses all ---
+        {
+            auto v = base.bytes;
+            Put16(v, minorAt, 3);
+            Recrc(v);
+            ExpectAccepted("requires v1.3 exactly - met", v);
+        }
+        {
+            auto v = base.bytes;
+            Put16(v, minorAt, 2);
+            Recrc(v);
+            ExpectAccepted("requires v1.2, host has v1.3 - minor-at-least", v);
+        }
+
+        // --- and the REASON, not just the refusal ---------------------------
+        //
+        // All four rejections above share one Reject code, so the code alone
+        // cannot tell "too new" from "wrong major" from "not registered". The
+        // reason used to live only in a WIIXL_LOG string, which is compiled out
+        // here - so the check could have been right for the wrong reason and
+        // nothing could see it. Surface::Check returns it as a value now.
+        namespace S = WiiXLaunch::Surface;
+        struct { const char* what; const char* name; uint16_t maj, min; S::Compat want; }
+        compat[] = {
+            { "v1.3 exactly",              "wiixl.core", 1, 3, S::Compat::Ok            },
+            { "v1.0 - older minor",        "wiixl.core", 1, 0, S::Compat::Ok            },
+            { "v1.4 - host predates it",   "wiixl.core", 1, 4, S::Compat::MinorTooOld   },
+            { "v1.9 - further ahead",      "wiixl.core", 1, 9, S::Compat::MinorTooOld   },
+            { "v2.0 - major above",        "wiixl.core", 2, 0, S::Compat::MajorMismatch },
+            { "v0.9 - major below",        "wiixl.core", 0, 9, S::Compat::MajorMismatch },
+            { "unregistered surface",      "nope.nope",  1, 0, S::Compat::NotPresent    },
+        };
+        int compatChecked = 0, compatBad = 0;
+        for (const auto& c : compat) {
+            ++compatChecked;
+            const S::Compat got = S::Check(c.name, c.maj, c.min);
+            if (got != c.want) {
+                ++compatBad;
+                std::printf("  FAIL  Check(%s) said %s, expected %s\n",
+                            c.what, S::CompatName(got), S::CompatName(c.want));
+            }
+        }
+        ++g_Cases;
+        if (compatBad || compatChecked < 7) {
+            g_Failures += (compatBad ? compatBad : 1);
+        } else {
+            ++g_Rejected;
+        }
+        std::printf("  %d compatibility reasons checked, %d wrong\n",
+                    compatChecked, compatBad);
+
+        ++g_Cases;
+        if (std::strcmp(Wxlm::RejectName(Reject::MissingSurface), "MISSING-SURFACE") != 0) {
+            ++g_Failures;
+            std::printf("  FAIL  MissingSurface is named '%s', expected "
+                        "'MISSING-SURFACE'\n", Wxlm::RejectName(Reject::MissingSurface));
+        } else {
+            ++g_Rejected;
+        }
     }
 
     // --- hostile heapRequest -----------------------------------------------

@@ -230,23 +230,75 @@ inline FnPtr ResolveAs(const char* surfaceName, const char* symbolName) {
 // changing or removing one bumps the major and mods built against the old
 // shape are rejected by name rather than calling the wrong function. This is
 // what stable plugin ABIs converge on, for exactly this reason.
+// WHY a requirement was refused, as a value rather than only as a log line.
+//
+// The three refusals are genuinely different diagnoses - a surface nobody
+// registered, a major the host cannot satisfy at all, and a minor the host is
+// simply older than - and they collapsed into one bool, with the distinction
+// living only in a WIIXL_LOG string. That string is compiled out on the host
+// test, so the difference was untestable: the version check could have been
+// giving the right answer for the wrong reason and nothing could tell.
+enum class Compat : uint32_t {
+    Ok = 0,
+    NotPresent,      // no surface of that name is registered
+    MajorMismatch,   // a different major - incompatible in either direction
+    MinorTooOld,     // right major, but the host predates a symbol it needs
+};
+
+inline const char* CompatName(Compat c) {
+    switch (c) {
+        case Compat::Ok:            return "OK";
+        case Compat::NotPresent:    return "NOT-PRESENT";
+        case Compat::MajorMismatch: return "MAJOR-MISMATCH";
+        case Compat::MinorTooOld:   return "MINOR-TOO-OLD";
+    }
+    return "?";
+}
+
+// The decision, with no logging, so a test can assert the REASON.
+inline Compat Check(const char* name, uint16_t major, uint16_t minor) {
+    const Registration* s = Find(name);
+    if (!s) return Compat::NotPresent;
+
+    // NOT `<`. A different major means a symbol changed shape or went away, and
+    // that is incompatible whichever side is higher - a mod built for v2 on a
+    // v1 host would call functions that do not exist, and a mod built for v0 on
+    // a v1 host would call functions that no longer mean what it thinks.
+    if (s->versionMajor != major) return Compat::MajorMismatch;
+
+    // Minor-at-least: the host may be newer, never older. Appending a symbol
+    // bumps the minor, so a host with a lower minor is missing something the
+    // mod was built against.
+    if (s->versionMinor < minor) return Compat::MinorTooOld;
+
+    return Compat::Ok;
+}
+
 inline bool Require(const char* name, uint16_t major, uint16_t minor) {
     const Registration* s = Find(name);
-    if (!s) {
-        WIIXL_LOG("Surface: requires %s v%u, not present", name, major);
-        return false;
+    const Compat c = Check(name, major, minor);
+    switch (c) {
+        case Compat::Ok:
+            return true;
+        case Compat::NotPresent:
+            WIIXL_LOG("Surface: %s - requires %s v%u.%u, and no surface of that name is "
+                      "registered on this host", CompatName(c), name, major, minor);
+            return false;
+        case Compat::MajorMismatch:
+            WIIXL_LOG("Surface: %s - requires %s v%u.%u, host has v%u.%u. A different "
+                      "major means a symbol changed or was removed, so this is "
+                      "incompatible in either direction, not merely old.",
+                      CompatName(c), name, major, minor,
+                      s->versionMajor, s->versionMinor);
+            return false;
+        case Compat::MinorTooOld:
+            WIIXL_LOG("Surface: %s - requires %s v%u.%u, host has v%u.%u. The host "
+                      "predates a symbol this module was built against; a newer host "
+                      "would load it.", CompatName(c), name, major, minor,
+                      s->versionMajor, s->versionMinor);
+            return false;
     }
-    if (s->versionMajor != major) {
-        WIIXL_LOG("Surface: requires %s v%u, host has v%u.%u - incompatible",
-                  name, major, s->versionMajor, s->versionMinor);
-        return false;
-    }
-    if (s->versionMinor < minor) {
-        WIIXL_LOG("Surface: requires %s v%u.%u, host has v%u.%u - too old",
-                  name, major, minor, s->versionMajor, s->versionMinor);
-        return false;
-    }
-    return true;
+    return false;
 }
 
 inline uint32_t Count() { return impl::g_SurfaceCount; }
