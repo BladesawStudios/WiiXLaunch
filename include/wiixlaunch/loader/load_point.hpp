@@ -148,17 +148,31 @@ using FnFSCloseFile    = int32_t (*)(void*, void*, uint32_t, uint32_t);
 using FnFSOpenDir      = int32_t (*)(void*, void*, const char*, uint32_t*, uint32_t);
 using FnFSReadDir      = int32_t (*)(void*, void*, uint32_t, void*, uint32_t);
 using FnFSCloseDir     = int32_t (*)(void*, void*, uint32_t, uint32_t);
+using FnFSReadFileWithPos = int32_t (*)(void*, void*, void*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 
 inline bool g_ClientUp = false;
 
-// Opens, reads, and optionally verifies a magic. `expectMagic` may be null to
-// read without checking content.
+// Opens, reads, and optionally verifies a magic.
+//
+// `fingerprint` additionally logs enough to identify WHICH file was read, not
+// merely that something was. That matters for the positive control: BotW
+// graphic packs commonly overlay /vol/content, and Pack/Bootup.pack is one of
+// the more frequently replaced files. A replacement is still a valid SARC, so
+// the magic check alone cannot separate a stock file from an injected one - and
+// if it cannot, STOCK and PACK collapse back into the single signal that
+// splitting them was meant to avoid.
+//
+// The fingerprint is the stat size plus the SARC/SFAT header fields a repack
+// almost always changes (file size, data offset, node count), plus a positioned
+// read deeper into the file. Compare across boots to tell which file you got.
 inline Verdict ProbeFile(const char* where, const char* label,
-                         const char* path, const char* expectMagic) {
+                         const char* path, const char* expectMagic,
+                         bool fingerprint = false) {
     auto openFile  = Backend::ResolveCemuFs<FnFSOpenFile>(Backend::CemuFsImport::FSOpenFile);
     auto getStat   = Backend::ResolveCemuFs<FnFSGetStatFile>(Backend::CemuFsImport::FSGetStatFile);
     auto readFile  = Backend::ResolveCemuFs<FnFSReadFile>(Backend::CemuFsImport::FSReadFile);
     auto closeFile = Backend::ResolveCemuFs<FnFSCloseFile>(Backend::CemuFsImport::FSCloseFile);
+    auto readAt    = Backend::ResolveCemuFs<FnFSReadFileWithPos>(Backend::CemuFsImport::FSReadFileWithPos);
     if (!openFile || !readFile || !closeFile) return Verdict::ShimsMissing;
 
     uint32_t handle = 0;
@@ -174,11 +188,11 @@ inline Verdict ProbeFile(const char* where, const char* label,
     FsStatBuf stat{};
     const int32_t statStatus = getStat
         ? getStat(g_ProbeClient, g_ProbeCmdBlock, handle, &stat, 0xFFFFFFFF) : -1;
-    WIIXL_LOG("[LP:%s][%s] FSGetStatFile -> %d (size=%u)", where, label, statStatus,
-              static_cast<unsigned>(stat.size));
+    WIIXL_LOG("[LP:%s][%s] FSGetStatFile -> %d  SIZE=%u (0x%X)", where, label, statStatus,
+              static_cast<unsigned>(stat.size), static_cast<unsigned>(stat.size));
 
     // Opening is not reading. This is the call that would actually block if a
-    // synchronous FS read is not safe on this thread at this time.
+    // synchronous FS read were unsafe on this thread at this time.
     const uint32_t toRead = 64;
     for (uint32_t i = 0; i < sizeof(g_ProbeBuf); ++i) g_ProbeBuf[i] = 0;
     WIIXL_LOG("[LP:%s][%s] calling FSReadFile(%u)...", where, label, toRead);
@@ -186,22 +200,79 @@ inline Verdict ProbeFile(const char* where, const char* label,
                                        1, toRead, handle, 0, 0xFFFFFFFF);
     WIIXL_LOG("[LP:%s][%s] FSReadFile -> %d", where, label, readBytes);
 
-    const int32_t closeStatus = closeFile(g_ProbeClient, g_ProbeCmdBlock, handle, 0xFFFFFFFF);
-    WIIXL_LOG("[LP:%s][%s] FSCloseFile -> %d", where, label, closeStatus);
-
     if (readBytes <= 0) {
+        closeFile(g_ProbeClient, g_ProbeCmdBlock, handle, 0xFFFFFFFF);
         WIIXL_LOG("[LP:%s][%s] verdict=%s - opened but read returned %d. FS accepts opens "
                   "but not reads at this point.",
                   where, label, VerdictName(Verdict::OpenedNotRead), readBytes);
         return Verdict::OpenedNotRead;
     }
 
-    WIIXL_LOG("[LP:%s][%s] first bytes %02X %02X %02X %02X ('%c%c%c%c')",
-              where, label, g_ProbeBuf[0], g_ProbeBuf[1], g_ProbeBuf[2], g_ProbeBuf[3],
-              g_ProbeBuf[0] >= 32 && g_ProbeBuf[0] < 127 ? g_ProbeBuf[0] : '.',
-              g_ProbeBuf[1] >= 32 && g_ProbeBuf[1] < 127 ? g_ProbeBuf[1] : '.',
-              g_ProbeBuf[2] >= 32 && g_ProbeBuf[2] < 127 ? g_ProbeBuf[2] : '.',
-              g_ProbeBuf[3] >= 32 && g_ProbeBuf[3] < 127 ? g_ProbeBuf[3] : '.');
+    WIIXL_LOG("[LP:%s][%s] first bytes %02X %02X %02X %02X", where, label,
+              g_ProbeBuf[0], g_ProbeBuf[1], g_ProbeBuf[2], g_ProbeBuf[3]);
+
+    if (fingerprint) {
+        // Two 16-byte lines rather than one 32-byte line: WIIXL_LOG caps each
+        // call at kMaxLogTextLen (200 chars).
+        WIIXL_LOG("[LP:%s][%s] FP 00-0F: %02X %02X %02X %02X %02X %02X %02X %02X "
+                  "%02X %02X %02X %02X %02X %02X %02X %02X", where, label,
+                  g_ProbeBuf[0], g_ProbeBuf[1], g_ProbeBuf[2], g_ProbeBuf[3],
+                  g_ProbeBuf[4], g_ProbeBuf[5], g_ProbeBuf[6], g_ProbeBuf[7],
+                  g_ProbeBuf[8], g_ProbeBuf[9], g_ProbeBuf[10], g_ProbeBuf[11],
+                  g_ProbeBuf[12], g_ProbeBuf[13], g_ProbeBuf[14], g_ProbeBuf[15]);
+        WIIXL_LOG("[LP:%s][%s] FP 10-1F: %02X %02X %02X %02X %02X %02X %02X %02X "
+                  "%02X %02X %02X %02X %02X %02X %02X %02X", where, label,
+                  g_ProbeBuf[16], g_ProbeBuf[17], g_ProbeBuf[18], g_ProbeBuf[19],
+                  g_ProbeBuf[20], g_ProbeBuf[21], g_ProbeBuf[22], g_ProbeBuf[23],
+                  g_ProbeBuf[24], g_ProbeBuf[25], g_ProbeBuf[26], g_ProbeBuf[27],
+                  g_ProbeBuf[28], g_ProbeBuf[29], g_ProbeBuf[30], g_ProbeBuf[31]);
+
+        // SARC is big-endian. These are the fields a repack changes.
+        const uint8_t* q = g_ProbeBuf;
+        auto be32 = [](const uint8_t* r) -> uint32_t {
+            return (static_cast<uint32_t>(r[0]) << 24) | (static_cast<uint32_t>(r[1]) << 16)
+                 | (static_cast<uint32_t>(r[2]) << 8)  |  static_cast<uint32_t>(r[3]);
+        };
+        auto be16 = [](const uint8_t* r) -> uint32_t {
+            return (static_cast<uint32_t>(r[0]) << 8) | static_cast<uint32_t>(r[1]);
+        };
+        const bool isSarc = q[0] == 0x53 && q[1] == 0x41 && q[2] == 0x52 && q[3] == 0x43;
+        if (isSarc) {
+            WIIXL_LOG("[LP:%s][%s] FP SARC fileSize=%u dataOffset=0x%X version=0x%X",
+                      where, label, be32(q + 0x08), be32(q + 0x0C), be16(q + 0x10));
+            const bool isSfat = q[0x14] == 0x53 && q[0x15] == 0x46
+                             && q[0x16] == 0x41 && q[0x17] == 0x54;
+            if (isSfat) {
+                WIIXL_LOG("[LP:%s][%s] FP SFAT nodeCount=%u hashMultiplier=0x%X",
+                          where, label, be16(q + 0x1A), be32(q + 0x1C));
+            }
+        }
+
+        // A positioned read deeper in, which also exercises FSReadFileWithPos -
+        // the call FS::File::ReadAt and the loader both depend on.
+        if (readAt) {
+            alignas(64) static uint8_t deep[64];
+            for (uint32_t i = 0; i < sizeof(deep); ++i) deep[i] = 0;
+            const uint32_t deepOff = 0x1000;
+            WIIXL_LOG("[LP:%s][%s] calling FSReadFileWithPos(off=0x%X, 64)...",
+                      where, label, deepOff);
+            const int32_t got = readAt(g_ProbeClient, g_ProbeCmdBlock, deep, 1, 64,
+                                       deepOff, handle, 0, 0xFFFFFFFF);
+            WIIXL_LOG("[LP:%s][%s] FSReadFileWithPos -> %d", where, label, got);
+            if (got > 0) {
+                WIIXL_LOG("[LP:%s][%s] FP @0x%X: %02X %02X %02X %02X %02X %02X %02X %02X",
+                          where, label, deepOff,
+                          deep[0], deep[1], deep[2], deep[3],
+                          deep[4], deep[5], deep[6], deep[7]);
+            }
+        } else {
+            WIIXL_LOG("[LP:%s][%s] FSReadFileWithPos shim unresolved - no deep sample",
+                      where, label);
+        }
+    }
+
+    const int32_t closeStatus = closeFile(g_ProbeClient, g_ProbeCmdBlock, handle, 0xFFFFFFFF);
+    WIIXL_LOG("[LP:%s][%s] FSCloseFile -> %d", where, label, closeStatus);
 
     if (expectMagic) {
         bool ok = true;
@@ -215,9 +286,9 @@ inline Verdict ProbeFile(const char* where, const char* label,
         }
     }
 
-    WIIXL_LOG("[LP:%s][%s] verdict=%s (%d bytes read%s)", where, label,
-              VerdictName(Verdict::Verified), readBytes,
-              expectMagic ? ", magic matches" : "");
+    WIIXL_LOG("[LP:%s][%s] verdict=%s (%d bytes read). Magic alone does not prove this is "
+              "the stock file - compare the FP lines above.",
+              where, label, VerdictName(Verdict::Verified), readBytes);
     return Verdict::Verified;
 }
 
@@ -312,7 +383,7 @@ inline void Probe(const char* where,
 
     // 1. Positive control. If this is not VERIFIED, nothing else here means
     //    anything - /vol/content is not mounted or not readable yet.
-    const Verdict stock = ProbeFile(where, "STOCK", stockPath, stockMagic);
+    const Verdict stock = ProbeFile(where, "STOCK", stockPath, stockMagic, /*fingerprint=*/true);
 
     // 2. The graphic-pack content/ overlay. Only meaningful if STOCK passed:
     //    NOT-FOUND here with STOCK verified means the overlay is not live yet;
