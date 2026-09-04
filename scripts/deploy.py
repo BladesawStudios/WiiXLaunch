@@ -381,11 +381,65 @@ version = 7
 
         payload_data = bytes(payload_buf)
 
+        # --- Load point (build-time nomination) ---
+        #
+        # A project declares one with WIIXL_DECLARE_LOAD_POINT(addr) (see
+        # include/wiixlaunch/loader/load_point.hpp) and provides a stub named
+        # WiiXLaunch_LoadPointStub. Both are read out of the ELF here: the
+        # declared game address becomes an `.origin` patch in this pack, and the
+        # stub's offset in the payload becomes the branch target label.
+        #
+        # Deliberately NOT a runtime patch. The load point sits inside a
+        # function Cemu may already have recompiled by the time the payload
+        # runs, and only the host pack should ever write into game memory.
+        # Emitting it here removes both questions.
+        #
+        # No declaration means no load point: nothing is emitted and the reason
+        # is printed. That is the correct state for a host with no game module,
+        # not a silent boot that does nothing.
+        load_point_addr = 0
+        load_point_stub_offset = None
+        lp_addr_sym = sym_dict.get("g_WiiXLaunchLoadPointAddr")
+        lp_stub_sym = sym_dict.get("WiiXLaunch_LoadPointStub")
+        if lp_addr_sym is not None and lp_addr_sym + 4 <= len(payload_data):
+            load_point_addr = struct.unpack_from(">I", payload_data, lp_addr_sym)[0]
+
+        if load_point_addr != 0 and lp_stub_sym is None:
+            raise RuntimeError(
+                f"A load point is declared at 0x{load_point_addr:08X} "
+                f"(g_WiiXLaunchLoadPointAddr), but there is no WiiXLaunch_LoadPointStub "
+                f"symbol to branch to.\n"
+                f"  WIIXL_DECLARE_LOAD_POINT requires a stub with that exact name - "
+                f"deploy.py places the branch target label by looking it up.")
+        if load_point_addr == 0 and lp_stub_sym is not None:
+            raise RuntimeError(
+                "WiiXLaunch_LoadPointStub exists but no load point address is declared "
+                "(g_WiiXLaunchLoadPointAddr absent or zero).\n"
+                "  The stub would sit in the codecave and never be reached. Declare where "
+                "it is branched from with WIIXL_DECLARE_LOAD_POINT(addr).")
+
+        if load_point_addr != 0:
+            load_point_stub_offset = lp_stub_sym
+            if load_point_stub_offset % 4 != 0 or load_point_stub_offset >= binary_size:
+                raise RuntimeError(
+                    f"WiiXLaunch_LoadPointStub is at 0x{load_point_stub_offset:X}, which is not "
+                    f"a 4-byte-aligned offset inside the {binary_size}-byte payload.")
+            print(f"[Cemu] Load point 0x{load_point_addr:08X} -> stub at payload "
+                  f"+0x{load_point_stub_offset:X}")
+        else:
+            print("[Cemu] No load point declared (no WIIXL_DECLARE_LOAD_POINT in this build) "
+                  "- modules will not be loaded")
+
         cemu_asm_content += f"# --- WiiXLaunch C++ Payload (linked at 0, relocates itself on entry) ---\n"
         cemu_asm_content += ".origin = codecave\n"
         cemu_asm_content += "wiixlaunch_codecave_start:\n"
         cemu_asm_content += "wiixlaunch_binary:\n"
         for i in range(0, binary_size, 4):
+            # The load-point branch needs a label Cemu's assembler can resolve.
+            # The stub lives inside the payload blob rather than in one of the
+            # .asm files, so its label is planted at its offset here.
+            if load_point_stub_offset is not None and i == load_point_stub_offset:
+                cemu_asm_content += "wiixlaunch_loadpoint_stub:\n"
             word = struct.unpack(">I", payload_data[i:i+4])[0]
             cemu_asm_content += f"  .int 0x{word:08X}\n"
 
@@ -406,6 +460,15 @@ version = 7
         # The payload's heap runs from g_CemuHeapOffset (patched above) to that
         # 0x01C00000 boundary and is bounded at runtime, so nothing needs to be
         # reserved here. See Backend::AllocCemuHeap in include/wiixl_cemu_backend.hpp.
+
+        if load_point_addr != 0:
+            # One instruction, exactly like the entry hook below. The stub is
+            # responsible for executing the single displaced instruction and
+            # branching back to load_point_addr + 4.
+            cemu_asm_content += (f"\n# Load Point: redirect 0x{load_point_addr:08X} -> "
+                                 f"wiixlaunch_loadpoint_stub\n")
+            cemu_asm_content += f".origin = 0x{load_point_addr:08X}\n"
+            cemu_asm_content += f"  b wiixlaunch_loadpoint_stub\n\n"
 
         if entry_hook != 0:
             cemu_asm_content += f"\n# Entry Hook: redirect 0x{entry_hook:08X} -> wiixlaunch_codecave_start\n"

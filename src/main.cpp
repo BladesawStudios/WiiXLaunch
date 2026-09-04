@@ -41,54 +41,52 @@ void OnRender(GX2::CommandBuffer* cmdBuf, void* dstTexture, int width, int heigh
 // --- STAGE 1 STAND-IN: the BotW v208 load point ----------------------------
 //
 // THIS ADDRESS IS GAME-SPECIFIC AND DOES NOT BELONG IN BASE. It lives in
-// main.cpp because stage 1 has no nomination mechanism yet. Stage 2 inverts
-// this: the BotW module nominates (address, name) to the host, base installs
-// the hook, and a host with no game module logs "no load point nominated"
-// instead of booting into silence. Do not promote this constant into the
-// framework - replace it.
+// main.cpp because stage 1 has no module-side nomination yet. Stage 2 moves the
+// WIIXL_DECLARE_LOAD_POINT call into the BotW module's own header, so that
+// installing wiixlaunch-botw is what nominates BotW's load point. The mechanism
+// does not change - only who calls the macro. A host with no game module
+// declares nothing, and deploy.py says so rather than emitting a silent no-op.
 //
 // WHY THIS ADDRESS (v208 Wii U RPX, read in Ghidra):
 //
 //   FUN_03098928 is the game's FS bring-up, and is also the function the Cemu
-//   entry hook already sits on. It is called exactly once - FUN_03098a64 wraps
-//   it in a `if (singleton == 0)` guard - and internally does:
+//   entry hook already sits on. It runs exactly once - FUN_03098a64 wraps it in
+//   an `if (singleton == 0)` guard - and internally does:
 //
 //     030989bc  bl 0x04004ed0     FSInit()
 //     030989c0  addi r3,r31,0x24  client = this + 0x24
 //     030989c4  li   r4,0
 //     030989c8  bl 0x04004e78     FSAddClient(client, 0)
-//     030989cc  <- HERE. FS is up from this instruction onwards.
+//     030989cc  lis  r11,0x30a    <- LOAD POINT. FS is up from here.
 //
-// So the earliest viable load point is four instructions after the entry hook,
-// inside the same function. There is no cleaner one: the instruction after
-// FUN_03098a64 returns is a vtable dispatch (0309f284 bctrl), so every
-// post-FS-init site is necessarily mid-function.
+// So the load point is four instructions past the entry hook, inside the same
+// function. There is no cleaner site: the instruction after FUN_03098a64
+// returns is a vtable dispatch (0309f284 bctrl), so any post-FS-init point is
+// necessarily mid-function.
 //
-// WHY A HAND-WRITTEN STUB rather than Backend::InstallHook: InstallHook builds
-// a trampoline whose last slot long-jumps to target+16, so Orig() never returns
-// to the callback. That is right for a function-entry hook, where the callback
-// stands in for the whole function. Mid-function it is wrong - the game's code
-// would resume on the callback's stack frame. This stub instead saves
-// everything, calls out, restores everything, runs the four displaced
-// instructions, and jumps back, which is the same shape as
-// WiiXLaunch_Cemu_Init below.
+// THE BRANCH IS EMITTED BY THE PACK, NOT WRITTEN AT RUNTIME. deploy.py puts
+// `.origin = 0x030989CC / b wiixlaunch_loadpoint_stub` in patch_*.asm next to
+// the entry hook. Writing it from WiiXLaunch_Init would mean modifying code
+// inside a function Cemu may already have recompiled on entry at 0x03098928 -
+// the cache flush probably covers that, but "probably" is exactly what this
+// probe exists to remove. It also keeps the rule that only the host pack writes
+// into game memory.
 //
-// SAFETY OF THE SITE, checked rather than assumed: nothing branches to
-// 030989cc, 030989d0, 030989d4 or 030989d8 (no xrefs to any of them), so
-// overwriting all four with a long jump cannot land control in the middle of
-// it. All four are position-independent - no relative branches, no PC-relative
-// addressing - so they relocate into the stub unchanged.
+// SAFETY OF THE SITE, checked rather than assumed: nothing xrefs 0x030989CC, so
+// the branch cannot be landed on from elsewhere, and the displaced instruction
+// is position-independent (`lis r11,0x30a` - no relative branch, no PC-relative
+// addressing), so it re-executes correctly from the codecave.
 #if WIIXL_CEMU
 
-constexpr uintptr_t kBotWLoadPointAddr = 0x030989cc;  // STAND-IN, see above
+WIIXL_DECLARE_LOAD_POINT(0x030989CC);
 
-extern "C" void WiiXLaunch_BotW_LoadPointStub();
-
-extern "C" void WiiXLaunch_BotW_LoadPointProbe() {
-    // Site 2 of 2. Expected verdict: FS-UP-FILE-MISSING (FSOpenFile answering
-    // -6, FS_STATUS_NOT_FOUND) unless a probe.bin has been placed. Anything
-    // reporting FS-ABSENT here would mean FSAddClient at 030989c8 did not
-    // actually bring FS up, and the load point has to move later.
+extern "C" void WiiXLaunch_LoadPointProbe() {
+    // Site 2 of 2, immediately after FSAddClient. The three path verdicts are
+    // separable, which is the point:
+    //   STOCK verified             -> /vol/content is mounted AND readable here
+    //   STOCK verified, PACK not   -> the graphic-pack content/ overlay is not
+    //                                 live yet, which changes mod distribution
+    //   STOCK not found            -> nothing is mounted; the load point moves
     WiiXLaunch::LoadPoint::Probe("post-fsaddclient");
 }
 
@@ -96,12 +94,12 @@ extern "C" void WiiXLaunch_BotW_LoadPointProbe() {
 // exactly (0x2000 bytes, r2-r31 at 0x1F80, LR at 0x2004, CR at 0x2008) because
 // that one is known to work; this is not the place to invent a new one.
 //
-// The stack pointer is restored BEFORE the displaced instructions run - two of
-// them store through r1, so they must see the game's frame, not ours.
+// Only ONE instruction is displaced, not four: the pack emits a single `b`,
+// the same shape as the entry hook, rather than a 16-byte long jump.
 asm(
-    ".section .text.WiiXLaunch_BotW_LoadPointStub\n"
-    ".global WiiXLaunch_BotW_LoadPointStub\n"
-    "WiiXLaunch_BotW_LoadPointStub:\n"
+    ".section .text.WiiXLaunch_LoadPointStub\n"
+    ".global WiiXLaunch_LoadPointStub\n"
+    "WiiXLaunch_LoadPointStub:\n"
     "mflr 0\n"
     "stwu 1, -0x2000(1)\n"
     "stw 0, 0x2004(1)\n"
@@ -109,7 +107,7 @@ asm(
     "stw 0, 0x2008(1)\n"
     "stmw 2, 0x1F80(1)\n"
 
-    "bl WiiXLaunch_BotW_LoadPointProbe\n"
+    "bl WiiXLaunch_LoadPointProbe\n"
 
     "lmw 2, 0x1F80(1)\n"
     "lwz 0, 0x2008(1)\n"
@@ -118,17 +116,16 @@ asm(
     "mtlr 0\n"
     "addi 1, 1, 0x2000\n"
 
-    // The four instructions displaced from 030989cc-030989d8, verbatim.
+    // The ONE instruction displaced from 0x030989CC by the pack's `b`. It has to
+    // run AFTER the restore above: r11 is inside the r2-r31 range lmw rewrites,
+    // so setting it any earlier would simply be undone.
     "lis 11, 0x30a\n"
-    "stw 30, 0xc(1)\n"
-    "subi 11, 11, 0x7880\n"
-    "stw 30, 0x10(1)\n"
 
-    // Back to 030989dc. Literal immediates, so no relocation entry is emitted
-    // and deploy.py leaves them alone - which is what we want for a game
-    // address that is already absolute.
+    // Back to 0x030989D0, the instruction after the one we displaced. Literal
+    // immediates, so no relocation entry is emitted and deploy.py leaves them
+    // alone - correct for a game address that is already absolute.
     "lis 12, 0x0309\n"
-    "ori 12, 12, 0x89dc\n"
+    "ori 12, 12, 0x89d0\n"
     "mtctr 12\n"
     "bctr\n"
 );
@@ -166,19 +163,6 @@ extern "C" void WiiXLaunch_Init() {
     // reasoning about.
     WiiXLaunch::LoadPoint::Probe("entry-hook");
 
-#if WIIXL_CEMU
-    // Arm site 2. We are currently at 0x03098928, the first instruction of the
-    // very function that is about to bring FS up, so patching 0x030989cc now
-    // takes effect a few instructions later on THIS invocation - there is no
-    // "we are already past it" problem, and the function runs exactly once.
-    WIIXL_LOG("[LP] arming post-FSAddClient site at 0x%08X -> stub %p",
-              static_cast<unsigned>(kBotWLoadPointAddr),
-              reinterpret_cast<void*>(&WiiXLaunch_BotW_LoadPointStub));
-    WiiXLaunch::Backend::WriteLongJump(
-        kBotWLoadPointAddr,
-        reinterpret_cast<uintptr_t>(&WiiXLaunch_BotW_LoadPointStub));
-    WIIXL_LOG("[LP] armed; expect a [LP:post-fsaddclient] block next");
-#endif
 
     // Proof the system clock is reachable: console RTC on hardware,
     // host PC clock under Cemu. Reads "unavailable" on Switch.

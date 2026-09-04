@@ -46,6 +46,13 @@ enum class CemuFsImport : uint32_t {
     // Appended for FS::File::ReadAt (positioned reads of large archives
     // without loading them whole). Keep new entries at the END.
     FSReadFileWithPos,
+    // Directory enumeration. Needed to answer "does the mods directory exist"
+    // separately from "is the file in it missing" - FSOpenFile cannot tell
+    // those apart - and needed by the loader itself, which has to list
+    // *.wxlm rather than guess at names.
+    FSOpenDir,
+    FSReadDir,
+    FSCloseDir,
     Count
 };
 
