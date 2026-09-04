@@ -16,6 +16,7 @@ The framework hides the differences between three very different hooking mechani
 * [Hooks](hooks.md) - writing `WIIXL_HOOK_DEFINE_TRAMPOLINE` hooks, finding offsets, raw memory patches.
 * [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on each platform.
 * [Cemu code cave relocation](cemu-relocation.md) - how the payload finds its own load address, and why it has to.
+* [The module loader](loader.md) - how compiled mods are loaded, the per-platform load point, and what is and is not initialised when your code first runs.
 * [Modules](modules.md) - optional, game-specific APIs (e.g. [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)) added as submodules on top of the base framework.
 * [Graphics Injection](graphics-injection.md) - drawing your own textures and meshes into a game's render loop via `BotW::NVN` (Switch) and `BotW::GX2` (Wii U/Cemu).
 

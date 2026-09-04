@@ -516,19 +516,33 @@ inline void Probe(const char* where,
 // ---------------------------------------------------------------------------
 // NOMINATION is build-time, and deliberately not a base-owned address.
 //
-// The load point is a PER-GAME fact - a different title needs a different early
-// post-FS function, and base has no way to know it. So base owns Probe(), the
-// WIIXL_DECLARE_LOAD_POINT macro and (from stage 4) the loader; it never owns
-// the address.
+// The load point is a PER-GAME, PER-PLATFORM fact - a different title needs a
+// different early post-FS function, and base has no way to know it. So base
+// owns Probe(), the WIIXL_DECLARE_LOAD_POINT macro and (from stage 4) the
+// loader; it never owns the address.
 //
 // A project declares the address with WIIXL_DECLARE_LOAD_POINT and provides a
 // stub named WiiXLaunch_LoadPointStub. deploy.py reads both out of the ELF and
 // emits the `.origin` into the host pack. A build that declares neither gets no
 // load point and a log line saying so.
 //
-// Stage 2 moves the declaration from src/main.cpp into the game module's own
-// header, so installing wiixlaunch-botw is what nominates BotW's load point.
-// The mechanism does not change - only who calls the macro.
+// WHAT THE CEMU MEASUREMENT DID AND DID NOT SETTLE. This probe reported
+// FS-USABLE at the Cemu entry hook itself - FSAddClient, FSOpenFile, FSReadFile,
+// FSReadFileWithPos and FSOpenDir all succeed there, against stock content and
+// pack-injected content alike, before the game has called FSInit. That is
+// because Cemu HLEs coreinit and the filesystem is live from process start, so
+// the game's FSInit/FSAddClient pair concerns the game's client rather than the
+// subsystem.
+//
+// That is a property of the EMULATOR, not of the game or the platform. Aroma
+// runs against real IOSU; Switch has its own romfs mount timing. Neither has
+// been probed. So nomination stays the RULE, not an exception for awkward
+// titles, and BotW keeps nominating its load point on Cemu even though the
+// entry hook would do - it is the only mechanism validated for the case where
+// FS is genuinely not ready early, which is exactly what the other two
+// platforms may turn out to be.
+//
+// See docs/loader.md for what is and is not initialised at each phase.
 // ---------------------------------------------------------------------------
 
 } // namespace WiiXLaunch::LoadPoint
