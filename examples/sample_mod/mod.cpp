@@ -43,11 +43,18 @@ extern "C" {
     extern void     wiixl_import__wiixl_core__Log(const char* text);
     extern uint32_t wiixl_import__wiixl_core__AbiVersion(void);
     extern void*    wiixl_import__wiixl_core__Alloc(uint32_t size, uint32_t align);
+    // v1.1. Resolving these at all is the minor-at-least rule working: this
+    // module declares wiixl.core 1.0 and gets 1.1, and the three appended
+    // symbols are there.
+    extern uint32_t wiixl_import__wiixl_core__HeapGranted(void);
+    extern uint32_t wiixl_import__wiixl_core__HeapUsed(void);
+    extern uint32_t wiixl_import__wiixl_core__HeapRemaining(void);
 }
 
 using LogFn   = void (*)(const char*);
 using AbiFn   = uint32_t (*)(void);
 using AllocFn = void* (*)(uint32_t, uint32_t);
+using U32Fn   = uint32_t (*)(void);
 
 // In .data, one ADDR32 relocation each against an undefined symbol. volatile so
 // the call goes through the pointer the loader patched, not through the address
@@ -55,6 +62,9 @@ using AllocFn = void* (*)(uint32_t, uint32_t);
 static LogFn   volatile g_Log   = &wiixl_import__wiixl_core__Log;
 static AbiFn   volatile g_Abi   = &wiixl_import__wiixl_core__AbiVersion;
 static AllocFn volatile g_Alloc = &wiixl_import__wiixl_core__Alloc;
+static U32Fn   volatile g_Granted   = &wiixl_import__wiixl_core__HeapGranted;
+static U32Fn   volatile g_Used      = &wiixl_import__wiixl_core__HeapUsed;
+static U32Fn   volatile g_Remaining = &wiixl_import__wiixl_core__HeapRemaining;
 
 // A pointer to the module's own rodata: an ordinary relocation against the
 // module itself, which the loader fixes by adding the module's base. If base
@@ -81,6 +91,27 @@ struct CtorProbe {
 CtorProbe g_CtorProbe;
 } // namespace
 
+// wiixl.core Log takes a finished string on purpose - a vararg mismatch across
+// the module boundary is not diagnosable - so a module that wants numbers in its
+// log formats them itself. No libc here: the flat build has none.
+namespace {
+
+char* AppendText(char* out, char* end, const char* text) {
+    while (text && *text && out < end - 1) *out++ = *text++;
+    return out;
+}
+
+char* AppendU32(char* out, char* end, uint32_t v) {
+    char tmp[11];
+    int n = 0;
+    if (v == 0) tmp[n++] = '0';
+    while (v) { tmp[n++] = static_cast<char>('0' + (v % 10u)); v /= 10u; }
+    while (n > 0 && out < end - 1) *out++ = tmp[--n];
+    return out;
+}
+
+} // namespace
+
 extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
     LogFn log = g_Log;
     if (!log) return;
@@ -101,12 +132,75 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
                         : "sample.wxlm: AbiVersion() RETURNED SOMETHING ELSE");
     }
 
-    // Allocation through the surface - the call site stage 5 re-points at a
-    // per-module arena without changing anything here.
+    // Allocation through the surface, into this module bounded sub-arena.
+    //
+    // A pointer coming back only proves the call returned something. What is
+    // worth proving is that the accounting is REAL: that the host charged this
+    // module for exactly what it took, out of a grant this module can see. So
+    // the numbers are read on both sides of the allocation and the module works
+    // out the delta ITSELF, rather than printing whatever the host reports and
+    // calling that agreement.
+    //
+    // The expected delta is 256 plus up to 63 bytes of alignment padding: the
+    // sub-arena base is wherever the downward carve landed and is not
+    // guaranteed 64-aligned, so the first 64-aligned allocation inside it can
+    // skip a few bytes. Anything outside that window is a real accounting bug
+    // and says so by name.
     AllocFn alloc = g_Alloc;
-    if (alloc) {
+    U32Fn granted = g_Granted, used = g_Used, remaining = g_Remaining;
+    if (alloc && granted && used && remaining) {
+        char line[192];
+        char* end = line + sizeof(line);
+
+        const uint32_t grantedBytes = granted();
+        const uint32_t beforeUsed = used();
+        const uint32_t beforeLeft = remaining();
+
+        // Asked before allocating - the whole point of HeapGranted being
+        // callable during load. A best-effort module sizes its buffers off this
+        // instead of finding out by getting null.
+        char* o = AppendText(line, end, "sample.wxlm: granted ");
+        o = AppendU32(o, end, grantedBytes);
+        o = AppendText(o, end, " B, used ");
+        o = AppendU32(o, end, beforeUsed);
+        o = AppendText(o, end, " B, remaining ");
+        o = AppendU32(o, end, beforeLeft);
+        o = AppendText(o, end, " B before Alloc(256)");
+        *o = 0;
+        log(line);
+
         void* p = alloc(256, 64);
-        log(p ? "sample.wxlm: Alloc(256) OK" : "sample.wxlm: Alloc(256) returned null");
+        const uint32_t afterUsed = used();
+        const uint32_t afterLeft = remaining();
+
+        o = AppendText(line, end, "sample.wxlm: Alloc(256) ");
+        o = AppendText(o, end, p ? "OK" : "returned NULL");
+        o = AppendText(o, end, ", used ");
+        o = AppendU32(o, end, afterUsed);
+        o = AppendText(o, end, " B, remaining ");
+        o = AppendU32(o, end, afterLeft);
+        o = AppendText(o, end, " B");
+        *o = 0;
+        log(line);
+
+        if (p) {
+            const uint32_t spent = beforeLeft - afterLeft;
+            const bool consistent = (afterUsed - beforeUsed) == spent &&
+                                    (afterLeft + afterUsed) == grantedBytes &&
+                                    spent >= 256u && spent <= 256u + 63u;
+            o = AppendText(line, end, consistent
+                    ? "sample.wxlm: arena accounting checks out - remaining fell by "
+                    : "sample.wxlm: ARENA ACCOUNTING IS WRONG - remaining fell by ");
+            o = AppendU32(o, end, spent);
+            o = AppendText(o, end, " B for a 256 B request (expected 256..319), used rose by ");
+            o = AppendU32(o, end, afterUsed - beforeUsed);
+            o = AppendText(o, end, " B, and used+remaining is ");
+            o = AppendU32(o, end, afterUsed + afterLeft);
+            o = AppendText(o, end, " of ");
+            o = AppendU32(o, end, grantedBytes);
+            *o = 0;
+            log(line);
+        }
     }
 
     g_Counter = g_Counter + 1;

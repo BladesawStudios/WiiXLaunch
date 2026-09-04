@@ -100,63 +100,26 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// An allocator that red-zones every block, so a write outside one is caught
-// rather than corrupting the harness silently.
+// Containment: did the loader write ONLY inside the sub-arena it was granted?
+//
+// This replaces a red-zoned allocator installed through the loader old
+// AllocFn hook. That hook stopped being called when stage 5 moved the image
+// onto Arena::AllocIn, so the canaries became bytes nothing could reach and the
+// check passed without testing anything - a dead hook turning a live test
+// vacuous, with no change in the case count to notice it by.
+//
+// The property checked here is stronger and cannot go dead the same way,
+// because it is not attached to a hook. The whole reservation is poisoned
+// before each case; after a load, every byte OUTSIDE the granted sub-arena must
+// still be poison. That is the actual stage-5 invariant - a module cannot reach
+// the host end of the arena or another module grant - stated in terms of the
+// memory rather than in terms of the plumbing.
 // ---------------------------------------------------------------------------
 namespace alloc {
 
-constexpr uint32_t kRedZone = 64;
-constexpr uint8_t  kPattern = 0xA5;
-
-struct Block { uint8_t* raw; uint8_t* user; uint32_t size; };
-std::vector<Block> g_Blocks;
-uint32_t g_Limit = 8u << 20;   // generous; NoMemory is exercised explicitly
-uint32_t g_Used = 0;
-
-// Honours the requested alignment, which the first version did not - it added a
-// 64-byte red zone to a malloc pointer and returned that, so blocks came back
-// 16-aligned. Backend::AllocCemuHeap aligns properly, so the harness was
-// handing the loader memory the real allocator never would, and the loader's
-// aligned reads then looked like violations. A stand-in that is WEAKER than the
-// real thing produces false failures; one that is more permissive hides real
-// ones. Both are the same mistake.
-void* Alloc(uint32_t size, uint32_t align) {
-    if (size == 0) return nullptr;
-    if (align < 64) align = 64;
-    if (g_Used + size > g_Limit) return nullptr;
-
-    const size_t slack = align + 2 * kRedZone;
-    uint8_t* raw = static_cast<uint8_t*>(std::calloc(size + slack, 1));
-    if (!raw) return nullptr;
-
-    uintptr_t p = reinterpret_cast<uintptr_t>(raw) + kRedZone;
-    p = (p + (align - 1)) & ~static_cast<uintptr_t>(align - 1);
-    uint8_t* user = reinterpret_cast<uint8_t*>(p);
-
-    std::memset(user - kRedZone, kPattern, kRedZone);
-    std::memset(user + size, kPattern, kRedZone);
-    g_Blocks.push_back({raw, user, size});
-    g_Used += size;
-    return user;
-}
+constexpr uint8_t kPoison = 0xA5;
 
 void Flush(uintptr_t, uint32_t) {}
-
-bool CheckRedZones() {
-    for (const Block& b : g_Blocks) {
-        for (uint32_t i = 0; i < kRedZone; ++i) {
-            if (b.user[-static_cast<int>(kRedZone) + static_cast<int>(i)] != kPattern) return false;
-            if (b.user[b.size + i] != kPattern) return false;
-        }
-    }
-    return true;
-}
-
-void Reset() {
-    for (const Block& b : g_Blocks) std::free(b.raw);
-    g_Blocks.clear();
-    g_Used = 0;
-}
 
 } // namespace alloc
 
@@ -285,24 +248,60 @@ static int g_Accepted = 0, g_Rejected = 0;
 // they cannot drift from it.
 #define OFF(field) static_cast<uint32_t>(offsetof(Wxlm::Header, field))
 
-// The arena's reservation for a host run. Real memory, so a granted sub-arena
-// is a range the loader can actually write into - the fuzzer checks that it
-// writes only inside its grant, and that needs the grant to be genuine.
+// The arena reservation for a host run. Real memory, so a granted sub-arena is
+// a range the loader can actually write into - and so the containment check
+// above has something genuine to inspect.
 namespace arena_backing {
 constexpr uint32_t kSize = 2u << 20;
 uint8_t* g_Block = nullptr;
+uintptr_t g_Base = 0;
 
 void Init() {
     if (!g_Block) g_Block = static_cast<uint8_t*>(std::calloc(kSize + 64, 1));
-    uintptr_t p = (reinterpret_cast<uintptr_t>(g_Block) + 63u) & ~static_cast<uintptr_t>(63u);
-    WiiXLaunch::Arena::SetReservation(p, kSize);
+    g_Base = (reinterpret_cast<uintptr_t>(g_Block) + 63u) & ~static_cast<uintptr_t>(63u);
+    // Poison, not zero. Zeroed backing would make "the loader never touched
+    // this" indistinguishable from "the loader zeroed it", which is exactly
+    // what a .bss overrun past the grant would look like.
+    std::memset(reinterpret_cast<void*>(g_Base), alloc::kPoison, kSize);
+    WiiXLaunch::Arena::SetReservation(g_Base, kSize);
+}
+
+// Everything below the granted sub-arena must be untouched. Exactly one module
+// is loaded per case, so ModuleCarved() is that module grant and the region
+// below it is the host end plus whatever is still free.
+bool ContainedInGrant() {
+    const uint32_t carved = WiiXLaunch::Arena::ModuleCarved();
+    if (carved > kSize) return false;
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(g_Base);
+    for (uint32_t i = 0; i < kSize - carved; ++i) {
+        if (p[i] != alloc::kPoison) return false;
+    }
+    return true;
+}
+
+// The other half of the pair, and the reason the first half cannot go quietly
+// vacuous the way the red-zone check did.
+//
+// ContainedInGrant() alone passes trivially if the loader never writes anywhere
+// - which is exactly the state a dead hook leaves behind. So a module that
+// loaded successfully must ALSO have disturbed the poison INSIDE its grant.
+// Together the two say: it wrote, and it wrote only there. Neither statement is
+// worth much without the other.
+bool WroteInGrant() {
+    const uint32_t carved = WiiXLaunch::Arena::ModuleCarved();
+    if (carved == 0 || carved > kSize) return false;
+    const uint8_t* p = reinterpret_cast<const uint8_t*>(g_Base) + (kSize - carved);
+    for (uint32_t i = 0; i < carved; ++i) {
+        if (p[i] != alloc::kPoison) return true;
+    }
+    return false;
 }
 } // namespace arena_backing
 
 static Reject RunLoader(std::vector<uint8_t>& bytes) {
-    alloc::Reset();
-    // Fresh grants per case: a module refused in one case must not leave the
-    // arena carved for the next, or later cases would fail for the wrong reason.
+    // Fresh grants and fresh poison per case: a module refused in one case must
+    // not leave the arena carved for the next, or later cases would fail for
+    // the wrong reason.
     arena_backing::Init();
     MemoryReader reader(bytes);
     return Loader::LoadFrom(reader);
@@ -328,10 +327,12 @@ static void Case(const char* what, std::vector<uint8_t> bytes, Reject expected,
             + ", got " + Wxlm::RejectName(got);
     }
 
-    if (!alloc::CheckRedZones()) {
+    // A REJECTED module must not have left anything behind either. Several
+    // rejections happen after the image has been placed and partly relocated,
+    // and those writes still have to have stayed inside the grant.
+    if (ok && !arena_backing::ContainedInGrant()) {
         ok = false;
-        why += (why.empty() ? "" : "; ");
-        why += "wrote outside an allocation";
+        why = "wrote outside the granted sub-arena before being rejected";
     }
 
     if (ok) { ++g_Rejected; }
@@ -339,7 +340,6 @@ static void Case(const char* what, std::vector<uint8_t> bytes, Reject expected,
         ++g_Failures;
         std::printf("  FAIL  %-52s %s\n", what, why.c_str());
     }
-    alloc::Reset();
 }
 
 static void ExpectAccepted(const char* what, std::vector<uint8_t> bytes) {
@@ -349,17 +349,20 @@ static void ExpectAccepted(const char* what, std::vector<uint8_t> bytes) {
         ++g_Failures;
         std::printf("  FAIL  %-52s rejected a VALID module: %s\n",
                     what, Wxlm::RejectName(got));
-    } else if (!alloc::CheckRedZones()) {
+    } else if (!arena_backing::ContainedInGrant()) {
         ++g_Failures;
-        std::printf("  FAIL  %-52s wrote outside an allocation\n", what);
+        std::printf("  FAIL  %-52s wrote outside the granted sub-arena\n", what);
+    } else if (!arena_backing::WroteInGrant()) {
+        ++g_Failures;
+        std::printf("  FAIL  %-52s loaded without writing inside its grant - the "
+                    "containment check above is not looking at live memory\n", what);
     } else {
         ++g_Accepted;
     }
-    alloc::Reset();
 }
 
 int main() {
-    Loader::SetMemoryHooks(&alloc::Alloc, &alloc::Flush);
+    Loader::SetFlushHook(&alloc::Flush);
     arena_backing::Init();
     WiiXLaunch::Core::Register();
 
@@ -591,6 +594,73 @@ int main() {
         Case("payloadSize huge, bss pushes it over", v, Reject::None);
     }
 
+    // --- hostile heapRequest -----------------------------------------------
+    //
+    // Every case above this point runs the BEST-EFFORT path, because the
+    // baseline heapRequest is 0. These exercise the stated-requirement path,
+    // and specifically its arithmetic, which is the newest code in the loader.
+    //
+    // The loader does not pass heapRequest to the arena as written: a module
+    // footprint is its code PLUS what it allocates, so it asks for
+    // heapRequest + payloadSize + bssSize. That addition is the same shape as
+    // the payloadSize + bssSize wrap the fuzzer already found - two attacker
+    // controlled 32-bit values summed into a size - and it is exactly where the
+    // next one of those would be.
+    //
+    // The boundary cases go on both sides deliberately. A bound that rejects
+    // everything near it passes a one-sided test and is still wrong.
+    const uint32_t kNeed = base.payloadSize + 32u;          // payload + bss
+    const uint32_t kArena = arena_backing::kSize;           // free, reset per case
+
+    {
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), 0xFFFFFFFFu);
+        Case("heapRequest 0xFFFFFFFF", v, Reject::BadSectionBounds);
+    }
+    {
+        // Fine as a standalone uint32 - it is not absurd and nothing about the
+        // field alone rejects it - but heapRequest + image lands exactly on
+        // 2^32 and wraps to 0. Wrapping to 0 is the dangerous direction: 0 is
+        // the BEST-EFFORT sentinel, so a wrap would silently switch contracts
+        // and hand this module a default grant it never asked for.
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), 0xFFFFFFFFu - kNeed + 1u);
+        Case("heapRequest + image lands exactly on 2^32", v, Reject::BadSectionBounds);
+    }
+    {
+        // One below the wrap: the sum is representable, so this must NOT be a
+        // size error. It is simply more memory than exists, which is a
+        // different diagnosis and has to say so.
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), 0xFFFFFFFFu - kNeed);
+        Case("heapRequest + image lands exactly on 0xFFFFFFFF", v, Reject::NoMemory);
+    }
+    {
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), kArena - kNeed + 1u);
+        Case("heapRequest one byte over the free arena", v, Reject::NoMemory);
+    }
+    {
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), kArena - kNeed - 1u);
+        Recrc(v);
+        ExpectAccepted("heapRequest one byte under the free arena", v);
+    }
+    {
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), kArena - kNeed);
+        Recrc(v);
+        ExpectAccepted("heapRequest exactly fills the free arena", v);
+    }
+    {
+        // A stated requirement small enough to be met, to prove the accepted
+        // path is not simply "the check never fires".
+        auto v = base.bytes;
+        Put32(v, OFF(heapRequest), 4096u);
+        Recrc(v);
+        ExpectAccepted("heapRequest 4096, comfortably met", v);
+    }
+
     // --- exhaustive single-byte flips over the header ----------------------
     //
     // Judged against an INDEPENDENT ORACLE rather than a list of field names.
@@ -698,16 +768,16 @@ int main() {
 
             const bool oracleSaysValid = Oracle(v);
 
-            alloc::Reset();
             arena_backing::Init();
             MemoryReader reader(v);
             const Reject got = Loader::LoadFrom(reader);
             ++g_Cases;
 
             const bool loaderAccepted = (got == Reject::None);
-            if (!alloc::CheckRedZones()) {
+            if (!arena_backing::ContainedInGrant()) {
                 ++g_Failures;
-                std::printf("  FAIL  flip %u:%d wrote outside an allocation\n", byte, bit);
+                std::printf("  FAIL  flip %u:%d wrote outside the granted sub-arena\n",
+                            byte, bit);
             } else if (got == Reject::NoMemory && oracleSaysValid) {
                 // Well-formed but unallocatable. A module asking for 2 GB of
                 // bss is structurally valid and still cannot be loaded, so this
@@ -726,7 +796,6 @@ int main() {
                 if (loaderAccepted) ++flipAccepted;
                 else ++g_Rejected;
             }
-            alloc::Reset();
         }
     }
     std::printf("  %d flips checked against the oracle, %d agreed (%d of them valid)\n",

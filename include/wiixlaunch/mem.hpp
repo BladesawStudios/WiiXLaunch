@@ -1,6 +1,7 @@
 #pragma once
 
 #include <wiixlaunch/platform.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -24,9 +25,15 @@
 // but coreinit's exports can.
 //
 // Install with UseCoreinitHeap(), which picks a heap with room and hands it to
-// Backend::SetHeapProvider. Call it once the game is up - from a graphics
+// Arena::SetHostProvider. Call it once the game is up - from a graphics
 // initialisation callback, not from a module entry point, since the base heaps
 // do not exist that early.
+//
+// This moves the HOST's allocations only. A loaded mod's grant stays in the
+// code cave whatever is installed here, because a grant holds relocated code
+// that gets executed and the cave is the only region this project has
+// established is executable. See the HostProvider comment in
+// wiixlaunch/loader/arena.hpp.
 
 #if WIIXL_CEMU
 extern "C" {
@@ -112,19 +119,19 @@ inline void FreeToExpHeap(void* heap, void* block) {
     reinterpret_cast<impl::FnFreeToExpHeap>(fn)(heap, block);
 }
 
-// The provider handed to Backend::SetHeapProvider. Allocations are never
-// freed, matching the built-in allocator - but these come out of the GAME's
-// heap, so a mod that allocates in a loop exhausts the game rather than
-// itself. Allocate at load, not per frame.
+// The provider handed to Arena::SetHostProvider. Allocations are never freed,
+// matching the arena - but these come out of the GAME's heap, so host code that
+// allocates in a loop exhausts the game rather than itself. Allocate at load,
+// not per frame.
 inline void* CoreinitProvider(size_t size, size_t align) {
     return AllocFromExpHeap(impl::g_Heap, static_cast<uint32_t>(size),
                             static_cast<int32_t>(align ? align : 256));
 }
 
-// Which base heap is in use, or nullptr for the built-in code-cave heap.
+// Which base heap is in use, or nullptr for the arena itself.
 inline void* CurrentHeap() { return impl::g_Heap; }
 
-// Point every later Backend::AllocCemuHeap at a coreinit base heap.
+// Point every later Arena::AllocHost at a coreinit base heap.
 //
 // Tries MEM2 first (much larger), then MEM1, and takes the first with at least
 // `needBytes` allocatable - a heap that exists but is full is no use, and
@@ -148,18 +155,18 @@ inline void* UseCoreinitHeap(uint32_t needBytes = 1u << 20, ReportFn report = nu
         if (report) report("base heap", static_cast<uint32_t>(type), heap, free);
         if (heap && free >= needBytes) {
             impl::g_Heap = heap;
-            WiiXLaunch::Backend::SetHeapProvider(&CoreinitProvider);
+            WiiXLaunch::Arena::SetHostProvider(&CoreinitProvider);
             return heap;
         }
     }
     return nullptr;
 }
 
-// Back to the payload's own code-cave heap. Anything already allocated from a
-// base heap stays where it is.
+// Back to the arena's own memory. Anything already allocated from a base heap
+// stays where it is.
 inline void UseCodeCaveHeap() {
     impl::g_Heap = nullptr;
-    WiiXLaunch::Backend::SetHeapProvider(nullptr);
+    WiiXLaunch::Arena::SetHostProvider(nullptr);
 }
 
 #else

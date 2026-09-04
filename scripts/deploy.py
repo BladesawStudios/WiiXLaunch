@@ -504,9 +504,11 @@ version = 7
         # the end of the cave, and past 0x01C00000, the end of Cemu's code-cave
         # area, which is not mapped at all.
         #
-        # The payload's heap runs from g_CemuHeapOffset (patched above) to that
+        # The payload's arena runs from g_CemuHeapOffset (patched above) to that
         # 0x01C00000 boundary and is bounded at runtime, so nothing needs to be
-        # reserved here. See Backend::AllocCemuHeap in include/wiixl_cemu_backend.hpp.
+        # reserved here. See WiiXLaunch::Arena in
+        # include/wiixlaunch/loader/arena.hpp - it reads this base, works out the
+        # distance to the wall itself, and is the only allocator in the payload.
 
         if load_point_addr != 0:
             # One instruction, exactly like the entry hook below. The stub is

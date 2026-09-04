@@ -112,6 +112,135 @@ Small in that example, but it is a function of what the user has enabled, not a
 constant. Anything that subdivides this space must read the size at runtime and
 log what it got. Nothing may reserve a fixed amount.
 
+Measured across four boots of the same build: **3959 / 3963 / 3934 / 3930 KB**.
+A module that loads on a clean setup and is refused on a loaded one is neither a
+module bug nor a host bug, and the refusal log says so in as many words.
+
+## One memory owner, two ends
+
+`WiiXLaunch::Arena` (`include/wiixlaunch/loader/arena.hpp`) owns the whole
+reservation. There is no second allocator; `Backend::CemuHeapLimit`,
+`AllocCemuHeap`, `CemuHeapUsed`, `CemuHeapRemaining`, `CemuHeapExhausted`,
+`SetHeapProvider` and `SetHeapLimit` were **deleted, not wrapped**. Every one of
+those callers read the distance to the wall and then did its own bookkeeping
+against it, each believing it had the whole distance to itself — which is how
+two allocators hand out the same bytes. A compatibility shim would have kept
+every caller compiling and kept the overlap reachable, just harder to see.
+
+The arena is carved from both ends:
+
+```
+[ host allocations ->                          <- module grants ]
+^ Base()                                        Base()+Total() ^
+```
+
+- The **host** — the framework plus every game module compiled into the payload
+  — allocates upward with `Arena::AllocHost`.
+- A **mod** (`.wxlm`) is granted a bounded piece carved downward, and reaches
+  memory only through `wiixl.core`'s `Alloc`, which can never step outside it.
+
+A grant fails if it would cross the host's high-water mark; a host allocation
+fails if it would cross into carved territory.
+
+An earlier version reserved a fixed 64 KB for the host and gave modules the
+rest. That was wrong: the host is not just the framework, and
+`wiixlaunch-botw`'s GX2 layer allocates font sheets and render targets in
+megabytes. A fixed reserve either starves the host or has to be guessed so large
+it defeats the point. Two ends need no guess.
+
+`Mem::UseCoreinitHeap()` installs a **host** provider (`Arena::SetHostProvider`)
+to move host allocation onto a coreinit base heap. Module grants are never
+redirected: a grant holds relocated code that gets executed, and the code cave is
+the only region this project has established is executable.
+
+### What stays a host static, and why not to "finish the job"
+
+The trampoline pool and the log ring stay plain host statics. They are not
+moving into the arena, and a later change that moves them for the sake of
+uniformity would make things worse.
+
+They were never a sharing problem. They are **per-payload** state, and the
+original diagnosis was about two payloads each having their own. Once
+`main.cpp` becomes a `.wxlm` there is exactly one payload — the host — so that
+is solved by the architecture, not by the arena. "Single memory owner" means
+modules no longer share an unbounded heap, and that is now true.
+
+Moving the log ring would also break a working tool. `ring_log_reader` finds it
+by scanning for a magic cookie, and **a static has a stable address across boots
+while an arena allocation moves with pack count** — the four measurements above
+are the same variance the reader would then have to chase. Do not trade a
+working debugging tool for uniformity.
+
+## The `heapRequest` contract — both paths
+
+`heapRequest` in the `.wxlm` header is a **request, not a grant**. It selects
+between two contracts, and stating a number means being held to it.
+
+### `heapRequest > 0` — a stated requirement
+
+The host grants exactly that much or refuses the module by name, at load time,
+before relocating it. It is never rounded down to what could be spared: handing
+over less would be a promise the host did not keep, which is the failure this
+contract exists to prevent.
+
+The image itself is charged to the grant as well — a module's footprint is its
+code plus whatever it allocates — so the loader reserves `heapRequest +
+payloadSize + bssSize` and rejects the module if that sum does not fit a 32-bit
+size.
+
+On success, verbatim:
+
+```
+Arena: <mod_id> granted=<N> (<N/1024> KB) requested=<N> (<N/1024> KB) at <addr> - stated requirement, met exactly; <F> KB free
+```
+
+On refusal, verbatim, followed by the shared-arena note:
+
+```
+Arena: <mod_id> REFUSED granted=0 requested=<N> (<N/1024> KB), free=<F> (<F/1024> KB). A stated heapRequest is a requirement, so the module is refused rather than given less than it asked for.
+Arena: The arena is the tail of a 4 MB code cave shared with every enabled graphic pack, so it shrinks as more are enabled (measured 3930-3963 KB across four boots). The same module may load on a cleaner setup.
+```
+
+Exceeding a stated grant later is still refused, and says which contract was in
+force:
+
+```
+Arena: <mod_id> wanted <N> bytes and has <U> of <G> used - refused. It stated a heapRequest and has now exceeded it.
+```
+
+### `heapRequest == 0` — best effort
+
+The module is granted whatever is sensible (`kDefaultGrant`, 256 KB, or less if
+that is all there is) and `Alloc` returns null past it. A mod that cannot
+predict its usage stays loadable and is expected to check for null.
+
+It does **not** have to find its size out by allocating until null. `wiixl.core`
+v1.1 appends `HeapGranted`, `HeapUsed` and `HeapRemaining`, callable during the
+`load` phase before allocating anything.
+
+On success, verbatim:
+
+```
+Arena: <mod_id> granted=<G> (<G/1024> KB) requested=unspecified at <addr> - best effort, Alloc returns null past this; <F> KB free
+```
+
+Refused only when there is genuinely nothing:
+
+```
+Arena: <mod_id> REFUSED granted=0 requested=unspecified - nothing free to assign
+```
+
+And on exhaustion:
+
+```
+Arena: <mod_id> wanted <N> bytes and has <U> of <G> used - refused. It stated no heapRequest, so this is a best-effort grant and null is the documented answer.
+```
+
+**granted-vs-requested is logged for every module, always** — including the
+best-effort path, where "requested" is the interesting half of the answer. When
+a mod misbehaves in-game this is the first line worth having, and the wording
+above is reproduced literally so a bug report can be matched against it.
+
 ## Verifying the loader
 
 Two properties make the loader the component most worth testing hard: it reads

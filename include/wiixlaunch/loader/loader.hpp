@@ -50,38 +50,39 @@ namespace WiiXLaunch::Loader {
 using Wxlm::Reject;
 using Wxlm::RejectName;
 
-// Where the loader gets memory, and how it publishes code it has written.
+// How the loader publishes code it has written.
 //
-// Indirected through hooks for two reasons. Stage 5 replaces the allocator with
-// a per-module arena and should not have to edit this file to do it. And it is
-// what lets tools/loader_fuzz run this exact code natively: parsing
-// attacker-shaped data is ordinary logic, and testing it should not need a
-// console or a boot.
-using AllocFn = void* (*)(uint32_t size, uint32_t align);
-using FlushFn = void  (*)(uintptr_t addr, uint32_t size);
+// THERE IS NO ALLOCATION HOOK ANY MORE, and removing it was not tidying. Stage
+// 5 moved the image onto the module own sub-arena (Arena::AllocIn at the
+// placement site), which left AllocFn set but never called - and
+// tools/loader_fuzz was installing a red-zoned allocator through it. Its
+// canaries were then bytes nothing could reach, so CheckRedZones() passed
+// without testing anything: a dead hook turned a real test into a vacuous one,
+// silently, and the case count did not change. The fuzzer now poisons the
+// arena reservation itself and checks the loader wrote only inside the grant,
+// which is both a live check and the actual stage-5 invariant.
+//
+// The flush hook stays because it is still called, and because it is what lets
+// the fuzzer run this exact code natively: parsing attacker-shaped data is
+// ordinary logic and testing it should not need a console or a boot.
+using FlushFn = void (*)(uintptr_t addr, uint32_t size);
 
 namespace impl {
 
 #if WIIXL_CEMU
-inline void* DefaultAlloc(uint32_t size, uint32_t align) {
-    return Backend::AllocCemuHeap(size, align);
-}
 inline void DefaultFlush(uintptr_t addr, uint32_t size) {
     Backend::FlushCache(addr, size);
 }
 #else
-inline void* DefaultAlloc(uint32_t, uint32_t) { return nullptr; }
 inline void DefaultFlush(uintptr_t, uint32_t) {}
 #endif
 
-inline AllocFn g_Alloc = &DefaultAlloc;
 inline FlushFn g_Flush = &DefaultFlush;
 
 } // namespace impl
 
-// Replaces the allocator and the cache-flush. Both must be set before Load.
-inline void SetMemoryHooks(AllocFn alloc, FlushFn flush) {
-    impl::g_Alloc = alloc ? alloc : &impl::DefaultAlloc;
+// Replaces the cache-flush. Must be set before Load on a host that needs it.
+inline void SetFlushHook(FlushFn flush) {
     impl::g_Flush = flush ? flush : &impl::DefaultFlush;
 }
 
