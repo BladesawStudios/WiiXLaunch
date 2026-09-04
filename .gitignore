@@ -34,3 +34,8 @@ build/wiixlaunch_cemu_hosttest
 # module build artefacts
 build/sample_mod.elf
 build/sample.wxlm
+
+# loader_fuzz build artefacts
+tools/loader_fuzz/loader_fuzz.exe
+tools/loader_fuzz/loader_fuzz
+tools/loader_fuzz/*.obj

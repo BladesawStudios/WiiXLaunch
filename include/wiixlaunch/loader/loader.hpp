@@ -49,6 +49,41 @@ namespace WiiXLaunch::Loader {
 using Wxlm::Reject;
 using Wxlm::RejectName;
 
+// Where the loader gets memory, and how it publishes code it has written.
+//
+// Indirected through hooks for two reasons. Stage 5 replaces the allocator with
+// a per-module arena and should not have to edit this file to do it. And it is
+// what lets tools/loader_fuzz run this exact code natively: parsing
+// attacker-shaped data is ordinary logic, and testing it should not need a
+// console or a boot.
+using AllocFn = void* (*)(uint32_t size, uint32_t align);
+using FlushFn = void  (*)(uintptr_t addr, uint32_t size);
+
+namespace impl {
+
+#if WIIXL_CEMU
+inline void* DefaultAlloc(uint32_t size, uint32_t align) {
+    return Backend::AllocCemuHeap(size, align);
+}
+inline void DefaultFlush(uintptr_t addr, uint32_t size) {
+    Backend::FlushCache(addr, size);
+}
+#else
+inline void* DefaultAlloc(uint32_t, uint32_t) { return nullptr; }
+inline void DefaultFlush(uintptr_t, uint32_t) {}
+#endif
+
+inline AllocFn g_Alloc = &DefaultAlloc;
+inline FlushFn g_Flush = &DefaultFlush;
+
+} // namespace impl
+
+// Replaces the allocator and the cache-flush. Both must be set before Load.
+inline void SetMemoryHooks(AllocFn alloc, FlushFn flush) {
+    impl::g_Alloc = alloc ? alloc : &impl::DefaultAlloc;
+    impl::g_Flush = flush ? flush : &impl::DefaultFlush;
+}
+
 // A module that made it all the way through. `image` is payload+bss, and the
 // module's own code and data live inside it - so this must outlive the game,
 // which it does: nothing is ever freed.
@@ -113,7 +148,8 @@ inline const LoadedModule& Module() { return impl::g_Module; }
 // a partially-written file - the realistic corruption when a user drags a mod
 // into a folder mid-copy - has the right length and a stale tail, which only a
 // checksum can see.
-inline Reject VerifyIntegrity(FS::File& file, const Wxlm::Header& h, const char* id) {
+template <typename Reader>
+inline Reject VerifyIntegrity(Reader& file, const Wxlm::Header& h, const char* id) {
     const uint32_t actual = file.Size();
     if (actual != h.fileSize) {
         WIIXL_LOG("[loader:%s] %s: header says %u bytes, the file is %u - truncated "
@@ -173,6 +209,14 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
                   static_cast<uint16_t>(Wxlm::kHostMachine));
         return Reject::WrongMachine;
     }
+    // Zero is not a version this or any host ever wrote. Only ">" was checked,
+    // so a single bit flip turning v1 into v0 was accepted - found by the
+    // fuzzer's header sweep.
+    if (h.formatVersion == 0) {
+        WIIXL_LOG("[loader:%s] %s: format version 0, which no writer produces",
+                  id, RejectName(Reject::FormatTooNew));
+        return Reject::FormatTooNew;
+    }
     if (h.formatVersion > Wxlm::kFormatVersion) {
         WIIXL_LOG("[loader:%s] %s: format v%u, this host understands up to v%u",
                   id, RejectName(Reject::FormatTooNew), h.formatVersion,
@@ -192,8 +236,14 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
 
     // Reserved fields are CHECKED, not ignored. A newer writer setting one and
     // an older loader ignoring it is how a mod half-works instead of failing.
+    // Every reserved field, not only the counts. The OFFSETS were unchecked, so
+    // a flip in declaredHookOffset or declaredPatchOffset was accepted while
+    // the matching count flip was refused - the fuzzer's per-field attribution
+    // is what made that visible. A reserved field is reserved whether or not
+    // this host would have read it.
     bool reservedSet = (h.reserved0 != 0);
     for (int i = 0; i < 4; ++i) reservedSet = reservedSet || (h.reserved1[i] != 0);
+    reservedSet = reservedSet || h.declaredHookOffset != 0 || h.declaredPatchOffset != 0;
     if (reservedSet || h.declaredHookCount != 0 || h.declaredPatchCount != 0) {
         WIIXL_LOG("[loader:%s] %s: a reserved field is set, so this file wants "
                   "something this host does not implement yet. Refusing rather than "
@@ -214,12 +264,51 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
         { h.stringOffset,   static_cast<uint64_t>(h.stringSize),    "strings"  },
     };
     for (const auto& sp : spans) {
-        if (sp.size != 0 && !impl::InFile(sp.off, sp.size, h.fileSize)) {
+        if (sp.size == 0) continue;
+
+        if (!impl::InFile(sp.off, sp.size, h.fileSize)) {
             WIIXL_LOG("[loader:%s] %s: %s section is [%u, +%u) but the file is %u bytes",
                       id, RejectName(Reject::BadSectionBounds), sp.what,
                       static_cast<uint32_t>(sp.off), static_cast<uint32_t>(sp.size),
                       h.fileSize);
             return Reject::BadSectionBounds;
+        }
+
+        // A section may not start inside the header. Nothing well-formed does,
+        // and allowing it means a table can be made to read header bytes as
+        // entries - offsets and counts of the loader's own choosing.
+        if (sp.off < sizeof(Wxlm::Header)) {
+            WIIXL_LOG("[loader:%s] %s: %s section starts at %u, inside the %u-byte "
+                      "header", id, RejectName(Reject::BadSectionBounds), sp.what,
+                      static_cast<uint32_t>(sp.off),
+                      static_cast<uint32_t>(sizeof(Wxlm::Header)));
+            return Reject::BadSectionBounds;
+        }
+    }
+
+    // No two sections may overlap. Each is bounded and each starts after the
+    // header, but that still permits a string blob sitting on top of the reloc
+    // table, where one field's meaning is read out of another's bytes. Nothing
+    // a writer produces overlaps, so refusing it costs nothing and removes a
+    // whole class of confusion between tables.
+    //
+    // Found by tools/loader_fuzz: exportCount=1 with an unset exportOffset gave
+    // a table lying on the header, in bounds and accepted.
+    for (uint32_t i = 0; i < sizeof(spans) / sizeof(spans[0]); ++i) {
+        if (spans[i].size == 0) continue;
+        for (uint32_t j = i + 1; j < sizeof(spans) / sizeof(spans[0]); ++j) {
+            if (spans[j].size == 0) continue;
+            const uint64_t aStart = spans[i].off, aEnd = aStart + spans[i].size;
+            const uint64_t bStart = spans[j].off, bEnd = bStart + spans[j].size;
+            if (aStart < bEnd && bStart < aEnd) {
+                WIIXL_LOG("[loader:%s] %s: %s [%u, +%u) overlaps %s [%u, +%u)",
+                          id, RejectName(Reject::BadSectionBounds),
+                          spans[i].what, static_cast<uint32_t>(aStart),
+                          static_cast<uint32_t>(spans[i].size),
+                          spans[j].what, static_cast<uint32_t>(bStart),
+                          static_cast<uint32_t>(spans[j].size));
+                return Reject::BadSectionBounds;
+            }
         }
     }
     if (h.entryOffset >= h.payloadSize) {
@@ -238,31 +327,25 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
     return Reject::None;
 }
 
-#if WIIXL_CEMU
-
-// Loads one module. Returns Reject::None on success.
+// Loads one module from anything with Size() and ReadAt().
 //
-// The path is tried as given and through WiiXLaunch::FS's usual candidates, so
-// "WiiXLaunch/mods/foo.wxlm" resolves the same way every other asset does.
-inline Reject Load(const char* path) {
-    WIIXL_LOG("[loader] opening %s", path);
-
-    FS::File file;
-    if (!file.Open(path)) {
-        WIIXL_LOG("[loader] %s: could not open %s", RejectName(Reject::ReadFailed), path);
-        return Reject::ReadFailed;
-    }
-
+// Templated on the reader so the same code serves a file on a console and a
+// byte array in a test. FS::File satisfies it; so does tools/loader_fuzz's
+// memory reader. The alternative - reading the whole file into a buffer first -
+// would have been simpler to test and would have doubled peak memory in a code
+// cave under 4 MB.
+//
+// Does NOT close the reader; the caller owns it.
+template <typename Reader>
+inline Reject LoadFrom(Reader& file) {
     if (file.Size() < Wxlm::kMinFileSize) {
         WIIXL_LOG("[loader] %s: %u bytes, a header alone is %u",
                   RejectName(Reject::TooSmall), file.Size(), Wxlm::kMinFileSize);
-        file.Close();
         return Reject::TooSmall;
     }
 
     if (file.ReadAt(0, impl::g_HeaderBytes, sizeof(Wxlm::Header)) != sizeof(Wxlm::Header)) {
         WIIXL_LOG("[loader] %s: could not read the header", RejectName(Reject::ReadFailed));
-        file.Close();
         return Reject::ReadFailed;
     }
 
@@ -273,15 +356,26 @@ inline Reject Load(const char* path) {
     char id[17];
     impl::CopyId(id, h.modId);
 
+    // Claimed size against delivered size FIRST. Structure is checked against
+    // h.fileSize, so a shrunken fileSize would otherwise trip a section bound
+    // and report BAD-SECTION-BOUNDS for what is really a truncated file. The
+    // fuzzer caught that: the rejection was right and the diagnosis was not.
+    if (file.Size() != h.fileSize) {
+        WIIXL_LOG("[loader:%s] %s: header says %u bytes, the file is %u - truncated, "
+                  "still being written, or not the file the header describes",
+                  id, RejectName(Reject::SizeMismatch), h.fileSize, file.Size());
+        return Reject::SizeMismatch;
+    }
+
     Reject r = ValidateHeader(h, id);
-    if (r != Reject::None) { file.Close(); return r; }
+    if (r != Reject::None) return r;
 
     WIIXL_LOG("[loader:%s] v%u.%u.%u  payload %u B, bss %u B, %u relocs, %u imports, "
               "phase %u", id, h.verMajor, h.verMinor, h.verPatch, h.payloadSize,
               h.bssSize, h.relocCount, h.importCount, h.phase);
 
     r = VerifyIntegrity(file, h, id);
-    if (r != Reject::None) { file.Close(); return r; }
+    if (r != Reject::None) return r;
     WIIXL_LOG("[loader:%s] integrity OK (crc32 0x%08X over %u bytes)",
               id, h.contentCrc32, h.fileSize - static_cast<uint32_t>(sizeof(Wxlm::Header)));
 
@@ -296,7 +390,6 @@ inline Reject Load(const char* path) {
         if (file.ReadAt(off, &req, sizeof(req)) != sizeof(req)) {
             WIIXL_LOG("[loader:%s] %s: reading required surface %u",
                       id, RejectName(Reject::ReadFailed), i);
-            file.Close();
             return Reject::ReadFailed;
         }
         char name[64] = {};
@@ -305,7 +398,6 @@ inline Reject Load(const char* path) {
             file.ReadAt(nameAt, name, sizeof(name) - 1) == 0) {
             WIIXL_LOG("[loader:%s] %s: required surface %u has a bad name offset",
                       id, RejectName(Reject::BadSectionBounds), i);
-            file.Close();
             return Reject::BadSectionBounds;
         }
         name[sizeof(name) - 1] = '\0';
@@ -315,7 +407,6 @@ inline Reject Load(const char* path) {
                       "at the load point for what this host offers",
                       id, RejectName(Reject::MissingSurface), name,
                       req.versionMajor, req.versionMinor);
-            file.Close();
             return Reject::MissingSurface;
         }
         WIIXL_LOG("[loader:%s] requires %s v%u.%u - present", id, name,
@@ -323,23 +414,37 @@ inline Reject Load(const char* path) {
     }
 
     // --- memory --------------------------------------------------------------
-    const uint32_t imageSize = h.payloadSize + h.bssSize;
-    uint8_t* image = static_cast<uint8_t*>(Backend::AllocCemuHeap(imageSize, 64));
+    //
+    // payloadSize + bssSize in 32 bits can WRAP, and the consequence is not a
+    // failed allocation - it is a successful small one followed by a zeroing
+    // loop that runs bssSize times. bssSize = 0xFFFFFFFF with a 64-byte payload
+    // gives an imageSize of 63: the allocation succeeds, and then the loop
+    // writes four gigabytes starting inside it.
+    //
+    // Single-bit flips cannot produce that value, so the header sweep never hit
+    // it; it turned up while working out why the sweep's NO-MEMORY results
+    // disagreed with the oracle. The arithmetic is done in 64 bits and the
+    // result is bounded before anything is allocated.
+    const uint64_t imageSize64 =
+        static_cast<uint64_t>(h.payloadSize) + static_cast<uint64_t>(h.bssSize);
+    if (imageSize64 > 0xFFFFFFFFull) {
+        WIIXL_LOG("[loader:%s] %s: payload %u + bss %u does not fit a 32-bit size",
+                  id, RejectName(Reject::BadSectionBounds), h.payloadSize, h.bssSize);
+        return Reject::BadSectionBounds;
+    }
+    const uint32_t imageSize = static_cast<uint32_t>(imageSize64);
+    uint8_t* image = static_cast<uint8_t*>(impl::g_Alloc(imageSize, 64));
     if (!image) {
-        WIIXL_LOG("[loader:%s] %s: wanted %u B (payload %u + bss %u); the host heap has "
-                  "%u of %u bytes used. heapRequest was %u, but a request is not a grant "
-                  "and there is nothing left to grant.",
+        WIIXL_LOG("[loader:%s] %s: wanted %u B (payload %u + bss %u). heapRequest was "
+                  "%u, but a request is not a grant and there was nothing left to grant.",
                   id, RejectName(Reject::NoMemory), imageSize, h.payloadSize, h.bssSize,
-                  static_cast<uint32_t>(Backend::CemuHeapUsed()),
-                  static_cast<uint32_t>(Backend::CemuHeapLimit()), h.heapRequest);
-        file.Close();
+                  h.heapRequest);
         return Reject::NoMemory;
     }
 
     if (file.ReadAt(h.payloadOffset, image, h.payloadSize) != h.payloadSize) {
         WIIXL_LOG("[loader:%s] %s: short read of the %u-byte payload",
                   id, RejectName(Reject::ReadFailed), h.payloadSize);
-        file.Close();
         return Reject::ReadFailed;
     }
     for (uint32_t i = 0; i < h.bssSize; ++i) image[h.payloadSize + i] = 0;
@@ -355,7 +460,6 @@ inline Reject Load(const char* path) {
         if (file.ReadAt(h.relocOffset + i * 8u, pair, 8) != 8) {
             WIIXL_LOG("[loader:%s] %s: reading relocation %u",
                       id, RejectName(Reject::ReadFailed), i);
-            file.Close();
             return Reject::ReadFailed;
         }
         const uint32_t kind = pair[0] >> 24;
@@ -365,7 +469,6 @@ inline Reject Load(const char* path) {
         if (offset + 4 > h.payloadSize) {
             WIIXL_LOG("[loader:%s] %s: relocation %u targets +0x%X, payload is %u B",
                       id, RejectName(Reject::BadRelocation), i, offset, h.payloadSize);
-            file.Close();
             return Reject::BadRelocation;
         }
 
@@ -375,14 +478,12 @@ inline Reject Load(const char* path) {
             if (value >= h.importCount) {
                 WIIXL_LOG("[loader:%s] %s: relocation %u names import %u of %u",
                           id, RejectName(Reject::BadRelocation), i, value, h.importCount);
-                file.Close();
                 return Reject::BadRelocation;
             }
             Wxlm::ImportEntry imp{};
             if (file.ReadAt(h.importOffset + value * sizeof(imp), &imp, sizeof(imp)) != sizeof(imp)) {
                 WIIXL_LOG("[loader:%s] %s: reading import %u",
                           id, RejectName(Reject::ReadFailed), value);
-                file.Close();
                 return Reject::ReadFailed;
             }
             char surfaceName[64] = {};
@@ -399,7 +500,6 @@ inline Reject Load(const char* path) {
                           "rather than a missing module.",
                           id, RejectName(Reject::UnresolvedImport), surfaceName,
                           symbolName, imp.symbolHash);
-                file.Close();
                 return Reject::UnresolvedImport;
             }
             *reinterpret_cast<uint32_t*>(base + offset) =
@@ -423,11 +523,9 @@ inline Reject Load(const char* path) {
             default:
                 WIIXL_LOG("[loader:%s] %s: relocation %u has unknown kind %u",
                           id, RejectName(Reject::BadRelocation), i, kind);
-                file.Close();
                 return Reject::BadRelocation;
         }
     }
-    file.Close();
     WIIXL_LOG("[loader:%s] relocated %u entries (%u resolved through the registry)",
               id, h.relocCount, importCount);
 
@@ -435,7 +533,7 @@ inline Reject Load(const char* path) {
     // We just wrote code we are about to execute. Without this it runs from a
     // stale instruction cache, which fails in a way that looks nothing like a
     // loader bug.
-    Backend::FlushCache(base, imageSize);
+    impl::g_Flush(base, imageSize);
 
     // --- record --------------------------------------------------------------
     LoadedModule& m = impl::g_Module;
@@ -455,6 +553,17 @@ inline Reject Load(const char* path) {
     // section and the bootstrap never walks one, so a module's static
     // constructors exist only if the loader calls them.
     if (h.initArrayCount != 0) {
+#if WIIXL_HOST
+        // NEVER execute module code in a host-test build. tools/loader_fuzz
+        // feeds this deliberately malformed input, and the whole point is to
+        // check that bad structure is REJECTED - jumping to a pointer that came
+        // out of a fuzzed file would be reckless, and would test nothing that
+        // the bounds checks above have not already decided. A host build also
+        // has 64-bit pointers, so a 32-bit entry could not be called correctly
+        // even for a valid module.
+        WIIXL_LOG("[loader:%s] %u .init_array entries, not called (host test build)",
+                  id, h.initArrayCount);
+#else
         WIIXL_LOG("[loader:%s] running %u .init_array entries", id, h.initArrayCount);
         auto* fns = reinterpret_cast<uint32_t*>(base + h.initArrayOffset);
         for (uint32_t i = 0; i < h.initArrayCount; ++i) {
@@ -462,6 +571,7 @@ inline Reject Load(const char* path) {
             reinterpret_cast<void (*)()>(fns[i])();
         }
         WIIXL_LOG("[loader:%s] .init_array done", id);
+#endif
     }
 
     WIIXL_LOG("[loader:%s] LOADED, entry at %p, waiting for phase %u",
@@ -479,6 +589,13 @@ inline void RunPhase(Wxlm::Phase phase) {
     if (!m.valid || m.entryCalled) return;
     if (m.phase != static_cast<uint8_t>(phase)) return;
 
+#if WIIXL_HOST
+    // Same reason as .init_array above: a host test never executes module code.
+    WIIXL_LOG("[loader:%s] phase %u reached, entry not called (host test build)",
+              m.id, m.phase);
+    m.entryCalled = true;
+    return;
+#else
     auto entry = reinterpret_cast<void (*)()>(
         reinterpret_cast<uintptr_t>(m.image) + m.entryOffset);
     WIIXL_LOG("[loader:%s] phase %u reached, calling entry at %p",
@@ -486,18 +603,36 @@ inline void RunPhase(Wxlm::Phase phase) {
     m.entryCalled = true;
     entry();
     WIIXL_LOG("[loader:%s] entry returned", m.id);
+#endif
+}
+
+#if WIIXL_CEMU || WIIXL_WIIU
+
+// Loads one module from the filesystem. The path is tried as given and through
+// WiiXLaunch::FS's usual candidates, so "WiiXLaunch/mods/foo.wxlm" resolves the
+// same way every other asset does.
+inline Reject Load(const char* path) {
+    WIIXL_LOG("[loader] opening %s", path);
+
+    FS::File file;
+    if (!file.Open(path)) {
+        WIIXL_LOG("[loader] %s: could not open %s", RejectName(Reject::ReadFailed), path);
+        return Reject::ReadFailed;
+    }
+
+    const Reject r = LoadFrom(file);
+    file.Close();
+    return r;
 }
 
 #else
 
-// Switch and Wii U reach their modules through their own backends; the loader
-// body is Cemu-only until those are probed. Says so rather than silently
-// doing nothing.
+// Switch reaches its modules through its own backend; not yet probed. Says so
+// rather than silently doing nothing.
 inline Reject Load(const char* path) {
     WIIXL_LOG("[loader] not implemented on this target yet (%s)", path);
     return Reject::ReadFailed;
 }
-inline void RunPhase(Wxlm::Phase) {}
 
 #endif
 

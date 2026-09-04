@@ -56,9 +56,13 @@ constexpr uint32_t kMagic = 0x57584C4Du;
 constexpr uint16_t kFormatVersion = 1;
 
 enum class Machine : uint16_t {
-    None    = 0,
-    Ppc32   = 1,   // Wii U and Cemu, big-endian
-    AArch64 = 2,   // Switch, little-endian
+    None     = 0,
+    Ppc32    = 1,   // Wii U and Cemu, big-endian
+    AArch64  = 2,   // Switch, little-endian
+    // Only ever produced and accepted by a WIIXL_HOST_TEST build. Given its own
+    // id rather than borrowing a console's so a host-test artefact can never be
+    // mistaken for a shippable module, in either direction.
+    HostTest = 0xFFFF,
 };
 
 enum class Endian : uint8_t {
@@ -293,7 +297,10 @@ inline const char* RejectName(Reject r) {
 }
 
 // What this host is, for the checks above.
-#if WIIXL_SWITCH
+#if WIIXL_HOST
+constexpr Machine kHostMachine = Machine::HostTest;
+constexpr Endian  kHostEndian  = Endian::Little;
+#elif WIIXL_SWITCH
 constexpr Machine kHostMachine = Machine::AArch64;
 constexpr Endian  kHostEndian  = Endian::Little;
 #else

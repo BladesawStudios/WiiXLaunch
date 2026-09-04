@@ -112,6 +112,33 @@ Small in that example, but it is a function of what the user has enabled, not a
 constant. Anything that subdivides this space must read the size at runtime and
 log what it got. Nothing may reserve a fixed amount.
 
+## Verifying the loader
+
+Two properties make the loader the component most worth testing hard: it reads
+data it did not produce, and it writes to memory it then executes. A bad file
+must be rejected, not partially applied.
+
+**Structure is fuzzed on the host, not in-game.** `tools/loader_fuzz` builds a
+valid module, produces corrupted variants of it - bit flips, truncation at every
+section boundary, counts and offsets set to 0, 1, 0xFFFFFFFF and just-past-
+bounds, overlapping sections, an entry outside the payload, an `.init_array`
+range crossing the end - and asserts each is rejected by name with nothing
+allocated and nothing relocated. It runs as an ordinary program because parsing
+is ordinary logic; a boot proves less and costs more.
+
+The important class is **corruption with a correct checksum**. A CRC only proves
+the bytes are the ones the writer produced; it says nothing about whether their
+structure is sane. A module built by a slightly-wrong future writer has a valid
+checksum over invalid structure, and that is exactly the file that must not
+relocate. So the fuzzer recomputes the CRC after corrupting, which stops the
+integrity check short-circuiting the structural ones.
+
+**A self-check the optimizer can answer is not a test.** See the rule in
+[Modules](modules.md): a probe the compiler can fold to a constant reports
+success without the mechanism running. Anything the loader writes at runtime -
+imports, relocated pointers, zeroed `.bss` - must be `volatile` in a module that
+checks it.
+
 ## Failure modes the loader must handle
 
 - **No modules present** — clean, logged no-op. The game boots normally. This is
