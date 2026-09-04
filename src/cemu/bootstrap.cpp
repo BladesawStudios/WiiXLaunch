@@ -46,6 +46,10 @@
 // only translation unit that mattered, it happened to include both.
 #include <wiixlaunch.hpp>
 #include <wiixl_cemu_backend.hpp>
+// Compiled here so the format's static_asserts are checked in every build,
+// including the empty-main host test. A layout drift between this header and
+// scripts/wxlm.py is the one thing neither side can detect at runtime.
+#include <wiixlaunch/loader/wxlm.hpp>
 #endif
 
 // The address this payload is running at. Set by the bootstrap below, from the
