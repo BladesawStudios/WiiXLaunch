@@ -30,7 +30,7 @@ echo "Building Cemu payload (PowerPC)..."
   -D__CEMU__=1 -DWIIXL_CEMU=1 \
   -I include -I build/generated/include "${MODULE_FLAGS[@]}" \
   -nostartfiles -T scripts/cemu.ld -Wl,-q \
-  src/main.cpp src/wiiu_plugin.cpp \
+  src/main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
   -o build/wiixlaunch_cemu
 
 python3 scripts/deploy.py

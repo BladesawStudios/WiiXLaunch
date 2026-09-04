@@ -316,50 +316,74 @@ version = 7
                 asm_text = f.read()
 
             rel_path = os.path.relpath(asm_file_path, root_dir)
+            is_module_asm = rel_path.replace(chr(92), "/").startswith("vendor/")
 
-            # An .asm that declares an offset symbol MUST have it resolve. The
-            # table is about to be spliced into the codecave either way, and the
-            # only thing that can ever reach it is the C++ global named here,
-            # patched with the table's offset - so a symbol that is missing, or
-            # sitting outside the payload, means shipping a shim table nothing
-            # can call. That failure is completely silent at runtime: the calls
-            # through it read a null table pointer.
+            # An .asm that declares an offset symbol must have it resolve, OR
+            # not be emitted at all. The table is only reachable through the C++
+            # global named here, patched with the table's offset - so shipping
+            # the table without the symbol means shipping bytes nothing can
+            # call, and every call through it reads a null pointer. Silent at
+            # build time, silent at boot.
             #
-            # THE RULE, because this will keep coming up: any global written by
-            # one tool and read by another, referenced from no C++ code at all,
-            # MUST be __attribute__((used)).
+            # There are two ways the symbol can be missing, and they need
+            # different answers:
             #
-            # These offset globals are the type case. Nothing in C++ ever
-            # references them - the only two consumers are this script, which
-            # patches the offset in, and the .asm table spliced into the codecave
-            # afterwards. Neither is visible to the compiler. They are declared
-            # `inline` in headers, and GCC emits an inline variable only when
-            # some translation unit odr-uses it, so without `used` the symbol is
-            # simply absent: nothing to patch here, and at runtime a shim table
-            # sitting in the codecave that every call reads a null pointer for.
-            # Silent at build time, silent at boot, wrong only in the log that
-            # never appears.
+            #   BASE (src/cemu/*.asm) - the host always needs these, and
+            #   src/cemu/bootstrap.cpp includes the umbrella precisely so their
+            #   globals are always emitted. Missing means something is wrong:
+            #   hard error.
             #
-            # That is exactly how base's coreinit memory shims shipped
-            # unreachable for a while (g_CemuMemShimTableOffset), and the skip
-            # this replaced is what hid it. Expect more symbols in this category
-            # as the module loader grows - anything the .wxlm writer fills in or
-            # the surface registry resolves has the same shape. See
-            # include/wiixlaunch/mem.hpp for the declaration to copy, and the
-            # matching bullet in docs/modules.md.
+            #   MODULE (vendor/wiixlaunch-*/src/cemu/*.asm) - a project may
+            #   legitimately vendor a module and not use it, in which case the
+            #   header declaring the global is never included and the symbol
+            #   genuinely should not exist. Emitting its shim table anyway is
+            #   just dead weight in a shared 4 MB code cave. Skip the file and
+            #   say so.
+            #
+            # This is stricter than the original skip either way: the old code
+            # emitted the table AND failed to patch it. Nothing now ships a
+            # table it cannot reach.
+            #
+            # THE UNDERLYING RULE, because it keeps coming up: anything
+            # referenced only from outside the compiler's view MUST be
+            # __attribute__((used)) - data or code, no distinction. GCC emits an
+            # inline definition only when a translation unit odr-uses it, and a
+            # reference the compiler cannot see does not count.
+            #
+            # It has now fired from both directions. A data global written by
+            # this script and read by a src/cemu/*.asm table
+            # (g_CemuMemShimTableOffset) was dropped and shipped unreachable -
+            # silent at runtime. An inline function whose only caller was a
+            # hand-written asm() block (WiiXLaunch_LoadPointProbe) was dropped
+            # and failed at link - loud. Same cause, opposite symptoms.
+            #
+            # `used` cannot rescue a header nobody included, which is why
+            # src/cemu/bootstrap.cpp includes the umbrella: the host's own
+            # translation unit is what guarantees the base globals exist at all.
             m = offset_symbol_re.search(asm_text)
             if m:
                 symbol_name = m.group(1)
                 symbol_addr = sym_dict.get(symbol_name)
+
+                if symbol_addr is None and is_module_asm:
+                    print(f"[Cemu] Skipping {rel_path}: {symbol_name} is not in this build, "
+                          f"so nothing could call its shim table. This is expected if the "
+                          f"project does not use that module; if it does, the global is "
+                          f"missing __attribute__((used)).")
+                    running_offset += 0
+                    continue
+
                 if symbol_addr is None:
                     raise RuntimeError(
-                        f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name}, but that "
-                        f"symbol is not in {os.path.basename(elf_path)}.\n"
-                        f"  Its shim table would be spliced into the codecave with no way to "
-                        f"reach it, and every call through it would read a null pointer.\n"
-                        f"  Usually the header declaring {symbol_name} is not included by "
-                        f"anything, or the global is missing __attribute__((used)) - an inline "
-                        f"variable no translation unit odr-uses is never emitted.")
+                        f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name}, but there "
+                        f"is no such symbol in {os.path.basename(elf_path)}.\n"
+                        f"  This is base framework asm, so the host always needs it - "
+                        f"src/cemu/bootstrap.cpp includes the umbrella so these globals are "
+                        f"always emitted.\n"
+                        f"  Usually the header declaring {symbol_name} lost its include, or "
+                        f"the global is missing __attribute__((used)) - an inline variable no "
+                        f"translation unit odr-uses is never emitted.")
+
                 if symbol_addr + 4 > len(payload_buf):
                     raise RuntimeError(
                         f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name} at "
@@ -368,6 +392,7 @@ version = 7
                         f"  The offset cannot be written, so the shim table would ship "
                         f"unreachable. Check that the global lives in a section the flat binary "
                         f"actually contains (see scripts/cemu.ld).")
+
                 struct.pack_into(">I", payload_buf, symbol_addr, running_offset)
 
             cemu_included_asm_content += f"\n# --- Included from {rel_path} ---\n"
