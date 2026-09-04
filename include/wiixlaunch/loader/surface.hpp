@@ -36,6 +36,34 @@
 //   * No varargs. Formatting conventions differ between host and mod builds,
 //     and a vararg mismatch is unfixable at the boundary. wiixl.core's Log
 //     takes a finished string.
+//
+// ---------------------------------------------------------------------------
+// ATTRIBUTION COMES FROM WHAT THE HOST OBSERVES, NEVER FROM WHAT A MOD CLAIMS.
+//
+// No surface entry takes "who is calling" as a parameter. If it did, a mod
+// could pass any value it liked, and every report built on that value would be
+// unfalsifiable - which is to say worthless, because the only thing a report is
+// for is being checkable against reality.
+//
+// The host already knows who is calling: the loader sets the current module
+// around that module's entry, so identity is something the host established by
+// running the code, not something the code asserted about itself.
+//
+// Two entries follow this rule and neither is an accident:
+//
+//   * wiixl.core InstallHook takes (target, callback) and NOT an owner. The
+//     hook is attributed to whichever module the loader is running. This is
+//     what makes "SHARED TARGET ... call order: a -> b" evidence rather than
+//     hearsay - and naming the mods in a conflict is the entire reason the hook
+//     registry is central.
+//   * wiixl.core HookProbeClaimTag binds a marker tag to the calling module at
+//     CLAIM time, under host observation, and refuses a tag someone else
+//     already holds. The ordering assertion in wiixlaunch/hook_probe.hpp is
+//     then against the host's own record.
+//
+// The general shape: where a mod must supply a token (a tag, a handle, an id),
+// BIND it to the caller at a moment when the host knows who that is, and check
+// later uses against the binding. Never accept the identity itself.
 // ---------------------------------------------------------------------------
 
 #include <wiixlaunch/platform.hpp>

@@ -50,6 +50,7 @@
 // including the empty-main host test. A layout drift between this header and
 // scripts/wxlm.py is the one thing neither side can detect at runtime.
 #include <wiixlaunch/loader/wxlm.hpp>
+#include <wiixlaunch/hook_probe.hpp>
 #endif
 
 // The address this payload is running at. Set by the bootstrap below, from the
@@ -251,10 +252,23 @@ asm(
 //
 // tools/hook_test asserts the encodings above are what IsPcRelativeBranch calls
 // safe, so this comment cannot quietly stop being true.
+//
+// AND THAT MAKES THIS A POOR CANARY, which is worth saying out loud. Every
+// other hook target in the tree is a game function whose prologue nobody chose;
+// this is the one whose prologue is guaranteed never to trip the decoder. So it
+// exercises the ACCEPT path and only the accept path, and it must never be
+// mistaken for coverage of the refusal path. The refusal path is covered by
+// synthetic targets in tools/hook_test - relative branches in all four
+// displaced positions, across b/bl/bc/bcl - because otherwise the only thing
+// exercising refusal would be a code path nothing in the tree can reach.
 extern "C" void WiiXLaunch_HookProbeBody();
 
 extern "C" __attribute__((used)) void WiiXLaunch_HookProbeBody() {
     WIIXL_LOG("HookProbe: host body ran (this is the end of the chain)");
+    // The host's own mark, in the host's own record. A module cannot claim this
+    // tag, so "the chain reached the end" is not something a mod can fake by
+    // returning early.
+    WiiXLaunch::HookProbe::MarkHost();
 }
 
 asm(

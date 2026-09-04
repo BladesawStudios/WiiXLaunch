@@ -17,6 +17,7 @@
 #include <wiixlaunch/fs.hpp>
 #include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/hook_manager.hpp>
+#include <wiixlaunch/hook_probe.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -32,9 +33,9 @@ constexpr uint16_t kVersionMajor = 1;
 // 1.1 appends HeapGranted / HeapUsed / HeapRemaining. Appending bumps the
 // MINOR, so every mod built against v1.0 still resolves - which is the whole
 // reason the version is two numbers. This is the rule's first real use.
-// 1.2 appends InstallHook and HookProbeTarget. Appending bumps the MINOR, so
-// every mod built against v1.0 or v1.1 still resolves.
-constexpr uint16_t kVersionMinor = 2;
+// 1.3 appends HookProbeClaimTag and HookProbeMark. Appending bumps the MINOR,
+// so every mod built against v1.0, v1.1 or v1.2 still resolves.
+constexpr uint16_t kVersionMinor = 3;
 
 // The ABI version of the .wxlm format and this whole boundary. Bumped when a
 // mod built against an older host would misbehave rather than merely miss a
@@ -134,6 +135,20 @@ extern "C" inline uintptr_t CoreInstallHook(uintptr_t target, uintptr_t callback
     return original;
 }
 
+// --- appended in v1.3 ------------------------------------------------------
+//
+// The marker sequence the host verifies after the chain runs. See
+// wiixlaunch/hook_probe.hpp for why a tag is bound at CLAIM time rather than
+// trusted at MARK time.
+
+extern "C" inline uint32_t CoreHookProbeClaimTag(uint32_t tag) {
+    return WiiXLaunch::HookProbe::ClaimTag(tag);
+}
+
+extern "C" inline void CoreHookProbeMark(uint32_t tag) {
+    WiiXLaunch::HookProbe::Mark(tag);
+}
+
 // Reads a whole file. Returns bytes read, or a negative value on failure.
 // `outRead` may be null.
 extern "C" inline int32_t CoreReadFile(const char* path, void* buffer, uint32_t maxSize) {
@@ -186,6 +201,9 @@ inline const Surface::Symbol kSymbols[] = {
     // v1.2. Appended, never inserted.
     WIIXL_SURFACE_SYMBOL("InstallHook",     &CoreInstallHook),
     WIIXL_SURFACE_SYMBOL("HookProbeTarget", &CoreHookProbeTarget),
+    // v1.3. Appended, never inserted.
+    WIIXL_SURFACE_SYMBOL("HookProbeClaimTag", &CoreHookProbeClaimTag),
+    WIIXL_SURFACE_SYMBOL("HookProbeMark",     &CoreHookProbeMark),
 };
 
 } // namespace impl

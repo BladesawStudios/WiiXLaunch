@@ -30,7 +30,7 @@ static int g_failures = 0;
 
 // A floor, so a suite that shrinks cannot report success over what is left of
 // itself. See the fourth rule in docs/modules.md.
-static const int kExpectedChecks = 50;
+static const int kExpectedChecks = 52;
 
 static void ok(const char* what, bool cond) {
     ++g_checks;
@@ -225,19 +225,76 @@ int main() {
     ok("stwu is not a branch",            !H::IsPcRelativeBranch(0x9421FFE0u));
     ok("mflr is not a branch",            !H::IsPcRelativeBranch(0x7C0802A6u));
 
+    // THE REFUSAL PATH NEEDS ITS OWN COVERAGE, and this is the only place it
+    // gets any.
+    //
+    // The one real hook target in the tree - WiiXLaunch_HookProbe in
+    // src/cemu/bootstrap.cpp - is hand-written assembly chosen precisely so its
+    // prologue can never be PC-relative. That makes it a fine accept-path
+    // demonstration and a useless canary for refusal: nothing in the tree can
+    // reach the refusal branch. So it is exercised here, synthetically, in
+    // every displaced position and across every relative form.
     std::printf("\na PC-relative prologue is refused, not silently corrupted:\n");
     {
+        // b, bl, bc, bcl - the forms that survive as traps because they still
+        // execute after being moved, just to the wrong place.
+        const uint32_t relatives[4] = {
+            0x48000040u,   // b   +0x40
+            0x48000041u,   // bl  +0x40
+            0x40820010u,   // bc  +0x10
+            0x429F0005u,   // bcl 20,31,$+4  - the classic PC-getter
+        };
+        const char* names[4] = { "b", "bl", "bc", "bcl" };
+
+        int refused = 0, sitesCreated = 0, originalsLeaked = 0, targetsTouched = 0;
+
+        for (uint32_t pos = 0; pos < 4u; ++pos) {
+            for (uint32_t k = 0; k < 4u; ++k) {
+                H::ResetForTest();
+                FillPrologue();
+                uint32_t before[4];
+                g_Target[pos] = relatives[k];
+                std::memcpy(before, g_Target, sizeof(before));
+
+                uintptr_t orig = 0xDEADBEEFu;
+                const H::Install r =
+                    H::InstallHook(Addr(g_Target), 0x01810000u, "badmod", &orig);
+
+                if (r == H::Install::PrologueNotRelocatable) ++refused;
+                if (H::SiteCount() != 0) ++sitesCreated;
+                if (orig != 0) ++originalsLeaked;
+                if (std::memcmp(before, g_Target, sizeof(before)) != 0) ++targetsTouched;
+            }
+        }
+
+        ok("every relative form in every displaced position is refused", refused == 16);
+        ok("a refused hook creates no site", sitesCreated == 0);
+        ok("a refused hook hands out no Original", originalsLeaked == 0);
+        ok("a refused hook does not touch the target", targetsTouched == 0);
+        if (refused != 16) {
+            std::printf("        only %d of 16 refused\n", refused);
+        }
+
+        // The refusal has to be NAMED, because a caller that gets a generic
+        // failure cannot tell "this prologue cannot be moved" from "the arena
+        // is full", and those want different fixes.
         H::ResetForTest();
         FillPrologue();
-        g_Target[2] = 0x48000040u;             // b +0x40, third instruction
-        uintptr_t orig = 0xDEADBEEFu;
-        const H::Install r = H::InstallHook(Addr(g_Target), 0x01810000u, "badmod", &orig);
-        ok("refused with PROLOGUE-NOT-RELOCATABLE",
-           r == H::Install::PrologueNotRelocatable);
-        ok("no site was created", H::SiteCount() == 0);
-        ok("original was not handed out", orig == 0);
-        ok("the target was left untouched", g_Target[0] == 0x9421FFE0u &&
-                                            g_Target[2] == 0x48000040u);
+        g_Target[2] = 0x48000040u;
+        const H::Install r =
+            H::InstallHook(Addr(g_Target), 0x01810000u, "badmod", nullptr);
+        ok("refused by name, not generically",
+           std::strcmp(H::InstallName(r), "PROLOGUE-NOT-RELOCATABLE") == 0);
+        for (uint32_t k = 0; k < 4u; ++k) (void)names[k];
+
+        // And the accept path still accepts - a decoder that refused everything
+        // would pass every assertion above.
+        H::ResetForTest();
+        FillPrologue();
+        uintptr_t good = 0;
+        ok("an ordinary prologue is still accepted",
+           H::InstallHook(Addr(g_Target), 0x01810000u, "goodmod", &good) == H::Install::Ok
+           && good != 0);
     }
 
     std::printf("\nTHREE DEEP - first installed runs first:\n");

@@ -34,16 +34,30 @@ extern "C" {
     extern uintptr_t wiixl_import__wiixl_core__InstallHook(uintptr_t target,
                                                            uintptr_t callback);
     extern uintptr_t wiixl_import__wiixl_core__HookProbeTarget(void);
+    // v1.3. The tag is bound to THIS module at claim time, by the host, from
+    // whichever module the loader is running - not from anything passed here.
+    // See wiixlaunch/hook_probe.hpp.
+    extern uint32_t  wiixl_import__wiixl_core__HookProbeClaimTag(uint32_t tag);
+    extern void      wiixl_import__wiixl_core__HookProbeMark(uint32_t tag);
 }
 
 using LogFn    = void (*)(const char*);
 using HookFn   = uintptr_t (*)(uintptr_t, uintptr_t);
 using TargetFn = uintptr_t (*)(void);
 using VoidFn   = void (*)(void);
+using ClaimFn  = uint32_t (*)(uint32_t);
+using MarkFn   = void (*)(uint32_t);
+
+// This module's marker. Self-chosen, but worthless on its own: the host refuses
+// a tag another module already claimed, and records the binding itself, so the
+// ordering assertion is against the host's record rather than this number.
+static const uint32_t kTag = 0xB2B2B2B2u;
 
 static LogFn    volatile g_Log    = &wiixl_import__wiixl_core__Log;
 static HookFn   volatile g_Hook   = &wiixl_import__wiixl_core__InstallHook;
 static TargetFn volatile g_Target = &wiixl_import__wiixl_core__HookProbeTarget;
+static ClaimFn  volatile g_Claim = &wiixl_import__wiixl_core__HookProbeClaimTag;
+static MarkFn   volatile g_Mark  = &wiixl_import__wiixl_core__HookProbeMark;
 
 // The next link in the chain. Written by the host at install time, so volatile
 // for the same reason the imports are - and read back through the pointer
@@ -52,6 +66,11 @@ static VoidFn volatile g_Original = nullptr;
 
 extern "C" __attribute__((used)) void WiiXLaunch_ModHook() {
     LogFn log = g_Log;
+    MarkFn mark = g_Mark;
+
+    // The mark is what the host verifies; the log line is for a human reading
+    // the boot. Both, because a failing run wants the narrative and the verdict.
+    if (mark) mark(kTag);
     if (log) log("HookProbe: b_second ran (before Original)");
 
     // Calling Original is what continues the chain. A mod that returns here
@@ -60,6 +79,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModHook() {
     VoidFn next = g_Original;
     if (next) next();
 
+    if (mark) mark(kTag);
     if (log) log("HookProbe: b_second ran (after Original)");
 }
 
@@ -71,6 +91,16 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
     HookFn install = g_Hook;
     if (!getTarget || !install) {
         log("b_second: wiixl.core v1.2 symbols missing - not hooking");
+        return;
+    }
+
+    // Claim the tag BEFORE hooking. The host binds it to this module because
+    // this is the module it is currently running - the binding is the host's
+    // observation, not this module's assertion.
+    ClaimFn claim = g_Claim;
+    if (claim && !claim(kTag)) {
+        log("b_second: tag claim refused - not hooking, since the host could not "
+            "attribute the marks");
         return;
     }
 
