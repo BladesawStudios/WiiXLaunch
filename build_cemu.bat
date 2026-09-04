@@ -73,6 +73,26 @@ if errorlevel 1 exit /b 1
 python scripts\test_wxlm.py
 if errorlevel 1 exit /b 1
 
+:: --- the sample .wxlm module ---------------------------------------------
+:: Built with its own linker script: linked at 0 like the host payload, but
+:: keeping .init_array, because the loader is the only thing that will ever
+:: run a module's static constructors.
+:: -lgcc is needed even under -nostdlib: GCC emits calls to libgcc's PowerPC
+:: register save/restore helpers (_restgpr_*), and without it they stay
+:: undefined and wxlm.py rejects the module.
+"%DKP_PPC_GXX%" ^
+  -std=gnu++20 -fno-pie -fno-pic -msdata=none -Os ^
+  -ffreestanding -fno-exceptions -fno-rtti ^
+  -D__CEMU__=1 -DWIIXL_CEMU=1 ^
+  -nostartfiles -nostdlib -T scripts\wxlm_mod.ld -Wl,-q ^
+  -Wl,--unresolved-symbols=ignore-all ^
+  examples\sample_mod\mod.cpp -lgcc ^
+  -o build\sample_mod.elf
+if errorlevel 1 exit /b 1
+
+python scripts\wxlm.py build\sample_mod.elf build\sample.wxlm --id sample --phase load
+if errorlevel 1 exit /b 1
+
 python scripts\deploy.py
 if errorlevel 1 exit /b 1
 echo Cemu build complete!

@@ -30,3 +30,7 @@ tools/format_test/*.obj
 # host test artefacts
 build/empty_main.cpp
 build/wiixlaunch_cemu_hosttest
+
+# module build artefacts
+build/sample_mod.elf
+build/sample.wxlm

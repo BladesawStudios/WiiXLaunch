@@ -607,6 +607,18 @@ version = 7
     print(f"[Cemu] Load-point probe file -> content/WiiXLaunch/mods/probe.bin "
           f"({len(probe_body)} bytes, magic {probe_magic.decode()})")
 
+    # The sample module, if this build produced one. Copied rather than
+    # generated: build_cemu.bat compiles and packs it, because the flags belong
+    # with the other compile flags.
+    sample_src = os.path.join(root_dir, "build", "sample.wxlm")
+    if os.path.exists(sample_src):
+        shutil.copy2(sample_src, os.path.join(probe_dir, "sample.wxlm"))
+        print(f"[Cemu] Module -> content/WiiXLaunch/mods/sample.wxlm "
+              f"({os.path.getsize(sample_src)} bytes)")
+    else:
+        print("[Cemu] No build/sample.wxlm - the pack ships no module, and the loader "
+              "will log that it found nothing to load")
+
     # Package src/resources into content/WiiXLaunch/ for Cemu graphic pack
     resources_src = os.path.join(root_dir, "src", "resources")
     resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")

@@ -139,16 +139,59 @@ def read_symbols(readelf, elf):
     return syms
 
 
-def read_relocations(readelf, elf, payload, payload_size):
-    """Same extraction deploy.py performs for the host.
+IMPORT_PREFIX = "wiixl_import__"
+
+
+def decode_import_symbol(name):
+    """wiixl_import__wiixl_core__Log -> ("wiixl.core", "Log"), or None.
+
+    The surface name has its dots written as single underscores, and the symbol
+    is separated by a double underscore. Encoding it in the symbol name means
+    the module declares its own imports and nothing has to be repeated on a
+    command line where the two could disagree.
+    """
+    if not name.startswith(IMPORT_PREFIX):
+        return None
+    rest = name[len(IMPORT_PREFIX):]
+    if "__" not in rest:
+        raise SystemExit(
+            "[wxlm] %r looks like an import but has no '__' separating the surface "
+            "from the symbol. Expected wiixl_import__<surface>__<Symbol>, with dots "
+            "in the surface written as underscores." % name)
+    surface_part, symbol = rest.rsplit("__", 1)
+    return surface_part.replace("_", "."), symbol
+
+
+def read_undefined_symbols(readelf, elf):
+    """Symbols the module references but does not define - its imports."""
+    out = subprocess.check_output([readelf, "-sW", elf], text=True)
+    undefined = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) < 8:
+            continue
+        if parts[6] == "UND":
+            undefined.add(parts[7])
+    return undefined
+
+
+def read_relocations(readelf, elf, payload, payload_size, undefined):
+    """Same extraction deploy.py performs for the host, plus imports.
 
     ADDR32 sites already hold their own base-0 target, so the value is read back
     out of the payload. A 16-bit half cannot be recovered from the instruction -
     it is half an address, and HA additionally folds in a sign-extension carry -
     so those carry the relocation's own resolved S+A.
+
+    A relocation against an UNDEFINED wiixl_import__* symbol is not a module-
+    relative address at all; it becomes a kind-4 entry whose value indexes the
+    import table, and the loader resolves it through the surface registry.
     """
     out = subprocess.check_output([readelf, "-rW", elf], text=True)
     relocs = []
+    import_specs = []      # (surface, symbol) in first-seen order
+    import_index = {}
+
     for line in out.splitlines():
         parts = line.split()
         if len(parts) < 4:
@@ -162,6 +205,39 @@ def read_relocations(readelf, elf, payload, payload_size):
             s_plus_a = int(parts[3], 16)
         except (ValueError, IndexError):
             continue
+
+        # readelf prints the symbol name after the value, when there is one.
+        sym_name = parts[4] if len(parts) > 4 else ""
+        if sym_name.endswith(" + 0"):
+            sym_name = sym_name[:-4]
+
+        decoded = decode_import_symbol(sym_name) if sym_name in undefined else None
+        if decoded is not None:
+            if kind_name != "R_PPC_ADDR32":
+                raise SystemExit(
+                    "[wxlm] %s is imported by %s, which the loader cannot fix up.\n"
+                    "  An import's ADDRESS must be taken into a variable, never called\n"
+                    "  directly - calling one emits a branch relocation that cannot reach\n"
+                    "  an arbitrary host address. See examples/sample_mod/mod.cpp."
+                    % (sym_name, kind_name))
+            if offset + 4 > payload_size:
+                raise SystemExit(
+                    "[wxlm] import relocation for %s is at 0x%X, past the %d-byte payload"
+                    % (sym_name, offset, payload_size))
+            surface, symbol = decoded
+            key = (surface, symbol)
+            if key not in import_index:
+                import_index[key] = len(import_specs)
+                import_specs.append(key)
+            relocs.append((RELOC_IMPORT, offset, import_index[key]))
+            continue
+
+        if sym_name in undefined and sym_name:
+            raise SystemExit(
+                "[wxlm] %s references undefined symbol %r, which is not an import.\n"
+                "  A module cannot link against the host. Reach host functions through\n"
+                "  wiixl_import__<surface>__<Symbol>; anything else has to be defined\n"
+                "  inside the module." % (os.path.basename(elf), sym_name))
 
         if kind_name == "R_PPC_ADDR32":
             if offset + 4 <= payload_size:
@@ -182,7 +258,27 @@ def read_relocations(readelf, elf, payload, payload_size):
             raise SystemExit(
                 "[wxlm] relocation offset 0x%X does not fit the 24-bit field in the "
                 "table header - the payload has outgrown 16 MB" % offset)
-    return relocs
+    return relocs, import_specs
+
+
+def read_bss_size(readelf, elf):
+    """objcopy -O binary drops .bss, so its size has to come from the sections."""
+    out = subprocess.check_output([readelf, "-SW", elf], text=True)
+    total = 0
+    for line in out.splitlines():
+        parts = line.replace("[", " ").replace("]", " ").split()
+        if len(parts) < 7:
+            continue
+        # Nr Name Type Addr Off Size ...
+        try:
+            idx = parts.index("NOBITS")
+        except ValueError:
+            continue
+        try:
+            total += int(parts[idx + 3], 16)
+        except (IndexError, ValueError):
+            pass
+    return total
 
 
 def parse_import_spec(spec):
@@ -235,11 +331,20 @@ def build(args):
             "[wxlm] entry symbol %r is at 0x%X, past the end of the %d-byte payload"
             % (args.entry, entry_offset, payload_size))
 
-    relocs = read_relocations(readelf, args.elf, payload, payload_size)
+    undefined = read_undefined_symbols(readelf, args.elf)
+    relocs, discovered = read_relocations(readelf, args.elf, payload, payload_size,
+                                          undefined)
+    bss_size = args.bss_size if args.bss_size else read_bss_size(readelf, args.elf)
 
     strings = StringBlob()
 
+    # Imports discovered from the ELF come first, because their order IS the
+    # index a kind-4 relocation carries. Command-line --import entries are
+    # additional requirements, appended after.
     imports = []
+    for surface, symbol in discovered:
+        imports.append((strings.add(surface), strings.add(symbol),
+                        fnv1a32(symbol), 1, 0))
     for spec in args.imports:
         surface, symbol, major, minor = parse_import_spec(spec)
         imports.append((strings.add(surface), strings.add(symbol),
@@ -256,6 +361,10 @@ def build(args):
     # Otherwise a module could import from a surface it never declared and get
     # an UNRESOLVED-IMPORT at the site instead of a MISSING-SURFACE up front,
     # which is a worse diagnostic for the same problem.
+    for surface, _symbol in discovered:
+        if surface not in required_names:
+            required.append((strings.add(surface), 1, 0))
+            required_names.add(surface)
     for spec in args.imports:
         surface, _symbol, major, minor = parse_import_spec(spec)
         if surface not in required_names:
@@ -344,7 +453,7 @@ def build(args):
         string_offset, len(string_bytes),
         entry_offset,
         init_offset, init_count,
-        args.bss_size,
+        bss_size,
         args.heap_request,
         0, 0, 0, 0,               # declared hooks / patches, stages 6 and 7
         0, 0, 0, 0,               # reserved1
@@ -357,11 +466,13 @@ def build(args):
     print("[wxlm] %s  id=%s v%d.%d.%d  phase=%s" %
           (os.path.basename(args.output), args.id,
            args.ver_major, args.ver_minor, args.ver_patch, args.phase))
+    for surface, symbol in discovered:
+        print("[wxlm]   import %s:%s" % (surface, symbol))
     print("[wxlm]   payload %d B, %d relocs, %d imports, %d exports, %d required, "
           "%d B strings" % (payload_size, len(relocs), len(imports), len(exports),
                             len(required), len(string_bytes)))
     print("[wxlm]   entry %s @0x%X, init_array %d, bss %d B, heap request %d B" %
-          (args.entry, entry_offset, init_count, args.bss_size, args.heap_request))
+          (args.entry, entry_offset, init_count, bss_size, args.heap_request))
     print("[wxlm]   file %d B, content crc32 0x%08X" % (file_size, content_crc))
     return 0
 
