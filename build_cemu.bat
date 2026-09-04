@@ -108,6 +108,19 @@ if errorlevel 2 (
     exit /b 1
 )
 
+:: The central hook manager. Verifies a three-deep chain by DECODING the
+:: instructions it emitted - call order, the prologue captured once and exactly,
+:: and each Original pointing where it should. It cannot execute PowerPC; the
+:: boot log proves the chain RUNS, this proves it was BUILT right.
+call tools\hook_test\build.bat
+if errorlevel 2 (
+    echo [hook_test] SETUP PROBLEM - MSVC not found; see the loader_fuzz note below.
+    exit /b 1
+) else if errorlevel 1 (
+    echo [hook_test] FAILED - see above.
+    exit /b 1
+)
+
 :: Fuzz the loader. It reads data it did not produce and then writes to memory
 :: it executes, so it runs on every build rather than on request - a check that
 :: has to be remembered is a check that stops happening.

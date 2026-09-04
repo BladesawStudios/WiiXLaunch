@@ -64,6 +64,10 @@ python3 scripts/audit_gates.py
 # scripts/audit_gates.py.
 bash tools/format_test/build.sh
 
+# The central hook manager: a three-deep chain verified by decoding the
+# instructions it emitted. Construction, not execution - the boot proves that.
+bash tools/hook_test/build.sh
+
 # Fuzz the loader. Runs on every build rather than on request - a check that
 # has to be remembered is a check that stops happening.
 #
