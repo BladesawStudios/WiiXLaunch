@@ -15,6 +15,7 @@
 #include <wiixlaunch/loader/surface.hpp>
 #include <wiixlaunch/debug_log.hpp>
 #include <wiixlaunch/fs.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -27,7 +28,10 @@ namespace WiiXLaunch::Core {
 
 constexpr const char* kSurfaceName = "wiixl.core";
 constexpr uint16_t kVersionMajor = 1;
-constexpr uint16_t kVersionMinor = 0;
+// 1.1 appends HeapGranted / HeapUsed / HeapRemaining. Appending bumps the
+// MINOR, so every mod built against v1.0 still resolves - which is the whole
+// reason the version is two numbers. This is the rule's first real use.
+constexpr uint16_t kVersionMinor = 1;
 
 // The ABI version of the .wxlm format and this whole boundary. Bumped when a
 // mod built against an older host would misbehave rather than merely miss a
@@ -55,12 +59,35 @@ extern "C" inline uint32_t CoreAbiVersion() {
 // sub-arena; the signature does not change, which is the point of routing mod
 // allocation through a surface now rather than letting mods call the backend.
 extern "C" inline void* CoreAlloc(uint32_t size, uint32_t align) {
-#if WIIXL_CEMU
-    return WiiXLaunch::Backend::AllocCemuHeap(size, align ? align : 256);
-#else
-    (void)size; (void)align;
-    return nullptr;
-#endif
+    // Through the arena, so the allocation is charged to - and bounded by - the
+    // calling module's own grant. It used to go straight to the code-cave bump
+    // allocator, where whoever asked first got whatever was left and an
+    // over-allocating mod starved the ones loaded after it.
+    return Arena::Alloc(size, align ? align : 64);
+}
+
+// --- appended in v1.1 ------------------------------------------------------
+//
+// How much this module was actually granted, how much it has spent, and how
+// much is left. Callable DURING the load phase, before allocating.
+//
+// A module on the best-effort path (heapRequest == 0) is told what it got
+// rather than having to discover it by allocating until null. "Allocate until
+// null" is not a design; it is finding out by failing, in a place where failing
+// means a half-initialised mod running in someone's game.
+//
+// A module that stated a heapRequest already knows its size, but not what it
+// has spent, so all three are useful to both.
+extern "C" inline uint32_t CoreHeapGranted() {
+    return Arena::GrantedTo(Arena::Current());
+}
+
+extern "C" inline uint32_t CoreHeapUsed() {
+    return Arena::UsedIn(Arena::Current());
+}
+
+extern "C" inline uint32_t CoreHeapRemaining() {
+    return Arena::RemainingIn(Arena::Current());
 }
 
 // Reads a whole file. Returns bytes read, or a negative value on failure.
@@ -107,6 +134,11 @@ inline const Surface::Symbol kSymbols[] = {
     WIIXL_SURFACE_SYMBOL("ReadFile",    &CoreReadFile),
     WIIXL_SURFACE_SYMBOL("FileExists",  &CoreFileExists),
     WIIXL_SURFACE_SYMBOL("ImageBase",   &CoreImageBase),
+    // v1.1. APPENDED, never inserted: a mod built against v1.0 hashes the same
+    // six names and finds them at the same version, so it keeps working.
+    WIIXL_SURFACE_SYMBOL("HeapGranted",   &CoreHeapGranted),
+    WIIXL_SURFACE_SYMBOL("HeapUsed",      &CoreHeapUsed),
+    WIIXL_SURFACE_SYMBOL("HeapRemaining", &CoreHeapRemaining),
 };
 
 } // namespace impl

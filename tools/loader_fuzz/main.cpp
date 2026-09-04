@@ -35,6 +35,7 @@
 #include <wiixlaunch/loader/loader.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/surface.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -284,8 +285,25 @@ static int g_Accepted = 0, g_Rejected = 0;
 // they cannot drift from it.
 #define OFF(field) static_cast<uint32_t>(offsetof(Wxlm::Header, field))
 
+// The arena's reservation for a host run. Real memory, so a granted sub-arena
+// is a range the loader can actually write into - the fuzzer checks that it
+// writes only inside its grant, and that needs the grant to be genuine.
+namespace arena_backing {
+constexpr uint32_t kSize = 2u << 20;
+uint8_t* g_Block = nullptr;
+
+void Init() {
+    if (!g_Block) g_Block = static_cast<uint8_t*>(std::calloc(kSize + 64, 1));
+    uintptr_t p = (reinterpret_cast<uintptr_t>(g_Block) + 63u) & ~static_cast<uintptr_t>(63u);
+    WiiXLaunch::Arena::SetReservation(p, kSize);
+}
+} // namespace arena_backing
+
 static Reject RunLoader(std::vector<uint8_t>& bytes) {
     alloc::Reset();
+    // Fresh grants per case: a module refused in one case must not leave the
+    // arena carved for the next, or later cases would fail for the wrong reason.
+    arena_backing::Init();
     MemoryReader reader(bytes);
     return Loader::LoadFrom(reader);
 }
@@ -342,6 +360,7 @@ static void ExpectAccepted(const char* what, std::vector<uint8_t> bytes) {
 
 int main() {
     Loader::SetMemoryHooks(&alloc::Alloc, &alloc::Flush);
+    arena_backing::Init();
     WiiXLaunch::Core::Register();
 
     const Baseline base = MakeBaseline();
@@ -680,6 +699,7 @@ int main() {
             const bool oracleSaysValid = Oracle(v);
 
             alloc::Reset();
+            arena_backing::Init();
             MemoryReader reader(v);
             const Reject got = Loader::LoadFrom(reader);
             ++g_Cases;

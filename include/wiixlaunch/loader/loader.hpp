@@ -36,6 +36,7 @@
 #include <wiixlaunch/loader/wxlm.hpp>
 #include <wiixlaunch/loader/surface.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -98,6 +99,7 @@ struct LoadedModule {
     uint8_t  phase;
     bool     entryCalled;
     bool     valid;
+    Arena::SubArena* arena;
 };
 
 namespace impl {
@@ -464,7 +466,6 @@ inline Reject LoadFrom(Reader& file) {
                   req.versionMajor, req.versionMinor);
     }
 
-    // --- memory --------------------------------------------------------------
     //
     // payloadSize + bssSize in 32 bits can WRAP, and the consequence is not a
     // failed allocation - it is a successful small one followed by a zeroing
@@ -484,18 +485,72 @@ inline Reject LoadFrom(Reader& file) {
         return Reject::BadSectionBounds;
     }
     const uint32_t imageSize = static_cast<uint32_t>(imageSize64);
-    uint8_t* image = static_cast<uint8_t*>(impl::g_Alloc(imageSize, 64));
+
+    // The module's own bounded piece, acquired AFTER the size arithmetic above
+    // has been validated and BEFORE anything is placed. Both halves matter: a
+    // module whose sizes do not add up must be refused for that reason rather
+    // than for running out of memory, and a module that cannot be given what it
+    // needs must be refused without having been partially written anywhere.
+    //
+    // Acquiring first was the original order and the fuzzer rejected it - every
+    // malformed-size case came back NO-MEMORY instead of naming the real fault.
+    //
+    // The module's own bounded piece, acquired BEFORE anything is placed, so a
+    // module that cannot be given what it needs is refused without having been
+    // partially written anywhere.
+    //
+    // The image itself is charged to that piece too. A module's footprint is
+    // its code plus whatever it allocates, and leaving the image outside the
+    // bound would mean a large module quietly costing more than its grant says.
+    Arena::SubArena* sub = nullptr;
+    {
+        const uint32_t need = h.payloadSize + h.bssSize;
+        uint32_t request = h.heapRequest;
+        if (request != 0) {
+            // A stated requirement covers the module's own allocations; the
+            // image has to fit as well, so the host reserves both.
+            const uint64_t total = static_cast<uint64_t>(request) + need;
+            if (total > 0xFFFFFFFFull) {
+                WIIXL_LOG("[loader:%s] %s: heapRequest %u plus a %u-byte image does not "
+                          "fit a 32-bit size", id, RejectName(Reject::BadSectionBounds),
+                          request, need);
+                return Reject::BadSectionBounds;
+            }
+            request = static_cast<uint32_t>(total);
+        }
+
+        const Arena::Grant g = Arena::Acquire(id, request, &sub);
+        if (g != Arena::Grant::Ok) {
+            WIIXL_LOG("[loader:%s] %s: arena said %s", id,
+                      RejectName(Reject::NoMemory), Arena::GrantName(g));
+            return Reject::NoMemory;
+        }
+        if (Arena::GrantedTo(sub) < need) {
+            WIIXL_LOG("[loader:%s] %s: granted %u bytes but the image alone is %u "
+                      "(payload %u + bss %u)", id, RejectName(Reject::NoMemory),
+                      Arena::GrantedTo(sub), need, h.payloadSize, h.bssSize);
+            WIIXL_LOG("[loader:%s] %s", id, Arena::kSharedArenaNote);
+            return Reject::NoMemory;
+        }
+    }
+
+    // Allocations are charged to this module from here until its entry returns.
+    Arena::SetCurrent(sub);
+    uint8_t* image = static_cast<uint8_t*>(Arena::AllocIn(*sub, imageSize, 64));
     if (!image) {
-        WIIXL_LOG("[loader:%s] %s: wanted %u B (payload %u + bss %u). heapRequest was "
-                  "%u, but a request is not a grant and there was nothing left to grant.",
+        WIIXL_LOG("[loader:%s] %s: wanted %u B for the image (payload %u + bss %u) "
+                  "inside a %u-byte grant with %u used",
                   id, RejectName(Reject::NoMemory), imageSize, h.payloadSize, h.bssSize,
-                  h.heapRequest);
+                  Arena::GrantedTo(sub), Arena::UsedIn(sub));
+        WIIXL_LOG("[loader:%s] %s", id, Arena::kSharedArenaNote);
+        Arena::SetCurrent(nullptr);
         return Reject::NoMemory;
     }
 
     if (!impl::ReadAligned(file, h.payloadOffset, image, h.payloadSize)) {
         WIIXL_LOG("[loader:%s] %s: short read of the %u-byte payload",
                   id, RejectName(Reject::ReadFailed), h.payloadSize);
+        Arena::SetCurrent(nullptr);
         return Reject::ReadFailed;
     }
     for (uint32_t i = 0; i < h.bssSize; ++i) image[h.payloadSize + i] = 0;
@@ -511,6 +566,7 @@ inline Reject LoadFrom(Reader& file) {
         if (impl::ReadVia(file, h.relocOffset + i * 8u, pair, 8) != 8) {
             WIIXL_LOG("[loader:%s] %s: reading relocation %u",
                       id, RejectName(Reject::ReadFailed), i);
+            Arena::SetCurrent(nullptr);
             return Reject::ReadFailed;
         }
         const uint32_t kind = pair[0] >> 24;
@@ -520,6 +576,7 @@ inline Reject LoadFrom(Reader& file) {
         if (offset + 4 > h.payloadSize) {
             WIIXL_LOG("[loader:%s] %s: relocation %u targets +0x%X, payload is %u B",
                       id, RejectName(Reject::BadRelocation), i, offset, h.payloadSize);
+            Arena::SetCurrent(nullptr);
             return Reject::BadRelocation;
         }
 
@@ -529,12 +586,14 @@ inline Reject LoadFrom(Reader& file) {
             if (value >= h.importCount) {
                 WIIXL_LOG("[loader:%s] %s: relocation %u names import %u of %u",
                           id, RejectName(Reject::BadRelocation), i, value, h.importCount);
+                Arena::SetCurrent(nullptr);
                 return Reject::BadRelocation;
             }
             Wxlm::ImportEntry imp{};
             if (impl::ReadVia(file, h.importOffset + value * sizeof(imp), &imp, sizeof(imp)) != sizeof(imp)) {
                 WIIXL_LOG("[loader:%s] %s: reading import %u",
                           id, RejectName(Reject::ReadFailed), value);
+                Arena::SetCurrent(nullptr);
                 return Reject::ReadFailed;
             }
             char surfaceName[64] = {};
@@ -551,6 +610,7 @@ inline Reject LoadFrom(Reader& file) {
                           "rather than a missing module.",
                           id, RejectName(Reject::UnresolvedImport), surfaceName,
                           symbolName, imp.symbolHash);
+                Arena::SetCurrent(nullptr);
                 return Reject::UnresolvedImport;
             }
             *reinterpret_cast<uint32_t*>(base + offset) =
@@ -574,6 +634,7 @@ inline Reject LoadFrom(Reader& file) {
             default:
                 WIIXL_LOG("[loader:%s] %s: relocation %u has unknown kind %u",
                           id, RejectName(Reject::BadRelocation), i, kind);
+                Arena::SetCurrent(nullptr);
                 return Reject::BadRelocation;
         }
     }
@@ -598,6 +659,7 @@ inline Reject LoadFrom(Reader& file) {
     m.phase = h.phase;
     m.entryCalled = false;
     m.valid = true;
+    m.arena = sub;
 
     // --- init_array ----------------------------------------------------------
     // Nothing else will ever run these: the flat build has no .init_array output
@@ -625,8 +687,10 @@ inline Reject LoadFrom(Reader& file) {
 #endif
     }
 
-    WIIXL_LOG("[loader:%s] LOADED, entry at %p, waiting for phase %u",
-              id, reinterpret_cast<void*>(base + h.entryOffset), h.phase);
+    WIIXL_LOG("[loader:%s] LOADED, entry at %p, waiting for phase %u. Arena: %u of %u "
+              "bytes used, %u left for this module.",
+              id, reinterpret_cast<void*>(base + h.entryOffset), h.phase,
+              Arena::UsedIn(sub), Arena::GrantedTo(sub), Arena::RemainingIn(sub));
     return Reject::None;
 }
 
@@ -652,8 +716,11 @@ inline void RunPhase(Wxlm::Phase phase) {
     WIIXL_LOG("[loader:%s] phase %u reached, calling entry at %p",
               m.id, m.phase, reinterpret_cast<void*>(entry));
     m.entryCalled = true;
+    Arena::SetCurrent(m.arena);
     entry();
-    WIIXL_LOG("[loader:%s] entry returned", m.id);
+    Arena::SetCurrent(nullptr);
+    WIIXL_LOG("[loader:%s] entry returned, %u of %u arena bytes used",
+              m.id, Arena::UsedIn(m.arena), Arena::GrantedTo(m.arena));
 #endif
 }
 
