@@ -325,12 +325,28 @@ version = 7
             # can call. That failure is completely silent at runtime: the calls
             # through it read a null table pointer.
             #
-            # This is not hypothetical. It is how base's coreinit memory shims
-            # shipped unreachable for a while: g_CemuMemShimTableOffset is an
-            # inline variable, nothing odr-used it, so GCC never emitted it and
-            # the skip below quietly did nothing. The fix on the C++ side is
-            # __attribute__((used)) on the global (see include/wiixlaunch/mem.hpp);
-            # the fix here is to stop skipping.
+            # THE RULE, because this will keep coming up: any global written by
+            # one tool and read by another, referenced from no C++ code at all,
+            # MUST be __attribute__((used)).
+            #
+            # These offset globals are the type case. Nothing in C++ ever
+            # references them - the only two consumers are this script, which
+            # patches the offset in, and the .asm table spliced into the codecave
+            # afterwards. Neither is visible to the compiler. They are declared
+            # `inline` in headers, and GCC emits an inline variable only when
+            # some translation unit odr-uses it, so without `used` the symbol is
+            # simply absent: nothing to patch here, and at runtime a shim table
+            # sitting in the codecave that every call reads a null pointer for.
+            # Silent at build time, silent at boot, wrong only in the log that
+            # never appears.
+            #
+            # That is exactly how base's coreinit memory shims shipped
+            # unreachable for a while (g_CemuMemShimTableOffset), and the skip
+            # this replaced is what hid it. Expect more symbols in this category
+            # as the module loader grows - anything the .wxlm writer fills in or
+            # the surface registry resolves has the same shape. See
+            # include/wiixlaunch/mem.hpp for the declaration to copy, and the
+            # matching bullet in docs/modules.md.
             m = offset_symbol_re.search(asm_text)
             if m:
                 symbol_name = m.group(1)
