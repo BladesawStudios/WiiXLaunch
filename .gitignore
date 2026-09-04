@@ -20,3 +20,9 @@ mystufflol/
 scripts/__pycache__/
 deploy/
 scripts/__pycache__
+
+# format_test build artefacts
+tools/format_test/formatter_extract.hpp
+tools/format_test/format_test.exe
+tools/format_test/format_test
+tools/format_test/*.obj

@@ -494,23 +494,29 @@ version = 7
     # the probe reports NOT-FOUND for the uninteresting reason that nothing ever
     # shipped one, which answers nothing.
     #
-    # CASE MATTERS, and this is why the directory is WiiXLaunch and not
-    # wiixlaunch. Wii U's filesystem is case-sensitive, but the HOST filesystem
-    # this pack is written on may not be: on Windows/NTFS, asking for
-    # content/wiixlaunch/ when content/WiiXLaunch/ already exists (created by
-    # pack_resources.py for logo.bin) silently resolves to the existing
-    # directory, so the file ships under the capitalised name whatever is
-    # written here. Two directories differing only in case cannot coexist there
-    # at all.
+    # CANONICAL CASE: content/WiiXLaunch/. Nothing else ships, and this is
+    # enforced below rather than left to convention.
     #
-    # Rather than guess whether Cemu's content overlay lookup is case-sensitive,
-    # the probe asks for BOTH spellings and logs which one answered - see the
-    # PACK and PACK-LC probes in load_point.hpp. Stage 8 picks the layout once
-    # that is known instead of assuming.
+    # Wii U's filesystem is case-sensitive. The host filesystem this pack is
+    # BUILT on usually is not: on Windows/NTFS, asking for content/wiixlaunch/
+    # when content/WiiXLaunch/ already exists silently resolves to the existing
+    # directory, so a lower-case path in this script ships under the capitalised
+    # name anyway - and two directories differing only in case cannot coexist
+    # there at all. A boot on Windows therefore cannot tell you which spelling
+    # is correct; it resolves both. Linux Cemu will not.
     #
-    # Remove this once the load point is settled - it exists only so one boot
-    # answers the overlay question.
-    probe_dir = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch", "mods")
+    # WiiXLaunch wins because it is what already ships: pack_resources.py writes
+    # content/WiiXLaunch/logo.bin, and GX2::LoadTexture("WiiXLaunch/logo.bin")
+    # and the docs all name it that way. Changing those to match a lower-case
+    # mods/ would be a bigger and more breakable change than picking the
+    # capitalisation already in use.
+    #
+    # The PACK-LC probe in load_point.hpp deliberately asks for the lower-case
+    # spelling. On a case-insensitive host it answers (NTFS resolving both); on
+    # a case-sensitive one it must report NOT-FOUND, which is the correct result
+    # and confirms this enforcement is doing something.
+    WIIXL_CONTENT_DIR = "WiiXLaunch"
+    probe_dir = os.path.join(cemu_deploy_dir, "content", WIIXL_CONTENT_DIR, "mods")
     os.makedirs(probe_dir, exist_ok=True)
     probe_path = os.path.join(probe_dir, "probe.bin")
     probe_magic = b"WXLP"
@@ -528,6 +534,25 @@ version = 7
     if os.path.exists(resources_src):
         pack_script = os.path.join(root_dir, "scripts", "pack_resources.py")
         subprocess.run([sys.executable, pack_script, resources_src, resources_dst], check=True)
+
+    # Enforce the canonical capitalisation on the tree that actually ships.
+    #
+    # A case-insensitive build host will happily produce content/wiixlaunch/ or
+    # content/WIIXLAUNCH/ if some path string drifts, and nothing on Windows
+    # will ever complain - the mistake only surfaces on a real Wii U or on Linux
+    # Cemu, as a mod that silently is not found. Checking the emitted names here
+    # is the only place it can be caught on the machine that built it.
+    content_root = os.path.join(cemu_deploy_dir, "content")
+    if os.path.isdir(content_root):
+        for entry in os.listdir(content_root):
+            if entry.lower() == WIIXL_CONTENT_DIR.lower() and entry != WIIXL_CONTENT_DIR:
+                raise RuntimeError(
+                    f"Graphic pack content directory is named '{entry}', but the canonical "
+                    f"spelling is '{WIIXL_CONTENT_DIR}'.\n"
+                    f"  Wii U's filesystem is case-sensitive; this builds fine here and fails "
+                    f"to find its files on hardware and on Linux Cemu.\n"
+                    f"  Rename {content_root}{os.sep}{entry} to "
+                    f"{content_root}{os.sep}{WIIXL_CONTENT_DIR}.")
 
     print("\nDeployment structures ready in:")
     print(f" - Switch (Console / Ryujinx / Yuzu): {switch_deploy_dir}")
