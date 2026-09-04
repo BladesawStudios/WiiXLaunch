@@ -68,7 +68,8 @@ inline void AppendStr(char* buf, uint32_t& len, uint32_t cap, const char* s) {
     while (*s) AppendChar(buf, len, cap, *s++);
 }
 
-inline void AppendUInt(char* buf, uint32_t& len, uint32_t cap, unsigned long long value, int base, bool upper) {
+inline void AppendUInt(char* buf, uint32_t& len, uint32_t cap, unsigned long long value, int base, bool upper,
+                       int width = 0, bool zeroPad = false) {
     char digits[24];
     int n = 0;
     if (value == 0) digits[n++] = '0';
@@ -77,15 +78,18 @@ inline void AppendUInt(char* buf, uint32_t& len, uint32_t cap, unsigned long lon
         digits[n++] = d < 10 ? static_cast<char>('0' + d) : static_cast<char>((upper ? 'A' : 'a') + d - 10);
         value /= static_cast<unsigned>(base);
     }
+    for (int i = n; i < width; ++i) AppendChar(buf, len, cap, zeroPad ? '0' : ' ');
     while (n > 0) AppendChar(buf, len, cap, digits[--n]);
 }
 
-inline void AppendInt(char* buf, uint32_t& len, uint32_t cap, long long value) {
+inline void AppendInt(char* buf, uint32_t& len, uint32_t cap, long long value,
+                      int width = 0, bool zeroPad = false) {
     if (value < 0) {
         AppendChar(buf, len, cap, '-');
-        AppendUInt(buf, len, cap, static_cast<unsigned long long>(-value), 10, false);
+        AppendUInt(buf, len, cap, static_cast<unsigned long long>(-value), 10, false,
+                   width > 0 ? width - 1 : 0, zeroPad);
     } else {
-        AppendUInt(buf, len, cap, static_cast<unsigned long long>(value), 10, false);
+        AppendUInt(buf, len, cap, static_cast<unsigned long long>(value), 10, false, width, zeroPad);
     }
 }
 
@@ -131,6 +135,20 @@ inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list ar
             continue;
         }
 
+        // Minimum field width, with an optional leading-zero flag: %02X, %8d.
+        //
+        // These used to fall through to the default branch below, which emits
+        // the '%' and one following character literally and consumes no
+        // argument - so "%02X" printed as the four characters %02X and the
+        // value was silently dropped. Nothing crashed (an unconsumed vararg is
+        // harmless) and nothing complained; a hex dump just came out as format
+        // specifiers. Width applies to the integer conversions only; %s and %f
+        // ignore it.
+        bool zeroPad = false;
+        int width = 0;
+        if (*p == '0') { zeroPad = true; p++; }
+        while (*p >= '0' && *p <= '9') { width = width * 10 + (*p - '0'); p++; }
+
         int precision = -1;
         if (*p == '.') {
             p++;
@@ -142,10 +160,10 @@ inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list ar
         }
 
         switch (*p) {
-            case 'd': case 'i': impl::AppendInt(text, len, cap, va_arg(args, int)); break;
-            case 'u': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 10, false); break;
-            case 'x': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 16, false); break;
-            case 'X': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 16, true); break;
+            case 'd': case 'i': impl::AppendInt(text, len, cap, va_arg(args, int), width, zeroPad); break;
+            case 'u': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 10, false, width, zeroPad); break;
+            case 'x': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 16, false, width, zeroPad); break;
+            case 'X': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 16, true, width, zeroPad); break;
             case 'p':
                 impl::AppendStr(text, len, cap, "0x");
                 impl::AppendUInt(text, len, cap, reinterpret_cast<uintptr_t>(va_arg(args, void*)), 16, false);
@@ -153,6 +171,10 @@ inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list ar
             case 's': impl::AppendStr(text, len, cap, va_arg(args, const char*)); break;
             case 'f': impl::AppendFloat(text, len, cap, va_arg(args, double), precision); break;
             default:
+                // Unknown conversion. Echo it rather than guessing, and note
+                // that no argument is consumed - so anything after this in the
+                // same call reads the wrong vararg. Better visibly wrong than
+                // quietly wrong.
                 impl::AppendChar(text, len, cap, '%');
                 impl::AppendChar(text, len, cap, *p);
                 break;
