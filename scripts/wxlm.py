@@ -271,6 +271,48 @@ def parse_require_spec(spec):
     return m.group(1), int(m.group(2) or 1), int(m.group(3) or 0)
 
 
+def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
+                file_size, content_crc, payload_offset, payload_size,
+                reloc_offset, reloc_count, import_offset, import_count,
+                export_offset, export_count, required_offset, required_count,
+                string_offset, string_size, entry_offset, init_offset,
+                init_count, bss_size, heap_request):
+    """The single place a .wxlm header is laid out.
+
+    Extracted out of build() so scripts/test_wxlm.py can call the real thing.
+    The gate used to read only this module CONSTANTS - HEADER_SIZE, MAGIC, the
+    entry sizes - and never asked the writer to emit a byte, so a writer whose
+    packing returned b"" passed it cleanly. See the fourth rule in
+    docs/modules.md.
+    """
+    return struct.pack(
+        HEADER_FORMAT,
+        MAGIC,
+        FORMAT_VERSION,
+        MACHINE_PPC32,
+        ENDIAN_BIG,
+        phase,
+        abi_version,
+        mod_id,
+        ver_major, ver_minor, ver_patch,
+        0,                        # reserved0
+        file_size,
+        content_crc,
+        payload_offset, payload_size,
+        reloc_offset, reloc_count,
+        import_offset, import_count,
+        export_offset, export_count,
+        required_offset, required_count,
+        string_offset, string_size,
+        entry_offset,
+        init_offset, init_count,
+        bss_size,
+        heap_request,
+        0, 0, 0, 0,               # declared hooks / patches, stages 6 and 7
+        0, 0, 0, 0,               # reserved1
+    )
+
+
 def build(args):
     readelf = find_tool("readelf")
     objcopy = find_tool("objcopy")
@@ -404,31 +446,18 @@ def build(args):
 
     content_crc = zlib.crc32(bytes(content)) & 0xFFFFFFFF
 
-    header = struct.pack(
-        HEADER_FORMAT,
-        MAGIC,
-        FORMAT_VERSION,
-        MACHINE_PPC32,
-        ENDIAN_BIG,
-        PHASES[args.phase],
-        args.abi_version,
-        mod_id,
+    header = pack_header(
+        PHASES[args.phase], args.abi_version, mod_id,
         args.ver_major, args.ver_minor, args.ver_patch,
-        0,                        # reserved0
-        file_size,
-        content_crc,
+        file_size, content_crc,
         payload_offset, payload_size,
         reloc_offset, len(relocs),
         import_offset, len(imports),
         export_offset, len(exports),
         required_offset, len(required),
         string_offset, len(string_bytes),
-        entry_offset,
-        init_offset, init_count,
-        bss_size,
-        args.heap_request,
-        0, 0, 0, 0,               # declared hooks / patches, stages 6 and 7
-        0, 0, 0, 0,               # reserved1
+        entry_offset, init_offset, init_count,
+        bss_size, args.heap_request,
     )
 
     with open(args.output, "wb") as f:

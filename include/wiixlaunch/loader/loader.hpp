@@ -548,6 +548,29 @@ inline Reject LoadFrom(Reader& file) {
         return Reject::NoMemory;
     }
 
+    // POISON BEFORE PLACING, so that "the loader zeroed my .bss" is a claim the
+    // module can actually test.
+    //
+    // THE FOURTH RULE (docs/modules.md). The sample module checks its .bss is
+    // zero and reports success - but freshly carved arena memory is very often
+    // already zero, so that check passed whether or not the zeroing step below
+    // ran. Delete the memset and the module would still have said "bss was
+    // zeroed". A check that cannot tell "correct" from "never happened" is not
+    // a check.
+    //
+    // Filling the image region with a non-zero pattern first fixes that in the
+    // only way that matters: the payload copy and the bss zero each have to
+    // overwrite it, and if either step were removed the module would see
+    // kImagePoison and say so. Bounded by imageSize, so this is proportional to
+    // the module, not to its grant.
+    // 0xCD, deliberately NOT the 0xA5 tools/loader_fuzz fills the arena with.
+    // The fuzzer distinguishes untouched arena (0xA5) from memory the loader
+    // wrote; if both poisons were the same byte the two would be
+    // indistinguishable and its liveness check would be reasoning about the
+    // wrong thing.
+    constexpr uint8_t kImagePoison = 0xCD;
+    for (uint32_t i = 0; i < imageSize; ++i) image[i] = kImagePoison;
+
     if (!impl::ReadAligned(file, h.payloadOffset, image, h.payloadSize)) {
         WIIXL_LOG("[loader:%s] %s: short read of the %u-byte payload",
                   id, RejectName(Reject::ReadFailed), h.payloadSize);
@@ -555,8 +578,9 @@ inline Reject LoadFrom(Reader& file) {
         return Reject::ReadFailed;
     }
     for (uint32_t i = 0; i < h.bssSize; ++i) image[h.payloadSize + i] = 0;
-    WIIXL_LOG("[loader:%s] image at %p, %u B (payload %u, bss %u zeroed)",
-              id, image, imageSize, h.payloadSize, h.bssSize);
+    WIIXL_LOG("[loader:%s] image at %p, %u B (payload %u read, bss %u zeroed over "
+              "0x%02X poison)",
+              id, image, imageSize, h.payloadSize, h.bssSize, kImagePoison);
 
     // --- relocate ------------------------------------------------------------
     const uintptr_t base = reinterpret_cast<uintptr_t>(image);

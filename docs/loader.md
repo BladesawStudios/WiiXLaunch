@@ -142,11 +142,19 @@ The arena is carved from both ends:
 A grant fails if it would cross the host's high-water mark; a host allocation
 fails if it would cross into carved territory.
 
-An earlier version reserved a fixed 64 KB for the host and gave modules the
-rest. That was wrong: the host is not just the framework, and
-`wiixlaunch-botw`'s GX2 layer allocates font sheets and render targets in
-megabytes. A fixed reserve either starves the host or has to be guessed so large
-it defeats the point. Two ends need no guess.
+**A game module is compiled into the payload, so its memory is the host's.**
+Mods get carved grants; the host and its game modules share one growing region.
+That is the line, and everything downstream inherits it: when
+`wiixlaunch-botw`'s GUI allocates a font sheet it is spending the host's memory,
+not a mod's, and it is bounded only by where module grants begin.
+
+That line is also the reason the fixed reserve was wrong. An earlier version
+reserved a flat 64 KB for the host and gave modules the rest — which assumed the
+host is the framework. It is not: it is the framework **plus whatever game
+module is installed**, and that is unbounded by nature. `wiixlaunch-botw`'s GX2
+layer allocates font sheets and render targets in megabytes. A fixed reserve
+either starves the host or has to be guessed so large it defeats the point. Two
+ends need no guess, because neither side has to be sized in advance.
 
 `Mem::UseCoreinitHeap()` installs a **host** provider (`Arena::SetHostProvider`)
 to move host allocation onto a coreinit base heap. Module grants are never

@@ -88,10 +88,33 @@ def main():
 
     readelf = find_readelf()
     if readelf is None:
-        print("[test_host] SKIPPED: no powerpc-eabi-readelf found")
+        # A skip is a WARNING, not a pass - the same rule loader_fuzz already
+        # follows. A check that quietly vanishes on a machine without a tool is
+        # worse than no check, because the build still says OK. Loud, because
+        # one grey line in a hundred is how this stops being noticed.
+        sys.stderr.write(
+            "\n"
+            "============================================================\n"
+            "[test_host] NOT RUN - no powerpc-eabi-readelf found.\n"
+            "[test_host] Host completeness was NOT verified for this build.\n"
+            "[test_host] Set DEVKITPPC, or install devkitPPC.\n"
+            "============================================================\n\n")
         return 0
 
     syms = read_symbols(readelf, elf)
+
+    # readelf ran but told us nothing - a changed output format, a stripped
+    # binary, a wrapper that swallowed the arguments. Without this the loop
+    # below would report every symbol missing, which reads as a code problem
+    # rather than a tooling one, or - if the required list were ever emptied -
+    # would pass having inspected an empty dict.
+    if len(syms) < len(REQUIRED):
+        sys.stderr.write(
+            "\n[test_host] readelf returned %d symbols for %s, fewer than the %d this\n"
+            "            test requires. That is a tooling failure, not a host failure:\n"
+            "            check that %s works and that the ELF is not stripped.\n\n"
+            % (len(syms), elf, len(REQUIRED), readelf))
+        return 1
 
     failures = []
     for name, why, at_zero in REQUIRED:

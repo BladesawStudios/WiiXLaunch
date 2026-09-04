@@ -27,6 +27,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 HEADER = os.path.join(ROOT, "include", "wiixlaunch", "loader", "wxlm.hpp")
 
+# Floors for what parse_asserts must find. They exist so a parse that returns
+# NOTHING is a failure rather than a vacuous pass - see the fourth rule in
+# docs/modules.md. Raise them when asserts are added; never lower them to make a
+# build go green.
+EXPECTED_MIN_SIZES = 4
+EXPECTED_MIN_OFFSETS = 8
+
 sys.path.insert(0, HERE)
 import wxlm  # noqa: E402
 
@@ -95,6 +102,29 @@ def main():
 
     failures = []
 
+    # --- did the parse find anything at all? --------------------------------
+    #
+    # THE FOURTH RULE, and this file was breaking it. The pinned-offset loop
+    # below is `for field, cxx_offset in sorted(offsets.items())`: over an EMPTY
+    # dict it runs zero times, appends zero failures, prints "0 pinned offsets"
+    # and exits 0. Deleting every offsetof static_assert from wxlm.hpp was
+    # measured to do exactly that - green build, nothing checked.
+    #
+    # The regexes are the fragile part: they do not span lines, so a reformat is
+    # enough to stop them matching. So the counts are ASSERTED, not just
+    # reported.
+    if len(sizes) < EXPECTED_MIN_SIZES:
+        failures.append(
+            "  parsed only %d sizeof static_asserts, expected at least %d - either\n"
+            "           they were removed, or parse_asserts() stopped matching them."
+            % (len(sizes), EXPECTED_MIN_SIZES))
+    if len(offsets) < EXPECTED_MIN_OFFSETS:
+        failures.append(
+            "  parsed only %d offsetof static_asserts, expected at least %d - the\n"
+            "           comparison below iterates whatever was parsed, so an empty\n"
+            "           parse checks nothing and still reports success."
+            % (len(offsets), EXPECTED_MIN_OFFSETS))
+
     # --- struct sizes --------------------------------------------------------
     for cxx_name, py_value, what in (
         ("Header", py_header_size, "HEADER_FORMAT"),
@@ -160,8 +190,19 @@ def main():
                     break
 
     # --- FNV-1a: writer must equal WiiXLaunch::Surface::Hash -----------------
+    #
+    # NOT behind an exists() guard any more. It was, and renaming surface.hpp
+    # away was measured to make this script print "CRC32 and FNV-1a verified"
+    # while verifying no such thing - a check that does not merely vanish but
+    # actively claims to have run. A guard around a check is a check that stops
+    # existing the day the file moves.
     surface_hpp = os.path.join(ROOT, "include", "wiixlaunch", "loader", "surface.hpp")
-    if os.path.exists(surface_hpp):
+    if not os.path.exists(surface_hpp):
+        failures.append(
+            "  %s is missing, so the FNV-1a agreement was not checked at all.\n"
+            "           If the header moved, update this path - do not let the check\n"
+            "           silently disappear." % surface_hpp)
+    else:
         stext = open(surface_hpp, encoding="utf-8").read()
         basis = re.search(r"h\s*=\s*(0x[0-9A-Fa-f]+)u", stext)
         prime = re.search(r"h\s\*=\s*(0x[0-9A-Fa-f]+)u", stext)
@@ -173,6 +214,47 @@ def main():
         else:
             failures.append("  could not read the FNV constants out of surface.hpp")
 
+    # --- the writer must actually emit something ----------------------------
+    #
+    # Everything above reads CONSTANTS off wxlm.py and never calls it. A writer
+    # whose packing returned b"" was measured to pass this script cleanly,
+    # because nothing here had ever asked it to write a byte. This is the
+    # liveness half: the agreement checks are worth nothing if the thing they
+    # describe produces no output.
+    #
+    # The read-back deliberately uses the offsets parsed out of the C++ HEADER,
+    # not the offsets python_offsets() computes, so a drift in FIELD_ORDER
+    # cannot hide behind itself.
+    try:
+        blob = wxlm.pack_header(
+            0, 1, b"audit".ljust(16, b"\0"), 1, 2, 3,
+            wxlm.HEADER_SIZE + 64, 0,
+            wxlm.HEADER_SIZE, 64,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 16, 0)
+    except Exception as exc:                        # noqa: BLE001
+        blob = None
+        failures.append("  wxlm.pack_header() raised %s: %s"
+                        % (type(exc).__name__, exc))
+
+    if blob is not None:
+        if len(blob) != wxlm.HEADER_SIZE:
+            failures.append("  wxlm.pack_header() emitted %d bytes, HEADER_SIZE is %d"
+                            % (len(blob), wxlm.HEADER_SIZE))
+        else:
+            magic, = struct.unpack_from(">I", blob, 0)
+            if magic != wxlm.MAGIC:
+                failures.append("  wxlm.pack_header() wrote magic 0x%08X, expected 0x%08X"
+                                % (magic, wxlm.MAGIC))
+            for field, want in (("payloadSize", 64), ("bssSize", 16),
+                                ("payloadOffset", wxlm.HEADER_SIZE)):
+                if field in offsets:
+                    got, = struct.unpack_from(">I", blob, offsets[field])
+                    if got != want:
+                        failures.append(
+                            "  %s read back as %d at the offset wxlm.hpp pins (%d), "
+                            "expected %d" % (field, got, offsets[field], want))
+
     if failures:
         sys.stderr.write(
             "\n[test_wxlm] THE .wxlm WRITER AND THE FORMAT HEADER DISAGREE\n\n"
@@ -183,7 +265,8 @@ def main():
         return 1
 
     print("[test_wxlm] writer agrees with wxlm.hpp (%d sizes, %d pinned offsets, "
-          "CRC32 and FNV-1a verified)" % (len(sizes), len(offsets)))
+          "CRC32 and FNV-1a verified, %d-byte header round-tripped)"
+          % (len(sizes), len(offsets), wxlm.HEADER_SIZE))
     return 0
 
 
