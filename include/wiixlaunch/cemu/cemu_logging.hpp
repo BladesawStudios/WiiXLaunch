@@ -28,7 +28,12 @@
 extern "C" {
     // Patched by scripts/deploy.py at deploy time - left at 0 in the actual
     // compiled ELF, never meant to be read before that patch has happened.
-    __attribute__((section(".data"))) inline uint32_t g_CemuLoggingShimTableOffset = 0;
+    // `used` because nothing in C++ may reference this: deploy.py writes it
+    // and the paired src/cemu/*.asm table reads through it, neither of which
+    // the compiler can see. Without it an inline variable no translation unit
+    // odr-uses is never emitted, the symbol is absent from the ELF, deploy.py
+    // has nothing to patch, and the shim table ships unreachable.
+    __attribute__((section(".data"), used)) inline uint32_t g_CemuLoggingShimTableOffset = 0;
 }
 
 namespace WiiXLaunch::Backend {

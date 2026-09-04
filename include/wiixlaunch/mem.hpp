@@ -33,7 +33,12 @@ extern "C" {
     // Patched by scripts/deploy.py with the offset of
     // wiixlaunch_cemu_mem_shim_table; 0 in the compiled ELF, so a zero here
     // means "deploy has not run" and the shims must not be called.
-    __attribute__((section(".data"))) inline uint32_t g_CemuMemShimTableOffset = 0;
+    // `used` because nothing in C++ may reference this: deploy.py writes it
+    // and the paired src/cemu/*.asm table reads through it, neither of which
+    // the compiler can see. Without it an inline variable no translation unit
+    // odr-uses is never emitted, the symbol is absent from the ELF, deploy.py
+    // has nothing to patch, and the shim table ships unreachable.
+    __attribute__((section(".data"), used)) inline uint32_t g_CemuMemShimTableOffset = 0;
 }
 #endif
 
