@@ -315,13 +315,45 @@ version = 7
             with open(asm_file_path, "r", encoding="utf-8") as f:
                 asm_text = f.read()
 
+            rel_path = os.path.relpath(asm_file_path, root_dir)
+
+            # An .asm that declares an offset symbol MUST have it resolve. The
+            # table is about to be spliced into the codecave either way, and the
+            # only thing that can ever reach it is the C++ global named here,
+            # patched with the table's offset - so a symbol that is missing, or
+            # sitting outside the payload, means shipping a shim table nothing
+            # can call. That failure is completely silent at runtime: the calls
+            # through it read a null table pointer.
+            #
+            # This is not hypothetical. It is how base's coreinit memory shims
+            # shipped unreachable for a while: g_CemuMemShimTableOffset is an
+            # inline variable, nothing odr-used it, so GCC never emitted it and
+            # the skip below quietly did nothing. The fix on the C++ side is
+            # __attribute__((used)) on the global (see include/wiixlaunch/mem.hpp);
+            # the fix here is to stop skipping.
             m = offset_symbol_re.search(asm_text)
             if m:
-                symbol_addr = sym_dict.get(m.group(1))
-                if symbol_addr is not None and symbol_addr + 4 <= len(payload_buf):
-                    struct.pack_into(">I", payload_buf, symbol_addr, running_offset)
+                symbol_name = m.group(1)
+                symbol_addr = sym_dict.get(symbol_name)
+                if symbol_addr is None:
+                    raise RuntimeError(
+                        f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name}, but that "
+                        f"symbol is not in {os.path.basename(elf_path)}.\n"
+                        f"  Its shim table would be spliced into the codecave with no way to "
+                        f"reach it, and every call through it would read a null pointer.\n"
+                        f"  Usually the header declaring {symbol_name} is not included by "
+                        f"anything, or the global is missing __attribute__((used)) - an inline "
+                        f"variable no translation unit odr-uses is never emitted.")
+                if symbol_addr + 4 > len(payload_buf):
+                    raise RuntimeError(
+                        f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name} at "
+                        f"0x{symbol_addr:X}, which is past the end of the {len(payload_buf)}-byte "
+                        f"payload.\n"
+                        f"  The offset cannot be written, so the shim table would ship "
+                        f"unreachable. Check that the global lives in a section the flat binary "
+                        f"actually contains (see scripts/cemu.ld).")
+                struct.pack_into(">I", payload_buf, symbol_addr, running_offset)
 
-            rel_path = os.path.relpath(asm_file_path, root_dir)
             cemu_included_asm_content += f"\n# --- Included from {rel_path} ---\n"
             cemu_included_asm_content += asm_text + "\n"
             running_offset += count_asm_words(asm_text) * 4

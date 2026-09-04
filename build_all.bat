@@ -30,6 +30,7 @@ if errorlevel 1 (
 echo.
 echo Running final deployment packager...
 python scripts\deploy.py
+if errorlevel 1 exit /b 1
 
 echo.
 echo ==========================================

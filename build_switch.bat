@@ -42,6 +42,7 @@ copy /y "%STAGE%\deploy\subsdk9" build\switch\subsdk9 > nul
 copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
 
 python scripts\deploy.py
+if errorlevel 1 exit /b 1
 
 :: deploy.py only writes deploy\switch\atmosphere\contents\... - it never
 :: touches Ryujinx's actual mods folder. That gap meant every test this

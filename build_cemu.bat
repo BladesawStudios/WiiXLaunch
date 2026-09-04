@@ -49,4 +49,5 @@ echo Building Cemu payload (PowerPC)...
 if errorlevel 1 exit /b 1
 
 python scripts\deploy.py
+if errorlevel 1 exit /b 1
 echo Cemu build complete!

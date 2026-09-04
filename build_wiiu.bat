@@ -53,4 +53,5 @@ copy /y "%STAGE%\%WPS_NAME%" build\wiiu\%WPS_NAME% > nul
 if errorlevel 1 exit /b 1
 
 python scripts\deploy.py
+if errorlevel 1 exit /b 1
 echo Wii U build complete!
