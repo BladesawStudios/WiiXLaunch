@@ -88,10 +88,20 @@ inline void CopyId(char* dst, const char* src) {
 }
 
 // Does [offset, offset+size) fit inside a file of `fileSize` bytes?
-inline bool InFile(uint32_t offset, uint32_t size, uint32_t fileSize) {
+//
+// Everything is widened to 64-bit first, deliberately. A section's size is
+// count * sizeof(entry), and a corrupt or hostile count can wrap a 32-bit
+// multiply to something small that then passes a naive bounds check - which is
+// precisely the check standing between a bad file and a relocation into
+// arbitrary memory. Doing the arithmetic where it cannot wrap makes the check
+// mean what it says.
+//
+// The AArch64 build is what forced this into the open: size_t is 64-bit there,
+// so the narrowing was a compile error, where on 32-bit PowerPC it would have
+// silently truncated.
+inline bool InFile(uint64_t offset, uint64_t size, uint64_t fileSize) {
     if (offset > fileSize) return false;
-    if (size > fileSize) return false;
-    return offset + size <= fileSize;   // no overflow: both are <= fileSize
+    return offset + size <= fileSize;
 }
 
 } // namespace impl
@@ -192,19 +202,23 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
     }
 
     // Structure. Every section must lie inside the file.
-    struct { uint32_t off, size; const char* what; } spans[] = {
-        { h.payloadOffset,  h.payloadSize,                        "payload"  },
-        { h.relocOffset,    h.relocCount * 8u,                    "relocs"   },
-        { h.importOffset,   h.importCount * sizeof(Wxlm::ImportEntry),   "imports"  },
-        { h.exportOffset,   h.exportCount * sizeof(Wxlm::ExportEntry),   "exports"  },
-        { h.requiredOffset, h.requiredCount * sizeof(Wxlm::RequiredSurface), "required" },
-        { h.stringOffset,   h.stringSize,                         "strings"  },
+    struct { uint64_t off, size; const char* what; } spans[] = {
+        { h.payloadOffset,  static_cast<uint64_t>(h.payloadSize),   "payload"  },
+        { h.relocOffset,    static_cast<uint64_t>(h.relocCount) * 8ull, "relocs" },
+        { h.importOffset,   static_cast<uint64_t>(h.importCount)
+                              * sizeof(Wxlm::ImportEntry),          "imports"  },
+        { h.exportOffset,   static_cast<uint64_t>(h.exportCount)
+                              * sizeof(Wxlm::ExportEntry),          "exports"  },
+        { h.requiredOffset, static_cast<uint64_t>(h.requiredCount)
+                              * sizeof(Wxlm::RequiredSurface),      "required" },
+        { h.stringOffset,   static_cast<uint64_t>(h.stringSize),    "strings"  },
     };
-    for (const auto& s : spans) {
-        if (s.size != 0 && !impl::InFile(s.off, s.size, h.fileSize)) {
-            WIIXL_LOG("[loader:%s] %s: %s section is [%u, %u) but the file is %u bytes",
-                      id, RejectName(Reject::BadSectionBounds), s.what,
-                      s.off, s.off + s.size, h.fileSize);
+    for (const auto& sp : spans) {
+        if (sp.size != 0 && !impl::InFile(sp.off, sp.size, h.fileSize)) {
+            WIIXL_LOG("[loader:%s] %s: %s section is [%u, +%u) but the file is %u bytes",
+                      id, RejectName(Reject::BadSectionBounds), sp.what,
+                      static_cast<uint32_t>(sp.off), static_cast<uint32_t>(sp.size),
+                      h.fileSize);
             return Reject::BadSectionBounds;
         }
     }
@@ -214,7 +228,8 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
         return Reject::BadEntry;
     }
     if (h.initArrayCount != 0 &&
-        !impl::InFile(h.initArrayOffset, h.initArrayCount * 4u, h.payloadSize)) {
+        !impl::InFile(h.initArrayOffset,
+                      static_cast<uint64_t>(h.initArrayCount) * 4ull, h.payloadSize)) {
         WIIXL_LOG("[loader:%s] %s: .init_array is [%u, %u) but the payload is %u bytes",
                   id, RejectName(Reject::BadSectionBounds), h.initArrayOffset,
                   h.initArrayOffset + h.initArrayCount * 4u, h.payloadSize);
