@@ -33,5 +33,18 @@ echo "Building Cemu payload (PowerPC)..."
   src/main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
   -o build/wiixlaunch_cemu
 
+# Host-completeness check - see scripts/test_host.py. Links the same host from
+# an EMPTY main.cpp and asserts it is still complete, because main.cpp becomes a
+# .wxlm at stage 4 and nothing the host needs may come from it.
+: > build/empty_main.cpp
+"$DKP_PPC_GXX" \
+  -std=gnu++20 -fno-pie -fno-pic -msdata=none \
+  -D__CEMU__=1 -DWIIXL_CEMU=1 \
+  -I include -I build/generated/include "${MODULE_FLAGS[@]}" \
+  -nostartfiles -T scripts/cemu.ld -Wl,-q \
+  build/empty_main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
+  -o build/wiixlaunch_cemu_hosttest
+python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
+
 python3 scripts/deploy.py
 echo "Cemu build complete!"

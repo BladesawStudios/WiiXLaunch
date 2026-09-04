@@ -44,6 +44,29 @@
 #include <cstdint>
 #include <cstddef>
 
+// Declares that a game module is COMPILED INTO this build, as opposed to merely
+// being present on disk.
+//
+// scripts/deploy.py splices every vendor/wiixlaunch-*/src/cemu/*.asm it finds
+// into the code cave, because it scans directories. That leaves it unable to
+// tell two very different situations apart when a module's shim-table offset
+// symbol is missing:
+//
+//   the module is vendored but this project does not use it   - fine, skip it
+//   the module IS used but its global got dropped             - a bug, stop
+//
+// Both used to print the same "skipping" line, and only one of them is
+// acceptable. That is the same silent-success shape that let the memory shims
+// ship unreachable and the load-point probe fail to link, so it is settled
+// mechanically rather than left to whoever reads the log: this macro emits a
+// marker symbol, deploy.py looks for it, and the answer is unambiguous.
+//
+// A module calls it once from its umbrella header. The name must match the
+// vendor directory suffix - vendor/wiixlaunch-botw declares WIIXL_DECLARE_MODULE(botw).
+#define WIIXL_DECLARE_MODULE(name) \
+    extern "C" { __attribute__((section(".data"), used)) \
+        inline uint32_t g_WiiXLaunchModule_##name = 1; }
+
 namespace WiiXLaunch::Surface {
 
 // FNV-1a, 32-bit. constexpr so an import site hashes its symbol name at build

@@ -26,3 +26,7 @@ tools/format_test/formatter_extract.hpp
 tools/format_test/format_test.exe
 tools/format_test/format_test
 tools/format_test/*.obj
+
+# host test artefacts
+build/empty_main.cpp
+build/wiixlaunch_cemu_hosttest

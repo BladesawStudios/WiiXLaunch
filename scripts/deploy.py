@@ -366,11 +366,46 @@ version = 7
                 symbol_addr = sym_dict.get(symbol_name)
 
                 if symbol_addr is None and is_module_asm:
-                    print(f"[Cemu] Skipping {rel_path}: {symbol_name} is not in this build, "
-                          f"so nothing could call its shim table. This is expected if the "
-                          f"project does not use that module; if it does, the global is "
-                          f"missing __attribute__((used)).")
-                    running_offset += 0
+                    # Which module is this, and is it actually compiled in?
+                    #
+                    # The module declares WIIXL_DECLARE_MODULE(<name>) from its
+                    # umbrella header, which emits g_WiiXLaunchModule_<name>.
+                    # Present means some translation unit included that header,
+                    # so the module IS part of this build - and a missing shim
+                    # symbol is then a dropped global, not an unused module.
+                    #
+                    # Without this the two cases printed the same line and only
+                    # one of them was acceptable.
+                    module_name = None
+                    parts = rel_path.replace(chr(92), "/").split("/")
+                    for part in parts:
+                        if part.startswith("wiixlaunch-"):
+                            module_name = part[len("wiixlaunch-"):]
+                            break
+
+                    marker = f"g_WiiXLaunchModule_{module_name}" if module_name else None
+                    module_is_used = marker is not None and marker in sym_dict
+
+                    if module_is_used:
+                        raise RuntimeError(
+                            f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name}, but that "
+                            f"symbol is not in {os.path.basename(elf_path)} - while the module "
+                            f"IS compiled into this build ({marker} is present).\n"
+                            f"  So this is a dropped symbol, not an unused module. Its shim "
+                            f"table would ship in the code cave with nothing able to call it, "
+                            f"and every call through it would read a null pointer.\n"
+                            f"  Almost certainly {symbol_name} is missing "
+                            f"__attribute__((used)), or the header declaring it is no longer "
+                            f"included by anything in the module.")
+
+                    if marker is None:
+                        print(f"[Cemu] Skipping {rel_path}: could not work out which module it "
+                              f"belongs to, and {symbol_name} is absent. Expected the path to "
+                              f"contain a 'wiixlaunch-<name>' directory.")
+                    else:
+                        print(f"[Cemu] Skipping {rel_path}: module '{module_name}' is vendored "
+                              f"but not compiled into this build ({marker} absent), so its shim "
+                              f"table would be dead weight in the code cave.")
                     continue
 
                 if symbol_addr is None:
@@ -399,10 +434,29 @@ version = 7
             cemu_included_asm_content += asm_text + "\n"
             running_offset += count_asm_words(asm_text) * 4
 
-        # Patch g_CemuHeapOffset directly into payload
+        # Patch g_CemuHeapOffset directly into payload.
+        #
+        # Strict, for the same reason the shim offsets are: this was the last
+        # silent skip in this script. A missing symbol here does not fail the
+        # build - it ships a payload whose heap base is the code-cave base with
+        # no offset, so the first allocation hands back memory overlapping the
+        # payload's own code. There is no diagnostic; things simply get
+        # corrupted later.
         heap_offset_sym = sym_dict.get("g_CemuHeapOffset")
-        if heap_offset_sym is not None and heap_offset_sym + 4 <= len(payload_buf):
-            struct.pack_into(">I", payload_buf, heap_offset_sym, running_offset)
+        if heap_offset_sym is None:
+            raise RuntimeError(
+                "g_CemuHeapOffset is not in %s, so the payload's heap base cannot be "
+                "patched.\n"
+                "  Everything allocated at runtime would come out of the payload's own "
+                "code. The global lives in include/wiixl_cemu_backend.hpp and is "
+                "__attribute__((used)); a build missing it is one where no translation "
+                "unit included that header at all." % os.path.basename(elf_path))
+        if heap_offset_sym + 4 > len(payload_buf):
+            raise RuntimeError(
+                "g_CemuHeapOffset is at 0x%X, past the end of the %d-byte payload - it is "
+                "not in a section the flat binary contains (see scripts/cemu.ld)."
+                % (heap_offset_sym, len(payload_buf)))
+        struct.pack_into(">I", payload_buf, heap_offset_sym, running_offset)
 
         payload_data = bytes(payload_buf)
 

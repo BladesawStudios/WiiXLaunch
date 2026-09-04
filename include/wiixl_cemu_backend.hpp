@@ -12,7 +12,13 @@ namespace Backend {
 
     extern "C" uintptr_t g_CodeCaveBase;
     extern "C" {
-        __attribute__((section(".data"))) inline uint32_t g_CemuHeapOffset = 0;
+        // `used` for the same reason as the relocation globals below: the only
+        // writer is scripts/deploy.py, which the compiler cannot see. Without it
+        // a build where nothing happens to call CemuHeapBase() - a host with no
+        // main.cpp, which is what stage 4 makes normal - drops the symbol, deploy
+        // has nothing to patch, and the heap base silently reads as the code-cave
+        // base with no offset. Found by scripts/test_host.py.
+        __attribute__((section(".data"), used)) inline uint32_t g_CemuHeapOffset = 0;
 
         // Runtime relocation table, patched by scripts/deploy.py.
         //

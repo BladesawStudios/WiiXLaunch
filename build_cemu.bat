@@ -48,6 +48,26 @@ echo Building Cemu payload (PowerPC)...
   -o build\wiixlaunch_cemu
 if errorlevel 1 exit /b 1
 
+:: Host-completeness check. Links the same host from an EMPTY main.cpp and
+:: asserts it is still complete - see scripts/test_host.py for why. main.cpp
+:: becomes a .wxlm at stage 4, so nothing the host needs may come from it.
+:: Compiled here rather than in Python because these flags live here and
+:: duplicating them would drift.
+echo. > build\empty_main.cpp
+"%DKP_PPC_GXX%" ^
+  -std=gnu++20 -fno-pie -fno-pic -msdata=none ^
+  -D__CEMU__=1 -DWIIXL_CEMU=1 ^
+  -I include -I build\generated\include %MODULE_FLAGS% ^
+  -nostartfiles -T scripts\cemu.ld -Wl,-q ^
+  build\empty_main.cpp src\wiiu_plugin.cpp src\cemu\bootstrap.cpp ^
+  -o build\wiixlaunch_cemu_hosttest
+if errorlevel 1 (
+    echo [test_host] The host does not LINK without main.cpp.
+    exit /b 1
+)
+python scripts\test_host.py build\wiixlaunch_cemu_hosttest
+if errorlevel 1 exit /b 1
+
 python scripts\deploy.py
 if errorlevel 1 exit /b 1
 echo Cemu build complete!
