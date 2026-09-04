@@ -165,6 +165,20 @@ inline FnPtr ResolveAs(const char* surfaceName, const char* symbolName) {
 // Does the host satisfy a requirement? Major must match exactly (breaking
 // changes); minor must be at least what was asked for (surfaces are
 // append-only within a major). Logs the reason it does not.
+//
+// WHY TWO NUMBERS rather than one exact-match version, settled and not to be
+// relitigated: a single version compared exactly would have to be bumped every
+// time anyone appends a symbol, and every bump rejects every existing compiled
+// mod - including the ones that never referenced the new symbol and are
+// entirely compatible with it. The predictable outcome is that people stop
+// appending, and the surface ossifies or grows by mutation instead, which is
+// the failure this whole scheme exists to prevent.
+//
+// Splitting the number lets additions be free and breakage be explicit:
+// appending a symbol bumps the minor and every existing mod keeps resolving;
+// changing or removing one bumps the major and mods built against the old
+// shape are rejected by name rather than calling the wrong function. This is
+// what stable plugin ABIs converge on, for exactly this reason.
 inline bool Require(const char* name, uint16_t major, uint16_t minor) {
     const Registration* s = Find(name);
     if (!s) {

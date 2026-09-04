@@ -39,100 +39,6 @@ void OnRender(GX2::CommandBuffer* cmdBuf, void* dstTexture, int width, int heigh
 #endif
 
 
-// --- STAGE 1 STAND-IN: the BotW v208 load point ----------------------------
-//
-// THIS ADDRESS IS GAME-SPECIFIC AND DOES NOT BELONG IN BASE. It lives in
-// main.cpp because stage 1 has no module-side nomination yet. Stage 2 moves the
-// WIIXL_DECLARE_LOAD_POINT call into the BotW module's own header, so that
-// installing wiixlaunch-botw is what nominates BotW's load point. The mechanism
-// does not change - only who calls the macro. A host with no game module
-// declares nothing, and deploy.py says so rather than emitting a silent no-op.
-//
-// WHY THIS ADDRESS (v208 Wii U RPX, read in Ghidra):
-//
-//   FUN_03098928 is the game's FS bring-up, and is also the function the Cemu
-//   entry hook already sits on. It runs exactly once - FUN_03098a64 wraps it in
-//   an `if (singleton == 0)` guard - and internally does:
-//
-//     030989bc  bl 0x04004ed0     FSInit()
-//     030989c0  addi r3,r31,0x24  client = this + 0x24
-//     030989c4  li   r4,0
-//     030989c8  bl 0x04004e78     FSAddClient(client, 0)
-//     030989cc  lis  r11,0x30a    <- LOAD POINT. FS is up from here.
-//
-// So the load point is four instructions past the entry hook, inside the same
-// function. There is no cleaner site: the instruction after FUN_03098a64
-// returns is a vtable dispatch (0309f284 bctrl), so any post-FS-init point is
-// necessarily mid-function.
-//
-// THE BRANCH IS EMITTED BY THE PACK, NOT WRITTEN AT RUNTIME. deploy.py puts
-// `.origin = 0x030989CC / b wiixlaunch_loadpoint_stub` in patch_*.asm next to
-// the entry hook. Writing it from WiiXLaunch_Init would mean modifying code
-// inside a function Cemu may already have recompiled on entry at 0x03098928 -
-// the cache flush probably covers that, but "probably" is exactly what this
-// probe exists to remove. It also keeps the rule that only the host pack writes
-// into game memory.
-//
-// SAFETY OF THE SITE, checked rather than assumed: nothing xrefs 0x030989CC, so
-// the branch cannot be landed on from elsewhere, and the displaced instruction
-// is position-independent (`lis r11,0x30a` - no relative branch, no PC-relative
-// addressing), so it re-executes correctly from the codecave.
-#if WIIXL_CEMU
-
-WIIXL_DECLARE_LOAD_POINT(0x030989CC);
-
-extern "C" void WiiXLaunch_LoadPointProbe() {
-    // Site 2 of 2, immediately after FSAddClient. The three path verdicts are
-    // separable, which is the point:
-    //   STOCK verified             -> /vol/content is mounted AND readable here
-    //   STOCK verified, PACK not   -> the graphic-pack content/ overlay is not
-    //                                 live yet, which changes mod distribution
-    //   STOCK not found            -> nothing is mounted; the load point moves
-    WiiXLaunch::LoadPoint::Probe("post-fsaddclient");
-}
-
-// Register-preserving stub. The frame layout matches WiiXLaunch_Cemu_Init
-// exactly (0x2000 bytes, r2-r31 at 0x1F80, LR at 0x2004, CR at 0x2008) because
-// that one is known to work; this is not the place to invent a new one.
-//
-// Only ONE instruction is displaced, not four: the pack emits a single `b`,
-// the same shape as the entry hook, rather than a 16-byte long jump.
-asm(
-    ".section .text.WiiXLaunch_LoadPointStub\n"
-    ".global WiiXLaunch_LoadPointStub\n"
-    "WiiXLaunch_LoadPointStub:\n"
-    "mflr 0\n"
-    "stwu 1, -0x2000(1)\n"
-    "stw 0, 0x2004(1)\n"
-    "mfcr 0\n"
-    "stw 0, 0x2008(1)\n"
-    "stmw 2, 0x1F80(1)\n"
-
-    "bl WiiXLaunch_LoadPointProbe\n"
-
-    "lmw 2, 0x1F80(1)\n"
-    "lwz 0, 0x2008(1)\n"
-    "mtcr 0\n"
-    "lwz 0, 0x2004(1)\n"
-    "mtlr 0\n"
-    "addi 1, 1, 0x2000\n"
-
-    // The ONE instruction displaced from 0x030989CC by the pack's `b`. It has to
-    // run AFTER the restore above: r11 is inside the r2-r31 range lmw rewrites,
-    // so setting it any earlier would simply be undone.
-    "lis 11, 0x30a\n"
-
-    // Back to 0x030989D0, the instruction after the one we displaced. Literal
-    // immediates, so no relocation entry is emitted and deploy.py leaves them
-    // alone - correct for a game address that is already absolute.
-    "lis 12, 0x0309\n"
-    "ori 12, 12, 0x89d0\n"
-    "mtctr 12\n"
-    "bctr\n"
-);
-
-#endif
-
 // Entry point called once at plugin/module load. Install your hooks here.
 extern "C" void WiiXLaunch_Init() {
     static bool initialized = false;
@@ -166,11 +72,13 @@ extern "C" void WiiXLaunch_Init() {
     // test as non-null. Explicit calls avoid the whole question.
     WiiXLaunch::Core::Register();
 
-    // Game modules go here. Base must never name one - this line lives in the
-    // project's own source, which is where knowledge of what was installed
+    // Game modules register here. Base must never name one - this line lives in
+    // the project's own source, which is where knowledge of what was installed
     // belongs. Stage 4 calls this before loading any .wxlm.
     //
-    //   WiiXLaunch::BotW::Surfaces::Register();
+    // A project with no game module simply does not have this line, registers
+    // only wiixl.core, and LogRegistered says so.
+    WiiXLaunch::BotW::Surfaces::Register();
 
     WiiXLaunch::Surface::LogRegistered();
 

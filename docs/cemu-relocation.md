@@ -82,6 +82,43 @@ traversal that the faulting addresses appeared to point at. The giveaway, missed
 at the time, was `r12` holding the *same* value across two builds whose layouts
 had shifted - a symbol address cannot do that, a relocation delta can.
 
+## Weak symbols do not work here
+
+An undefined weak symbol is the standard C++ way to let one component call into
+another it cannot name — declare it weak, check the address, call it if it is
+there:
+
+```cpp
+extern "C" __attribute__((weak)) void MaybeThere();
+if (&MaybeThere) MaybeThere();   // WRONG on this platform
+```
+
+On the Cemu payload that null check **silently passes even when the symbol is
+absent, and then calls into the start of the payload.**
+
+An undefined weak symbol links as address 0. Taking its address emits an
+ordinary `R_PPC_ADDR32` relocation, and this payload relocates *every* such site
+by adding the code-cave base it discovered at runtime — that is the whole point
+of the machinery above. So 0 becomes `g_CodeCaveBase`, which is not null, the
+guard passes, and control transfers to `wiixlaunch_codecave_start`. On a normal
+platform the same code is correct; here the relocation model makes it a branch
+into `WiiXLaunch_Cemu_Init`.
+
+Nothing warns. The symbol is legitimately absent, the relocation is
+legitimately applied, and the two combine into a call that should never have
+happened.
+
+Use an explicit call instead. Where base needs to reach code in a game module it
+cannot name, the project's own source makes the call — see
+`WiiXLaunch::Core::Register()` and the game-module registration beside it in
+`src/main.cpp`. Where a value has to come from the build rather than from C++,
+use the `WIIXL_OFFSET_SYMBOL` / `WIIXL_DECLARE_LOAD_POINT` pattern, where
+`deploy.py` reads a real symbol out of the ELF and fails the build if it is
+missing.
+
+The same reasoning applies to any "is this pointer null" test on a value that
+passes through relocation. Zero is not preserved.
+
 ## If you touch this
 
 * Anything added to the bootstrap section must keep using raw `@h`/`@l`
