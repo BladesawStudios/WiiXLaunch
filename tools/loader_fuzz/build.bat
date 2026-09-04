@@ -26,13 +26,13 @@ if "%VSINSTALL%"=="" exit /b 2
 :: vcvarsall shells out to vswhere, so it needs the Installer directory on PATH.
 set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
-if errorlevel 1 exit /b 2
+if %ERRORLEVEL% NEQ 0 exit /b 2
 
 :build
 pushd "%HERE%"
 cl.exe /nologo /std:c++20 /EHsc /W3 /I"%ROOT%\include" ^
     /Fe:loader_fuzz.exe /Fo:loader_fuzz.obj main.cpp
-if errorlevel 1 (
+if %ERRORLEVEL% NEQ 0 (
     echo [loader_fuzz] COMPILE FAILED
     popd
     exit /b 1

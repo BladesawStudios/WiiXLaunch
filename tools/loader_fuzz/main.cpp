@@ -262,6 +262,7 @@ static const int kExpectedCases = 1171;
 // was refusing valid modules for a reason that had nothing to do with them. A
 // suite that only counts how many times it ran cannot see that.
 static const int kExpectedAccepted = 293;
+static const int kExpectedRejected = 878;
 
 // Both halves of the containment property must actually be exercised, or the
 // pair reduces to the single check that went vacuous last time.
@@ -949,6 +950,12 @@ int main() {
                     "ACCEPTED.\nValid modules are being rejected for a reason that is "
                     "not about the modules -\nleftover state between cases looks exactly "
                     "like this.\n", g_Accepted, kExpectedAccepted);
+        return 1;
+    }
+    if (g_Rejected < kExpectedRejected) {
+        std::printf("\nLOADER FUZZ DISARMED: only %d of the expected %d cases were "
+                    "REJECTED.\nMalformed modules are being accepted, or cases "
+                    "stopped running.\n", g_Rejected, kExpectedRejected);
         return 1;
     }
     if (g_ContainmentChecks == 0 || g_LivenessChecks == 0) {

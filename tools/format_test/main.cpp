@@ -26,6 +26,21 @@ static int g_checks = 0;
 // to make a build go green. See the fourth rule in docs/modules.md.
 static const int kExpectedChecks = 23;
 
+// Per-section floors as well as the total. A floor on an aggregate does not
+// constrain its composition: 23 checks could all be width checks, with the
+// argument-alignment regression test - the reason this harness exists - gone.
+static int g_SectionBase = 0;
+static const char* g_CurrentSection = "";
+static int g_SectionFloorFailures = 0;
+
+static void BeginSection(const char* name) {
+    g_SectionBase = 0;
+    g_CurrentSection = name;
+}
+
+static void SectionStart(const char* name);
+static void SectionEnd(int atLeast);
+
 static void check(const char* expect, const char* fmt, ...) {
     char out[256];
     va_list ap;
@@ -44,7 +59,23 @@ static void check(const char* expect, const char* fmt, ...) {
     }
 }
 
+static void SectionStart(const char* name) {
+    g_SectionBase = g_checks;
+    g_CurrentSection = name;
+}
+
+static void SectionEnd(int atLeast) {
+    const int ran = g_checks - g_SectionBase;
+    if (ran < atLeast) {
+        ++g_SectionFloorFailures;
+        std::printf("  FAIL  section '%s' ran %d checks, expected at least %d\n",
+                    g_CurrentSection, ran, atLeast);
+    }
+}
+
 int main() {
+    (void)BeginSection;
+    SectionStart("width");
     std::printf("width and zero-padding (unsupported until they silently broke a hex dump):\n");
     check("05",       "%02X", 5);
     check("AB",       "%02X", 0xAB);
@@ -58,12 +89,16 @@ int main() {
     // A width narrower than the value must not truncate it.
     check("123456",   "%2d", 123456);
 
+    SectionEnd(9);
+    SectionStart("argument alignment");
     std::printf("\nargument alignment after a width specifier:\n");
     // The original bug consumed no argument for %02X, so everything after it
     // read the previous slot. This is the regression test for that.
     check("01 then 2", "%02X then %d", 1, 2);
     check("A=0A B=17", "A=%02X B=%d", 10, 17);
 
+    SectionEnd(2);
+    SectionStart("unchanged behaviour");
     std::printf("\nunchanged behaviour:\n");
     check("42",       "%d", 42);
     check("-42",      "%d", -42);
@@ -75,12 +110,19 @@ int main() {
     check("s=ok",     "s=%s", "ok");
     check("u=7",      "u=%u", 7u);
 
+    SectionEnd(9);
+    SectionStart("float precision");
     std::printf("\nfloat precision (was always supported - guard against regressing it):\n");
     check("1.5",      "%.1f", 1.5);
     check("3.14",     "%.2f", 3.14159);
 
+    SectionEnd(2);
+    SectionStart("unknown conversions");
     std::printf("\nunknown conversions are echoed, not swallowed:\n");
     check("%q",       "%q", 1);
+
+    SectionEnd(1);
+    g_failures += g_SectionFloorFailures;
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 

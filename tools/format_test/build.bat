@@ -3,7 +3,7 @@ setlocal
 set "HERE=%~dp0"
 
 python "%HERE%extract.py"
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: Same toolchain search as tools/ring_log_reader/build.bat.
 where cl.exe >nul 2>&1
@@ -26,12 +26,12 @@ if "%VSINSTALL%"=="" (
 :: vcvarsall shells out to vswhere, so it needs the Installer directory on PATH.
 set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
-if errorlevel 1 exit /b 2
+if %ERRORLEVEL% NEQ 0 exit /b 2
 
 :build
 pushd "%HERE%"
 cl.exe /nologo /std:c++17 /EHsc /I. /Fe:format_test.exe /Fo:format_test.obj main.cpp
-if errorlevel 1 (
+if %ERRORLEVEL% NEQ 0 (
     echo [format_test] COMPILE FAILED
     popd
     exit /b 1

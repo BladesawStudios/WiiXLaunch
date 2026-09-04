@@ -32,6 +32,26 @@ static int g_failures = 0;
 // itself. See the fourth rule in docs/modules.md.
 static const int kExpectedChecks = 52;
 
+// Section bookkeeping: how many checks each block contributed.
+static int g_SectionBase = 0;
+static const char* g_CurrentSection = "";
+static int g_SectionFloorFailures = 0;
+
+static void BeginSection(const char* name) {
+    g_SectionBase = g_checks;
+    g_CurrentSection = name;
+}
+
+static void EndSection(int atLeast) {
+    const int ran = g_checks - g_SectionBase;
+    if (ran < atLeast) {
+        ++g_SectionFloorFailures;
+        std::printf("  FAIL  section '%s' ran %d checks, expected at least %d - a "
+                    "total can stay level while a section empties\n",
+                    g_CurrentSection, ran, atLeast);
+    }
+}
+
 static void ok(const char* what, bool cond) {
     ++g_checks;
     if (cond) {
@@ -197,6 +217,7 @@ static void FuzzDecoder() {
 }
 
 int main() {
+    BeginSection("encoding");
     std::printf("encoding round-trip:\n");
     {
         uint32_t buf[4];
@@ -213,6 +234,8 @@ int main() {
         ok("a prologue does not decode as a long jump", H::DecodeLongJump(notAJump) == 0);
     }
 
+    EndSection(6);
+    BeginSection("pc-relative detection");
     std::printf("\nPC-relative detection (the silent-corruption check):\n");
     ok("b   +0x40 is PC-relative",        H::IsPcRelativeBranch(0x48000040u));
     ok("bl  +0x40 is PC-relative",        H::IsPcRelativeBranch(0x48000041u));
@@ -225,6 +248,8 @@ int main() {
     ok("stwu is not a branch",            !H::IsPcRelativeBranch(0x9421FFE0u));
     ok("mflr is not a branch",            !H::IsPcRelativeBranch(0x7C0802A6u));
 
+    EndSection(10);
+    BeginSection("refusal");
     // THE REFUSAL PATH NEEDS ITS OWN COVERAGE, and this is the only place it
     // gets any.
     //
@@ -297,6 +322,8 @@ int main() {
            && good != 0);
     }
 
+    EndSection(6);
+    BeginSection("three-deep chain");
     std::printf("\nTHREE DEEP - first installed runs first:\n");
     {
         H::ResetForTest();
@@ -359,6 +386,8 @@ int main() {
            origA && origB && origC && origA != origB && origB != origC && origA != origC);
     }
 
+    EndSection(14);
+    BeginSection("Original stability");
     std::printf("\nappending does not move an earlier Original:\n");
     {
         H::ResetForTest();
@@ -378,8 +407,12 @@ int main() {
                 H::DecodeLongJump(g_Target), 0x01810000u);
     }
 
+    EndSection(4);
+    BeginSection("decoder fuzz");
     FuzzDecoder();
 
+    EndSection(6);
+    BeginSection("site isolation");
     std::printf("\ntwo separate targets do not interfere:\n");
     {
         H::ResetForTest();
@@ -396,6 +429,9 @@ int main() {
         ok("neither is depth 2", H::FindSite(Addr(g_Target))->depth == 1 &&
                                  H::FindSite(Addr(other))->depth == 1);
     }
+
+    EndSection(4);
+    g_failures += g_SectionFloorFailures;
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
 

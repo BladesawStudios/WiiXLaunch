@@ -26,7 +26,7 @@ if not defined VSINSTALL (
 )
 
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :build
 cl.exe /nologo /EHsc /std:c++17 /O2 /Fe:ring_log_reader.exe main.cpp

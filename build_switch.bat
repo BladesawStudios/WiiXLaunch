@@ -2,11 +2,11 @@
 setlocal
 
 call scripts\devkitpro_env.bat
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 echo Generating config...
 python scripts\generate_config.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: devkitPro's make rules cannot handle spaces in paths, so stage the build in
 :: %TEMP% (space-free) instead of building in-place.
@@ -34,7 +34,7 @@ powershell -Command "(Get-Content '%STAGE%\source\lib\hook\nx64\hook_impl.cpp') 
 echo Building for Switch (ARM64)...
 set STAGEFWD=%STAGE:\=/%
 "%DKP_BASH%" -lc "cd '%STAGEFWD%' && make"
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: Extract artifacts
 if not exist build\switch mkdir build\switch
@@ -42,7 +42,7 @@ copy /y "%STAGE%\deploy\subsdk9" build\switch\subsdk9 > nul
 copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
 
 python scripts\deploy.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: deploy.py only writes deploy\switch\atmosphere\contents\... - it never
 :: touches Ryujinx's actual mods folder. That gap meant every test this

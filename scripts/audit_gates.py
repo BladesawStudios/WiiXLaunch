@@ -66,6 +66,13 @@ WIRING = [
 
 # Gates whose scripts must exist at all. A path that silently stops existing is
 # the same failure one directory up.
+# Floors on this file's OWN numbers. It reports three counts and floored none of
+# them: deleting a row from WIRING would have dropped the count and still
+# printed success. A gate that checks other gates for liveness and has none of
+# its own is the joke writing itself.
+EXPECTED_MIN_INVOCATIONS = 12
+EXPECTED_MIN_SCRIPTS = 13
+
 MUST_EXIST = [
     "scripts/test_host.py",
     "scripts/test_wxlm.py",
@@ -114,7 +121,15 @@ def guarded_bat(text, token):
         if token.lower() not in line.lower():
             continue
         for follow in lines[i + 1:i + 6]:
+            # Both cmd idioms count. "if errorlevel N" means "errorlevel >= N",
+            # which is FALSE for the negative value a crashing process leaves -
+            # so the codebase moved to an explicit NEQ 0 test. This recognises
+            # the old form too, because a guard that only knows one spelling
+            # reports a guarded gate as unguarded, which is what it did the
+            # moment the sweep landed.
             if re.search(r"if\s+errorlevel\s+[12]", follow, re.I):
+                return True
+            if re.search(r"if\s+%ERRORLEVEL%\s+NEQ\s+0", follow, re.I):
                 return True
         return False
     return False
@@ -196,6 +211,22 @@ def main():
                     "  %s runs %s but does not check its exit code.\n"
                     "           A gate that cannot fail the build is decoration."
                     % (script, human))
+
+    # The split, not just the sum: every invocation found must also be guarded,
+    # and the tables must not have shrunk.
+    if checked_invocations < EXPECTED_MIN_INVOCATIONS:
+        failures.append(
+            "  only %d gate invocations were checked, expected at least %d - the\n"
+            "           WIRING table has shrunk, so this file is watching less than\n"
+            "           it was." % (checked_invocations, EXPECTED_MIN_INVOCATIONS))
+    if checked_guards != checked_invocations:
+        failures.append(
+            "  %d invocations found but only %d had their exit code examined"
+            % (checked_invocations, checked_guards))
+    if len(MUST_EXIST) < EXPECTED_MIN_SCRIPTS:
+        failures.append(
+            "  MUST_EXIST lists only %d gate scripts, expected at least %d"
+            % (len(MUST_EXIST), EXPECTED_MIN_SCRIPTS))
 
     if failures:
         sys.stderr.write(

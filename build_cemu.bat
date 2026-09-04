@@ -2,11 +2,11 @@
 setlocal enabledelayedexpansion
 
 call scripts\devkitpro_env.bat
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 echo Generating config...
 python scripts\generate_config.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 if not exist build mkdir build
 
@@ -46,7 +46,7 @@ echo Building Cemu payload (PowerPC)...
   -nostartfiles -T scripts\cemu.ld -Wl,-q ^
   src\main.cpp src\wiiu_plugin.cpp src\cemu\bootstrap.cpp ^
   -o build\wiixlaunch_cemu
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: Host-completeness check. Links the same host from an EMPTY main.cpp and
 :: asserts it is still complete - see scripts/test_host.py for why. main.cpp
@@ -61,24 +61,24 @@ echo. > build\empty_main.cpp
   -nostartfiles -T scripts\cemu.ld -Wl,-q ^
   build\empty_main.cpp src\wiiu_plugin.cpp src\cemu\bootstrap.cpp ^
   -o build\wiixlaunch_cemu_hosttest
-if errorlevel 1 (
+if %ERRORLEVEL% NEQ 0 (
     echo [test_host] The host does not LINK without main.cpp.
     exit /b 1
 )
 python scripts\test_host.py build\wiixlaunch_cemu_hosttest
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: The .wxlm writer and the format header have to agree; a drift between them
 :: is the one failure neither side can detect at runtime. See test_wxlm.py.
 python scripts\test_wxlm.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: Are the gates below actually wired in, and is a failure fatal? Every gate
 :: self-checks its own liveness, which is the right shape - but no gate can
 :: detect that nothing calls it. This runs FIRST so a missing gate is reported
 :: before the build spends time on the ones that are present.
 python scripts\audit_gates.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: WIIXL_LOG's formatter. Every platform's logging goes through it, it cannot
 :: be exercised on a console, and when it gets a conversion wrong it prints the
@@ -161,10 +161,10 @@ if errorlevel 2 (
   -Wl,--unresolved-symbols=ignore-all ^
   examples\sample_mod\mod.cpp -lgcc ^
   -o build\sample_mod.elf
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\wxlm.py build\sample_mod.elf build\sample.wxlm --id sample --phase load
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: --- the two colliding modules ------------------------------------------
 :: These hook the SAME address on purpose. Two mods that did not interact
@@ -174,14 +174,17 @@ if errorlevel 1 exit /b 1
 :: The FILENAMES decide the order - load order is lexical by filename, and
 :: load order is hook install order is call order. a_first sorts before
 :: b_second, which is the whole reason they are named that way.
-for %%M in (a_first b_second) do (
-  if "%%M"=="a_first" (set "MODSRC=hook_mod_a") else (set "MODSRC=hook_mod_b")
-  call :build_mod %%M !MODSRC!
-  if errorlevel 1 exit /b 1
-)
+:: Two direct calls rather than a for loop. Inside a parenthesised block
+:: %ERRORLEVEL% expands when the block is PARSED, which is before the
+:: command in it has run - so the check would test a stale value. Delayed
+:: expansion fixes that, but not needing it at all is better.
+call :build_mod a_first hook_mod_a
+if %ERRORLEVEL% NEQ 0 exit /b 1
+call :build_mod b_second hook_mod_b
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\deploy.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 echo Cemu build complete!
 exit /b 0
 
@@ -196,8 +199,8 @@ exit /b 0
   -Wl,--unresolved-symbols=ignore-all ^
   examples\%2\mod.cpp -lgcc ^
   -o build\%1.elf
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 python scripts\wxlm.py build\%1.elf build\%1.wxlm --id %1 --phase load
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0
 

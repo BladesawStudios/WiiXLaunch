@@ -2,11 +2,11 @@
 setlocal
 
 call scripts\devkitpro_env.bat
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 echo Generating config...
 python scripts\generate_config.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: The plugin filename lives in exactly one place - wiiu.plugin_name in
 :: wiixlaunch.json - and is read from there rather than repeated here. It feeds
@@ -46,12 +46,12 @@ copy /y scripts\wiiu\Makefile "%STAGE%\Makefile" > nul
 echo Building for Wii U (PowerPC)...
 set STAGEFWD=%STAGE:\=/%
 "%DKP_BASH%" -lc "cd '%STAGEFWD%' && make TARGET='%WPS_TARGET%'"
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 if not exist build\wiiu mkdir build\wiiu
 copy /y "%STAGE%\%WPS_NAME%" build\wiiu\%WPS_NAME% > nul
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\deploy.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 echo Wii U build complete!
