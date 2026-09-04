@@ -254,6 +254,15 @@ static int g_Accepted = 0, g_Rejected = 0;
 // it when cases are added; never lower it to make a build go green.
 static const int kExpectedCases = 1171;
 
+// And a floor on how many of them are ACCEPTED.
+//
+// The case total alone is not enough, and that is not hypothetical: when the
+// module table stopped being reset between cases, every case still ran and the
+// suite still passed, but accepted collapsed from 293 to 8 because the loader
+// was refusing valid modules for a reason that had nothing to do with them. A
+// suite that only counts how many times it ran cannot see that.
+static const int kExpectedAccepted = 293;
+
 // Both halves of the containment property must actually be exercised, or the
 // pair reduces to the single check that went vacuous last time.
 int g_ContainmentChecks = 0;
@@ -316,9 +325,11 @@ bool WroteInGrant() {
 } // namespace arena_backing
 
 static Reject RunLoader(std::vector<uint8_t>& bytes) {
-    // Fresh grants and fresh poison per case: a module refused in one case must
-    // not leave the arena carved for the next, or later cases would fail for
-    // the wrong reason.
+    // Fresh grants, fresh poison and a fresh module table per case: state left
+    // behind by one case makes the next fail for the wrong reason. The module
+    // table was missed at first, and every case after the eighth accepted one
+    // came back NO-MEMORY.
+    Loader::ResetForTest();
     arena_backing::Init();
     MemoryReader reader(bytes);
     return Loader::LoadFrom(reader);
@@ -378,12 +389,100 @@ static void ExpectAccepted(const char* what, std::vector<uint8_t> bytes) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Path resolution.
+//
+// This exists because a bug shipped through the gap it now covers. The module
+// loader enumerated its directory with a raw FSOpenDir on the path as written,
+// while every FILE open went through FS::impl::Candidates - so on the first
+// two-module boot the loader reported "WiiXLaunch/mods does not exist" three
+// lines after the load-point probe had listed that directory's contents.
+//
+// Nothing tested path resolution, so nothing could catch a second resolver
+// disagreeing with the first. There is one resolver now, and this checks it.
+// ---------------------------------------------------------------------------
+static void TestPathCandidates() {
+    std::printf("=== path candidates ===\n");
+    int checks = 0, bad = 0;
+
+    auto expect = [&](const char* what, bool cond) {
+        ++checks;
+        if (!cond) { ++bad; std::printf("  FAIL  %s\n", what); }
+    };
+
+    {
+        char storage[3][256];
+        const char* out[4];
+        WiiXLaunch::FS::impl::Candidates("WiiXLaunch/mods", storage, out);
+
+        expect("relative: candidate 0 is the path as given",
+               out[0] && std::strcmp(out[0], "WiiXLaunch/mods") == 0);
+        expect("relative: /vol/content/ prefix is offered",
+               out[1] && std::strcmp(out[1], "/vol/content/WiiXLaunch/mods") == 0);
+        expect("relative: content/ prefix is offered",
+               out[2] && std::strcmp(out[2], "content/WiiXLaunch/mods") == 0);
+        expect("relative: /vol/content/WiiXLaunch/ prefix is offered",
+               out[3] && std::strcmp(out[3], "/vol/content/WiiXLaunch/WiiXLaunch/mods") == 0);
+
+        // The one that actually mattered on the boot: the absolute form the
+        // load-point probe uses has to be reachable from the relative form the
+        // loader is given.
+        bool reachesProbePath = false;
+        for (int i = 0; i < 4; ++i) {
+            if (out[i] && std::strcmp(out[i], "/vol/content/WiiXLaunch/mods") == 0) {
+                reachesProbePath = true;
+            }
+        }
+        expect("relative 'WiiXLaunch/mods' reaches '/vol/content/WiiXLaunch/mods'",
+               reachesProbePath);
+    }
+
+    {
+        char storage[3][256];
+        const char* out[4];
+        WiiXLaunch::FS::impl::Candidates("/vol/content/WiiXLaunch/mods", storage, out);
+        expect("absolute: offered unchanged",
+               out[0] && std::strcmp(out[0], "/vol/content/WiiXLaunch/mods") == 0);
+        expect("absolute: no prefixes invented",
+               out[1] == nullptr && out[2] == nullptr && out[3] == nullptr);
+    }
+
+    {
+        // A name long enough to overrun the 256-byte buffers must truncate
+        // rather than write past them.
+        char longName[400];
+        for (int i = 0; i < 399; ++i) longName[i] = 'x';
+        longName[399] = '\0';
+        char storage[3][256];
+        const char* out[4];
+        WiiXLaunch::FS::impl::Candidates(longName, storage, out);
+        expect("over-long path is truncated, not overrun",
+               std::strlen(storage[0]) < 256 && std::strlen(storage[1]) < 256 &&
+               std::strlen(storage[2]) < 256);
+    }
+
+    g_Failures += bad;
+    std::printf("  %d path checks, %d failures\n", checks, bad);
+    if (checks < 8) {
+        std::printf("  FAIL  path candidate suite shrank to %d checks\n", checks);
+        ++g_Failures;
+    }
+}
+
 int main() {
+    // Unbuffered, because this binary can crash. With block-buffered stdout a
+    // segfault discards everything printed so far, so a crash looks like a
+    // program that produced no output at all and says nothing about where it
+    // got to. That cost a debugging round once.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     Loader::SetFlushHook(&alloc::Flush);
     arena_backing::Init();
     WiiXLaunch::Core::Register();
 
     const Baseline base = MakeBaseline();
+
+    TestPathCandidates();
 
     std::printf("=== baseline ===\n");
     ExpectAccepted("valid module loads", base.bytes);
@@ -785,6 +884,7 @@ int main() {
 
             const bool oracleSaysValid = Oracle(v);
 
+            Loader::ResetForTest();
             arena_backing::Init();
             MemoryReader reader(v);
             const Reject got = Loader::LoadFrom(reader);
@@ -838,6 +938,17 @@ int main() {
         std::printf("\nLOADER FUZZ DISARMED: %d cases ran, expected at least %d.\n"
                     "Cases were removed, or a block stopped being reached.\n",
                     g_Cases, kExpectedCases);
+        return 1;
+    }
+    // The same total the summary reports - explicit accept cases plus the flips
+    // the oracle agreed were valid. Checking only g_Accepted would compare
+    // against a number the report does not use.
+    const int acceptedTotal = g_Accepted + flipAccepted;
+    if (acceptedTotal < kExpectedAccepted) {
+        std::printf("\nLOADER FUZZ DISARMED: only %d of the expected %d cases were "
+                    "ACCEPTED.\nValid modules are being rejected for a reason that is "
+                    "not about the modules -\nleftover state between cases looks exactly "
+                    "like this.\n", g_Accepted, kExpectedAccepted);
         return 1;
     }
     if (g_ContainmentChecks == 0 || g_LivenessChecks == 0) {

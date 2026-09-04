@@ -117,10 +117,9 @@ namespace impl {
 inline LoadedModule g_Modules[Arena::kMaxModules]{};
 inline uint32_t g_ModuleCount = 0;
 
-// The slot LoadFrom is currently filling. Not an index, because the slot is
-// claimed before the load can fail and released again if it does - a rejected
-// module must not leave a half-filled entry behind for RunPhase to walk into.
-inline LoadedModule* g_Filling = nullptr;
+// A rejected module must not leave a half-filled entry behind for RunPhase to
+// walk into, so g_ModuleCount is only incremented once a module is completely
+// recorded. Until then the slot is scratch and nothing reads it.
 
 // Streaming buffer for the integrity pass. Static rather than heap because the
 // integrity check runs BEFORE anything is allocated - that is the point of it.
@@ -245,6 +244,22 @@ inline bool ReadAligned(Reader& file, uint32_t offset, uint8_t* dst, uint32_t si
 }
 
 } // namespace impl
+
+// Forgets every loaded module. For a host test that runs many loads in one
+// process; nothing in a real host calls it, because a module is never unloaded.
+//
+// tools/loader_fuzz needs this and did not have it: g_ModuleCount survived
+// across cases, so after Arena::kMaxModules successful loads every later valid
+// module was rejected NO-MEMORY. The suite still ran 1171 cases and still
+// reported PASS - only the accepted/rejected SPLIT moved, from 293 accepted to
+// 8. A total that cannot move is not a liveness check; see the accepted-count
+// floor in the fuzzer.
+inline void ResetForTest() {
+    impl::g_ModuleCount = 0;
+    for (uint32_t i = 0; i < Arena::kMaxModules; ++i) {
+        impl::g_Modules[i] = LoadedModule{};
+    }
+}
 
 inline uint32_t ModuleCount() { return impl::g_ModuleCount; }
 inline const LoadedModule* Module(uint32_t i) {
@@ -727,7 +742,20 @@ inline Reject LoadFrom(Reader& file) {
     impl::g_Flush(base, imageSize);
 
     // --- record --------------------------------------------------------------
-    LoadedModule& m = *impl::g_Filling;
+    //
+    // The slot is claimed HERE, not by the caller. It was briefly the caller's
+    // job, which meant LoadFrom dereferenced a pointer only Load() ever set -
+    // and tools/loader_fuzz calls LoadFrom directly, so it crashed on the first
+    // case. A function that only works when a particular caller set a global
+    // first is not a function, it is half of one.
+    if (impl::g_ModuleCount >= Arena::kMaxModules) {
+        WIIXL_LOG("[loader:%s] %s: already holding %u modules, which is the limit",
+                  id, RejectName(Reject::NoMemory), Arena::kMaxModules);
+        Arena::SetCurrent(nullptr);
+        return Reject::NoMemory;
+    }
+    LoadedModule& m = impl::g_Modules[impl::g_ModuleCount];
+    m = LoadedModule{};
     impl::CopyId(m.id, h.modId);
     m.image = image;
     m.imageSize = imageSize;
@@ -739,6 +767,10 @@ inline Reject LoadFrom(Reader& file) {
     m.entryCalled = false;
     m.valid = true;
     m.arena = sub;
+
+    // COMMITTED. Everything above could still have failed; from here the module
+    // is visible to RunPhase.
+    impl::g_ModuleCount++;
 
     // --- init_array ----------------------------------------------------------
     // Nothing else will ever run these: the flat build has no .init_array output
@@ -859,11 +891,29 @@ inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t ca
     void* client = FS::impl::g_FSClient;
     void* block = FS::impl::g_FSCmdBlock;
 
+    // THROUGH THE SAME CANDIDATE LIST FILES USE. Opening the raw string was
+    // the first boot's failure: the loader reported "WiiXLaunch/mods does not
+    // exist" three lines after the load-point probe had listed its contents,
+    // because the probe used the absolute path and FS::File::Open resolves
+    // candidates while a bare FSOpenDir does not.
+    char storage[3][256];
+    const char* candidates[4];
+    FS::impl::Candidates(dir, storage, candidates);
+
     uint32_t handle = 0;
-    if (openDir(client, block, dir, &handle, 0xFFFFFFFF) != 0) {
-        WIIXL_LOG("[loader] %s does not exist or could not be opened", dir);
+    const char* opened = nullptr;
+    for (uint32_t c = 0; c < 4u && !opened; ++c) {
+        if (!candidates[c] || !candidates[c][0]) continue;
+        if (openDir(client, block, candidates[c], &handle, 0xFFFFFFFF) == 0) {
+            opened = candidates[c];
+        }
+    }
+    if (!opened) {
+        WIIXL_LOG("[loader] %s does not exist or could not be opened, through any of "
+                  "the %u candidate paths", dir, 4u);
         return 0;
     }
+    WIIXL_LOG("[loader] enumerating %s", opened);
 
     uint32_t n = 0, seen = 0, skipped = 0;
     while (seen < 64) {
@@ -914,33 +964,14 @@ inline uint32_t ListWxlm(const char*, char[][kMaxNameLen], uint32_t) { return 0;
 inline Reject Load(const char* path) {
     WIIXL_LOG("[loader] opening %s", path);
 
-    if (impl::g_ModuleCount >= Arena::kMaxModules) {
-        WIIXL_LOG("[loader] %s: already holding %u modules, which is the limit",
-                  RejectName(Reject::NoMemory), Arena::kMaxModules);
-        return Reject::NoMemory;
-    }
-
     FS::File file;
     if (!file.Open(path)) {
         WIIXL_LOG("[loader] %s: could not open %s", RejectName(Reject::ReadFailed), path);
         return Reject::ReadFailed;
     }
 
-    // The slot is claimed for the duration and only KEPT if the load succeeds.
-    // A rejected module leaving a half-filled entry behind is how RunPhase
-    // would end up calling into an image that was never relocated.
-    impl::g_Filling = &impl::g_Modules[impl::g_ModuleCount];
-    *impl::g_Filling = LoadedModule{};
-
     const Reject r = LoadFrom(file);
     file.Close();
-
-    if (r == Reject::None) {
-        impl::g_ModuleCount++;
-    } else {
-        *impl::g_Filling = LoadedModule{};
-    }
-    impl::g_Filling = nullptr;
     return r;
 }
 

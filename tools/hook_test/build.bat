@@ -40,4 +40,18 @@ if errorlevel 1 (
 "%HERE%hook_test.exe"
 set RC=%ERRORLEVEL%
 popd
-exit /b %RC%
+:: A CRASH IS A FAILURE, and used to not be one.
+::
+:: An access violation leaves ERRORLEVEL at -1073741819, and cmd's
+:: `if errorlevel 1` means "errorlevel is >= 1" - which a NEGATIVE value is
+:: not. So `exit /b %%RC%%` handed the caller a number that tested as success,
+:: and a gate that segfaulted on its first case passed the build in silence.
+:: Found when hook_test started crashing and the build stayed green.
+::
+:: Any non-zero result becomes 1, so it cannot be mistaken for either
+:: success or the exit-2 "toolchain missing" case.
+if not "%RC%"=="0" (
+    echo [hook_test] FAILED or CRASHED - process exit code %RC%.
+    exit /b 1
+)
+exit /b 0

@@ -42,6 +42,36 @@ alignas(32) inline uint8_t g_FSClient[0x1700];
 alignas(32) inline uint8_t g_FSCmdBlock[0xA80];
 inline bool g_FSClientReady = false;
 
+// The path candidates a relative name is tried through, in order.
+//
+// ONE list, because a directory that resolves differently from the files inside
+// it is a bug with no symptom until something enumerates. That is exactly what
+// happened: the module loader opened "WiiXLaunch/mods" with a raw FSOpenDir
+// while every file open went through this list, so the loader reported the
+// directory missing three lines after the load-point probe had listed its
+// contents. Anything that opens a path resolves it here.
+//
+// `storage` supplies the buffers; `out` is filled with up to 4 candidates, the
+// first being the path exactly as given. Entries may be null - skip those.
+inline void Candidates(const char* path, char storage[3][256], const char* out[4]) {
+    auto concat2 = [](char* dst, size_t cap, const char* a, const char* b) {
+        size_t la = 0; while (a[la] && la + 1 < cap) { dst[la] = a[la]; ++la; }
+        size_t lb = 0; while (b[lb] && la + lb + 1 < cap) { dst[la + lb] = b[lb]; ++lb; }
+        dst[la + lb] = '\0';
+    };
+
+    out[0] = path;
+    out[1] = out[2] = out[3] = nullptr;
+    if (path && path[0] != '/') {
+        concat2(storage[0], 256, "/vol/content/", path);
+        concat2(storage[1], 256, "content/", path);
+        concat2(storage[2], 256, "/vol/content/WiiXLaunch/", path);
+        out[1] = storage[0];
+        out[2] = storage[1];
+        out[3] = storage[2];
+    }
+}
+
 inline bool EnsureFSClient() {
 #if WIIXL_CEMU
     if (g_FSClientReady) return true;
@@ -310,18 +340,12 @@ public:
             dst[la + lb] = '\0';
         };
 
-        const char* pathsToTry[4] = { path, nullptr, nullptr, nullptr };
-        char altPath1[256];
-        char altPath2[256];
-        char altPath3[256];
-        if (path[0] != '/') {
-            concat2(altPath1, sizeof(altPath1), "/vol/content/", path);
-            concat2(altPath2, sizeof(altPath2), "content/", path);
-            concat2(altPath3, sizeof(altPath3), "/vol/content/WiiXLaunch/", path);
-            pathsToTry[1] = altPath1;
-            pathsToTry[2] = altPath2;
-            pathsToTry[3] = altPath3;
-        }
+        // Through the shared list, so a file and the directory holding it are
+        // always resolved the same way.
+        char storage[3][256];
+        const char* pathsToTry[4];
+        impl::Candidates(path, storage, pathsToTry);
+        (void)concat2;
 
 #if WIIXL_CEMU
         using FnFSOpenFile = int32_t (*)(void* client, void* block, const char* path, const char* mode, uint32_t* handle, uint32_t errorMask);
