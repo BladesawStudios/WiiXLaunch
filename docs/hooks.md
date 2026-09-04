@@ -35,6 +35,129 @@ extern "C" void WiiXLaunch_Init() {
 
 `WIIXL_HOOK_DEFINE_REPLACE` is also available with the same interface, for hooks that don't need `Orig()` at all.
 
+## Several hooks on one function
+
+Any number of hooks may share a target address. They are chained, and the chain
+is built by `WiiXLaunch::Hooks` (`include/wiixlaunch/hook_manager.hpp`), which
+is the single registry every hook on every platform goes through.
+
+**Call order is first-installed-first.**
+
+```
+install A, then B, then C   =>   A -> B -> C -> the game
+```
+
+Load order is priority order, which is the only lever a user actually has -
+they choose which mods to enable, not how those mods were written.
+
+### Why first-installed-first, and not the reverse
+
+The behaviour matters less than the reason, because the reason is a
+correctness property rather than a preference.
+
+Under first-installed-first the chain is laid out like this:
+
+```
+target        -> A.callback        written ONCE, on the first install
+A.slot        -> B.callback        rewritten when B installs
+B.slot        -> C.callback        rewritten when C installs
+C.slot        -> prologueTramp     C is the tail
+prologueTramp -> saved prologue, then a jump to target+16
+```
+
+Appending a hook rewrites the **contents** of the previous tail's trampoline
+slot. It never changes that slot's **address**.
+
+That is the whole argument. A mod captures its `Original` pointer at install
+time, and a compiled mod may cache it in a global, hand it to another
+subsystem, or keep it for the life of the process - the host has no way to
+reach into a binary blob and update a pointer it handed out. Under
+last-installed-first, `target` would have to be repointed at each new outermost
+hook and every earlier `Original` would have to move with it. Every mod already
+holding one would be left with a stale pointer into a trampoline that no longer
+means what it meant.
+
+**That failure is a use-after-move nobody would ever diagnose.** The pointer is
+still readable, the memory is still mapped, the four instructions there are
+still a valid jump - to the wrong place. It would present as a mod that works
+alone and misbehaves when another mod is enabled, with nothing in any log
+connecting the two. First-installed-first makes the situation impossible rather
+than rare: the address a mod receives stays valid forever, because only the
+jump inside it is ever rewritten.
+
+### The prologue is captured exactly once
+
+When the first hook is installed at an address, the manager saves the four
+instructions it is about to displace and builds `prologueTramp` from them. It
+never reads those bytes again. Every `Original` after that is **emitted** from
+a callback address the manager already knows.
+
+This is what "correct by construction" means here, and it is worth stating what
+it replaced. The old mechanism copied the four instructions at the target every
+time. When a second hook installed, what it copied was no longer the prologue -
+it was the first hook's jump. Chaining worked, but only because a long jump
+happens to be exactly four instructions and happens to be position-independent.
+Nothing checked either fact, and nothing recorded that it had happened.
+
+`tools/hook_test` asserts the discriminating property directly: **the saved
+prologue must not decode as a long jump.** If the manager ever re-read the
+target, that assertion fails. It is the one check the old mechanism provably
+could not pass.
+
+### Prologues that cannot be relocated
+
+Moving four instructions to a trampoline changes what a PC-relative branch
+means - it still executes, it just goes somewhere else. The manager decodes the
+displaced instructions and **refuses the hook**, naming the offending
+instruction, rather than relocating something it cannot relocate:
+
+```
+Hook: modA refused at 0x03A75D48 - PROLOGUE-NOT-RELOCATABLE: instruction 2
+(0x48000040) is a PC-relative branch, and moving it to a trampoline would
+silently send it somewhere else.
+```
+
+The decode is logged on every site, clean or not, because "we refused nothing"
+and "the decoder never ran" otherwise read identically:
+
+```
+Hook: prologue check at 0x03A75D48: 4 instructions decoded, 0 relative
+```
+
+Appends at an address that is already hooked do **not** re-decode - the
+prologue was captured before any hook existed - which is why the boot summary
+counts sites rather than installs.
+
+### Conflict reporting
+
+Sharing is never refused. The host does not arbitrate between mods it knows
+nothing about, and a mod that means to replace a function simply never calls
+`Original`, truncating the chain below it. What the host does instead is name
+everyone involved, at install and again in the boot summary:
+
+```
+Hook: SHARED TARGET 0x03A75D48 is now 2 deep - call order: modA -> modB -> game.
+```
+
+That line is the reason the registry is central. It turns "my game crashes with
+these two mods enabled" into a one-line diagnosis.
+
+### Who owns a hook
+
+Every install is attributed. Define `WIIXL_HOOK_OWNER` before including
+`hook.hpp` to claim a name; the framework's own hooks are `"host"`, a game
+module uses its own, and the loader passes a mod id for a `.wxlm`'s hooks. The
+name exists for exactly one purpose: so the line above can say who.
+
+### Platform scope, stated honestly
+
+The registry, the ownership record and the conflict report are identical on all
+three platforms. **The chaining is not.** On Cemu the manager owns it end to
+end. On Switch and Wii U, installation belongs to exlaunch and WUPS, which
+build their own trampolines; the manager records the hook so conflict reporting
+works there too, but it does not reimplement their mechanism. Chain order on
+those platforms is whatever the platform does.
+
 ## Finding offsets
 
 Offsets are addresses into the game binary. WiiXLaunch doesn't locate these for you; that's reverse-engineering work done in a disassembler (Ghidra, IDA) against the specific game version you're targeting. WiiXLaunch uses relative offsets, so taking an address from Ghidra using the SwitchLoader plugin, ensure you subtract `0x7100000000`. Using the RPX plugin for Ghidra already yields the proper offsets when reverse engineering Wii U binaries.

@@ -167,6 +167,14 @@ namespace impl {
 
 inline Site g_Sites[kMaxSites];
 inline uint32_t g_SiteCount = 0;
+
+// THE PROLOGUE DECODER'S OWN LIVENESS. "We refused nothing" and "the decoder
+// never ran" look identical in a log, and that ambiguity is the whole failure
+// class docs/modules.md rule four is about. These count what was actually
+// examined, so the number can visibly drop to zero.
+inline uint32_t g_PrologueWordsDecoded = 0;
+inline uint32_t g_PrologueRelativeFound = 0;
+inline uint32_t g_PrologueSitesChecked = 0;
 inline Link g_Links[kMaxLinks];
 inline uint32_t g_LinkCount = 0;
 
@@ -276,6 +284,19 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
         const volatile uint32_t* src = reinterpret_cast<const volatile uint32_t*>(target);
         uint32_t saved[kJumpWords];
         for (uint32_t i = 0; i < kJumpWords; ++i) saved[i] = src[i];
+
+        uint32_t relative = 0;
+        for (uint32_t i = 0; i < kJumpWords; ++i) {
+            if (IsPcRelativeBranch(saved[i])) ++relative;
+        }
+        impl::g_PrologueWordsDecoded += kJumpWords;
+        impl::g_PrologueRelativeFound += relative;
+        impl::g_PrologueSitesChecked++;
+
+        // Printed on EVERY site, clean or not. A silent decoder and an absent
+        // decoder read the same; a count does not.
+        WIIXL_LOG("Hook: prologue check at %p: %u instructions decoded, %u relative",
+                  reinterpret_cast<void*>(target), kJumpWords, relative);
 
         for (uint32_t i = 0; i < kJumpWords; ++i) {
             if (IsPcRelativeBranch(saved[i])) {
@@ -423,6 +444,16 @@ inline void LogState() {
     }
     WIIXL_LOG("Hook: %u target(s) hooked by %u hook(s); %u target(s) shared by more "
               "than one owner", impl::g_SiteCount, impl::g_LinkCount, shared);
+
+    // The decoder ran this many times. An append at an existing address does
+    // NOT re-decode - the prologue was captured once, before any hook existed,
+    // which is the property that makes the chain correct by construction - so
+    // this counts SITES, not installs, and that is why the two numbers differ.
+    WIIXL_LOG("Hook: prologue decoder ran on %u site(s): %u instructions decoded, "
+              "%u PC-relative found and refused. Appends do not re-decode, because "
+              "the prologue is captured once per address before any hook exists.",
+              impl::g_PrologueSitesChecked, impl::g_PrologueWordsDecoded,
+              impl::g_PrologueRelativeFound);
 
     char owners[160];
     for (uint32_t i = 0; i < impl::g_SiteCount; ++i) {

@@ -30,7 +30,7 @@ static int g_failures = 0;
 
 // A floor, so a suite that shrinks cannot report success over what is left of
 // itself. See the fourth rule in docs/modules.md.
-static const int kExpectedChecks = 34;
+static const int kExpectedChecks = 50;
 
 static void ok(const char* what, bool cond) {
     ++g_checks;
@@ -69,6 +69,131 @@ static void FillPrologue() {
     g_Target[2] = 0x90010024u;   // stw  r0,36(r1)
     g_Target[3] = 0x38600001u;   // li   r3,1
     for (int i = 4; i < 16; ++i) g_Target[i] = 0x60000000u;  // nop
+}
+
+// ---------------------------------------------------------------------------
+// An INDEPENDENT oracle for "is this instruction position-independent?"
+//
+// The obvious test would be to assert IsPcRelativeBranch(insn) equals
+// (opcode is 16 or 18) && AA == 0. That is the implementation restated, and by
+// the third rule in docs/modules.md it can only confirm what the code already
+// believes.
+//
+// So the property is re-derived from what the ISA says a branch DOES. PowerPC
+// computes a branch target as:
+//
+//     AA == 0   NIA = CIA + EXTS(displacement || 0b00)      (relative)
+//     AA == 1   NIA =       EXTS(displacement || 0b00)      (absolute)
+//
+// An instruction is position-dependent exactly when moving it changes where it
+// goes. So: decode the target at two different addresses and compare. Nothing
+// here mentions opcode 16 or 18 as a CLASSIFICATION - they appear only as the
+// encodings whose target is computed, which is ISA fact, not a restatement of
+// the function under test.
+// ---------------------------------------------------------------------------
+
+static const uint64_t kNotABranch = 0xFFFFFFFFFFFFFFFFull;
+
+static uint64_t BranchTargetAt(uint32_t insn, uint32_t pc) {
+    const uint32_t op = insn >> 26;
+    const uint32_t aa = (insn >> 1) & 1u;
+
+    if (op == 18u) {                       // I-form: b, ba, bl, bla
+        int32_t li = static_cast<int32_t>((insn & 0x03FFFFFCu) << 6) >> 6;  // sign-extend 26
+        return static_cast<uint64_t>(static_cast<uint32_t>(aa ? li : (int32_t)pc + li));
+    }
+    if (op == 16u) {                       // B-form: bc, bca, bcl, bcla
+        int32_t bd = static_cast<int32_t>((insn & 0x0000FFFCu) << 16) >> 16;  // sign-extend 16
+        return static_cast<uint64_t>(static_cast<uint32_t>(aa ? bd : (int32_t)pc + bd));
+    }
+    return kNotABranch;                    // everything else goes nowhere by address
+}
+
+// Moving it changes where it goes => its meaning depends on where it sits.
+static bool OracleIsPositionDependent(uint32_t insn) {
+    const uint64_t a = BranchTargetAt(insn, 0x02000000u);
+    const uint64_t b = BranchTargetAt(insn, 0x01800000u);
+    if (a == kNotABranch && b == kNotABranch) return false;
+    return a != b;
+}
+
+static void FuzzDecoder() {
+    std::printf("\ndecoder fuzz, judged by an independent oracle:\n");
+
+    long long checked = 0, relative = 0, absolute = 0, nonBranch = 0;
+    int disagreements = 0;
+    uint32_t firstBad = 0;
+
+    // Payload bits the function must NOT be looking at, varied so that a
+    // classifier keying off the wrong field shows up.
+    const uint32_t payloads[8] = {
+        0x00000000u, 0x03FFFFFCu, 0x00007FFCu, 0x0000FFFCu,
+        0x02AAAAA8u, 0x01555554u, 0x0000AAA8u, 0x00005554u,
+    };
+
+    for (uint32_t op = 0; op < 64u; ++op) {
+        for (uint32_t pay = 0; pay < 8u; ++pay) {
+            for (uint32_t lowBits = 0; lowBits < 4u; ++lowBits) {   // AA and LK
+                const uint32_t insn = (op << 26) | (payloads[pay] & 0x03FFFFFCu) | lowBits;
+                const bool got = H::IsPcRelativeBranch(insn);
+                const bool want = OracleIsPositionDependent(insn);
+                ++checked;
+                if (want) ++relative; else if (BranchTargetAt(insn, 0) == kNotABranch) ++nonBranch;
+                else ++absolute;
+                if (got != want && disagreements++ == 0) firstBad = insn;
+            }
+        }
+    }
+
+    // Dense sweep of the two branch forms across their whole displacement
+    // range, both AA values. This is where a sign-extension or mask error
+    // would live.
+    for (uint32_t d = 0; d < 0x04000000u; d += 0x400u) {
+        for (uint32_t lowBits = 0; lowBits < 4u; ++lowBits) {
+            const uint32_t bi = (18u << 26) | (d & 0x03FFFFFCu) | lowBits;
+            const bool gi = H::IsPcRelativeBranch(bi);
+            const bool wi = OracleIsPositionDependent(bi);
+            ++checked;
+            if (wi) ++relative; else ++absolute;
+            if (gi != wi && disagreements++ == 0) firstBad = bi;
+
+            const uint32_t bb = (16u << 26) | (d & 0x0000FFFCu) | lowBits;
+            const bool gb = H::IsPcRelativeBranch(bb);
+            const bool wb = OracleIsPositionDependent(bb);
+            ++checked;
+            if (wb) ++relative; else ++absolute;
+            if (gb != wb && disagreements++ == 0) firstBad = bb;
+        }
+    }
+
+    std::printf("  %lld words checked: %lld position-dependent, %lld absolute-form, "
+                "%lld non-branch\n", checked, relative, absolute, nonBranch);
+
+    ok("the decoder agrees with the oracle on every word", disagreements == 0);
+    if (disagreements) {
+        std::printf("        %d disagreements, first at 0x%08X (decoder says %s)\n",
+                    disagreements, firstBad,
+                    H::IsPcRelativeBranch(firstBad) ? "relative" : "not relative");
+    }
+
+    // The sweep has to have SEEN both answers, or agreement is vacuous - a
+    // decoder returning a constant would agree with an oracle that also never
+    // varied. Fourth rule, applied to this test.
+    ok("the sweep saw position-dependent words", relative > 0);
+    ok("the sweep saw absolute-form branches", absolute > 0);
+    ok("the sweep saw non-branch words", nonBranch > 0);
+    ok("the sweep was not trivially small", checked > 100000);
+
+    // The failure that actually matters: a relative form classified as safe
+    // becomes a silent wrong jump. Assert that direction on its own.
+    int missed = 0;
+    for (uint32_t op = 0; op < 64u; ++op) {
+        for (uint32_t pay = 0; pay < 8u; ++pay) {
+            const uint32_t insn = (op << 26) | (payloads[pay] & 0x03FFFFFCu);
+            if (OracleIsPositionDependent(insn) && !H::IsPcRelativeBranch(insn)) ++missed;
+        }
+    }
+    ok("no position-dependent word is ever called safe to relocate", missed == 0);
 }
 
 int main() {
@@ -196,6 +321,8 @@ int main() {
                 H::DecodeLongJump(g_Target), 0x01810000u);
     }
 
+    FuzzDecoder();
+
     std::printf("\ntwo separate targets do not interfere:\n");
     {
         H::ResetForTest();
@@ -221,7 +348,8 @@ int main() {
         return 1;
     }
     std::printf("%s (%d checks: encoding, PC-relative refusal, three-deep chain "
-                "construction, Original stability, site isolation)\n",
+                "construction, Original stability, site isolation, 526k-word "
+                "decoder fuzz)\n",
                 g_failures == 0 ? "ALL HOOK TESTS PASS" : "HOOK TESTS FAILED", g_checks);
     return g_failures != 0;
 }
