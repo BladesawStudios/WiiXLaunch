@@ -166,6 +166,38 @@ if errorlevel 1 exit /b 1
 python scripts\wxlm.py build\sample_mod.elf build\sample.wxlm --id sample --phase load
 if errorlevel 1 exit /b 1
 
+:: --- the two colliding modules ------------------------------------------
+:: These hook the SAME address on purpose. Two mods that did not interact
+:: would prove directory enumeration and nothing else; the point is call
+:: order and the conflict line, together, in one boot.
+::
+:: The FILENAMES decide the order - load order is lexical by filename, and
+:: load order is hook install order is call order. a_first sorts before
+:: b_second, which is the whole reason they are named that way.
+for %%M in (a_first b_second) do (
+  if "%%M"=="a_first" (set "MODSRC=hook_mod_a") else (set "MODSRC=hook_mod_b")
+  call :build_mod %%M !MODSRC!
+  if errorlevel 1 exit /b 1
+)
+
 python scripts\deploy.py
 if errorlevel 1 exit /b 1
 echo Cemu build complete!
+exit /b 0
+
+:: --- one module, built and packed ---------------------------------------
+:build_mod
+:: %1 = mod id and output name, %2 = directory under examples/
+"%DKP_PPC_GXX%" ^
+  -std=gnu++20 -fno-pie -fno-pic -msdata=none -Os ^
+  -ffreestanding -fno-exceptions -fno-rtti ^
+  -D__CEMU__=1 -DWIIXL_CEMU=1 ^
+  -nostartfiles -nostdlib -T scripts\wxlm_mod.ld -Wl,-q ^
+  -Wl,--unresolved-symbols=ignore-all ^
+  examples\%2\mod.cpp -lgcc ^
+  -o build\%1.elf
+if errorlevel 1 exit /b 1
+python scripts\wxlm.py build\%1.elf build\%1.wxlm --id %1 --phase load
+if errorlevel 1 exit /b 1
+exit /b 0
+

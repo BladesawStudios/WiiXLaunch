@@ -223,4 +223,56 @@ asm(
     "bctr\n"
 );
 
+// ---------------------------------------------------------------------------
+// The hook demonstration target.
+//
+// A real function in the payload, hooked by real mods through the real chain,
+// so a boot can show call order and the conflict line together. It exists
+// because a wrong chain on a real game function is a crash, and the thing that
+// needed proving at this stage was the CHAIN - game hooking is already
+// demonstrated by the game module's own hooks.
+//
+// WRITTEN IN ASSEMBLY ON PURPOSE. The manager displaces the first four
+// instructions into a trampoline and refuses any prologue containing a
+// PC-relative branch. A C function's prologue is whatever the compiler felt
+// like emitting that day, and could acquire a relative branch from an inlining
+// decision three releases from now - at which point the demonstration would
+// start refusing itself and look like a manager bug. These four are chosen and
+// fixed:
+//
+//   mflr 0        7C0802A6   move from link register
+//   stwu 1,-32(1) 9421FFE0   push a frame
+//   stw  0,36(1)  90010024   save the return address
+//   nop           60000000
+//
+// None is a branch of any form, so all four survive relocation. The `bl` that
+// does the real work is the FIFTH instruction and is never moved - the
+// trampoline jumps back to target+16, which is exactly this address.
+//
+// tools/hook_test asserts the encodings above are what IsPcRelativeBranch calls
+// safe, so this comment cannot quietly stop being true.
+extern "C" void WiiXLaunch_HookProbeBody();
+
+extern "C" __attribute__((used)) void WiiXLaunch_HookProbeBody() {
+    WIIXL_LOG("HookProbe: host body ran (this is the end of the chain)");
+}
+
+asm(
+    ".section .text.WiiXLaunch_HookProbe\n"
+    ".global WiiXLaunch_HookProbe\n"
+    ".align 2\n"
+    "WiiXLaunch_HookProbe:\n"
+    // --- the four displaced instructions; none is position-dependent --------
+    "mflr 0\n"
+    "stwu 1, -32(1)\n"
+    "stw 0, 36(1)\n"
+    "nop\n"
+    // --- everything from here stays put ------------------------------------
+    "bl WiiXLaunch_HookProbeBody\n"
+    "lwz 0, 36(1)\n"
+    "mtlr 0\n"
+    "addi 1, 1, 32\n"
+    "blr\n"
+);
+
 #endif // WIIXL_CEMU

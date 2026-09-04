@@ -219,6 +219,17 @@ inline Site* FindSite(uintptr_t target) {
 
 } // namespace impl
 
+// The mod id hooks are currently attributed to.
+//
+// The loader sets this around a module's entry and clears it afterwards, the
+// same shape as Arena::SetCurrent and for the same reason: the install path has
+// no place to carry an identity, and a hook that ends up attributed to the
+// wrong mod makes the conflict report worse than useless. Null means "not
+// inside a module", and the caller's own WIIXL_HOOK_OWNER is used.
+namespace impl { inline const char* g_CurrentOwner = nullptr; }
+inline void SetCurrentOwner(const char* id) { impl::g_CurrentOwner = id; }
+inline const char* CurrentOwner() { return impl::g_CurrentOwner; }
+
 // Forgets every site and link. For a host test that runs many scenarios;
 // nothing in a real host calls it, because a hook is never uninstalled.
 inline void ResetForTest() {

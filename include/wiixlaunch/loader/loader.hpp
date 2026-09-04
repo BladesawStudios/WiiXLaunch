@@ -6,9 +6,10 @@
 // relocates it, resolves its imports against the surface registry, runs its
 // .init_array, and calls its entry point at the right phase.
 //
-// ONE MODULE, deliberately. Multi-mod is a later stage and brings its own
-// questions - shared heap accounting, hook chaining, load order. This gets one
-// module end to end first.
+// SEVERAL MODULES. LoadAll enumerates a directory and loads every .wxlm in it,
+// in lexical filename order, each into its own bounded arena grant and each
+// attributed by mod id when it installs a hook. That order is a specification,
+// not an enumeration artefact - see LoadAll and docs/loader.md.
 //
 // ORDER OF OPERATIONS, and it is the order for a reason:
 //
@@ -37,6 +38,7 @@
 #include <wiixlaunch/loader/surface.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/arena.hpp>
+#include <wiixlaunch/hook_manager.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -49,6 +51,11 @@ namespace WiiXLaunch::Loader {
 
 using Wxlm::Reject;
 using Wxlm::RejectName;
+
+// A .wxlm filename and the path it is reached through. Both bounded; nothing
+// here allocates to hold a name.
+constexpr uint32_t kMaxNameLen = 64;
+constexpr uint32_t kMaxPathLen = 192;
 
 // How the loader publishes code it has written.
 //
@@ -105,8 +112,15 @@ struct LoadedModule {
 
 namespace impl {
 
-// One slot. Multi-mod is a later stage.
-inline LoadedModule g_Module{};
+// One slot per loaded module. Bounded by the arena's own module limit, since a
+// module that cannot be granted memory cannot be loaded anyway.
+inline LoadedModule g_Modules[Arena::kMaxModules]{};
+inline uint32_t g_ModuleCount = 0;
+
+// The slot LoadFrom is currently filling. Not an index, because the slot is
+// claimed before the load can fail and released again if it does - a rejected
+// module must not leave a half-filled entry behind for RunPhase to walk into.
+inline LoadedModule* g_Filling = nullptr;
 
 // Streaming buffer for the integrity pass. Static rather than heap because the
 // integrity check runs BEFORE anything is allocated - that is the point of it.
@@ -119,6 +133,43 @@ alignas(64) inline uint8_t g_Scratch[1024];
 // destination. At alignas(8) this happened to work - a static usually lands
 // more aligned than it asks for - which is the worst kind of working.
 alignas(64) inline uint8_t g_HeaderBytes[sizeof(Wxlm::Header)];
+
+// Filenames and paths. Bounded, because everything here is.
+inline void CopyName(char* dst, const char* src) {
+    uint32_t i = 0;
+    for (; i + 1 < kMaxNameLen && src && src[i]; ++i) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+// Byte-wise ascending. Deliberately NOT case-insensitive and not locale-aware:
+// the order has to be predictable from the bytes of a filename on any host, and
+// "predictable" beats "friendly" when it is the user's only lever over which
+// mod runs first. Uppercase sorts before lowercase; docs/loader.md says so.
+inline bool NameLess(const char* a, const char* b) {
+    for (uint32_t i = 0; i < kMaxNameLen; ++i) {
+        const unsigned char ca = static_cast<unsigned char>(a[i]);
+        const unsigned char cb = static_cast<unsigned char>(b[i]);
+        if (ca != cb) return ca < cb;
+        if (ca == 0) return false;          // equal
+    }
+    return false;
+}
+
+inline void JoinPath(char* dst, const char* dir, const char* name) {
+    uint32_t n = 0;
+    for (; n + 1 < kMaxPathLen && dir && dir[n]; ++n) dst[n] = dir[n];
+    if (n && dst[n - 1] != '/' && n + 1 < kMaxPathLen) dst[n++] = '/';
+    for (uint32_t i = 0; name && name[i] && n + 1 < kMaxPathLen; ++i) dst[n++] = name[i];
+    dst[n] = '\0';
+}
+
+inline bool EndsWithWxlm(const char* name) {
+    uint32_t n = 0;
+    while (name[n] && n < kMaxNameLen) ++n;
+    if (n < 5) return false;
+    return name[n - 5] == '.' && name[n - 4] == 'w' && name[n - 3] == 'x'
+        && name[n - 2] == 'l' && name[n - 1] == 'm';
+}
 
 inline void CopyId(char* dst, const char* src) {
     for (int i = 0; i < 16; ++i) dst[i] = src[i];
@@ -195,7 +246,10 @@ inline bool ReadAligned(Reader& file, uint32_t offset, uint8_t* dst, uint32_t si
 
 } // namespace impl
 
-inline const LoadedModule& Module() { return impl::g_Module; }
+inline uint32_t ModuleCount() { return impl::g_ModuleCount; }
+inline const LoadedModule* Module(uint32_t i) {
+    return i < impl::g_ModuleCount ? &impl::g_Modules[i] : nullptr;
+}
 
 // Streams the whole file to check fileSize and the content CRC, before a single
 // byte is allocated. This is what makes "skip it, log it, keep going" reliable:
@@ -673,7 +727,7 @@ inline Reject LoadFrom(Reader& file) {
     impl::g_Flush(base, imageSize);
 
     // --- record --------------------------------------------------------------
-    LoadedModule& m = impl::g_Module;
+    LoadedModule& m = *impl::g_Filling;
     impl::CopyId(m.id, h.modId);
     m.image = image;
     m.imageSize = imageSize;
@@ -725,29 +779,132 @@ inline Reject LoadFrom(Reader& file) {
 // OnInitialized callback, and base must not know that GX2 exists - the project
 // or the game module calls this when its phase arrives.
 inline void RunPhase(Wxlm::Phase phase) {
-    LoadedModule& m = impl::g_Module;
-    if (!m.valid || m.entryCalled) return;
-    if (m.phase != static_cast<uint8_t>(phase)) return;
+    // IN LOAD ORDER, and that is a specification, not an implementation
+    // detail. Entry order determines hook install order, and hook install
+    // order determines call order (docs/hooks.md). So this walks the array
+    // forwards, and the array is filled in the order LoadAll established.
+    for (uint32_t i = 0; i < impl::g_ModuleCount; ++i) {
+        LoadedModule& m = impl::g_Modules[i];
+        if (!m.valid || m.entryCalled) continue;
+        if (m.phase != static_cast<uint8_t>(phase)) continue;
 
 #if WIIXL_HOST
-    // Same reason as .init_array above: a host test never executes module code.
-    WIIXL_LOG("[loader:%s] phase %u reached, entry not called (host test build)",
-              m.id, m.phase);
-    m.entryCalled = true;
-    return;
+        // Same reason as .init_array above: a host test never executes module
+        // code.
+        WIIXL_LOG("[loader:%s] phase %u reached, entry not called (host test build)",
+                  m.id, m.phase);
+        m.entryCalled = true;
 #else
-    auto entry = reinterpret_cast<void (*)()>(
-        reinterpret_cast<uintptr_t>(m.image) + m.entryOffset);
-    WIIXL_LOG("[loader:%s] phase %u reached, calling entry at %p",
-              m.id, m.phase, reinterpret_cast<void*>(entry));
-    m.entryCalled = true;
-    Arena::SetCurrent(m.arena);
-    entry();
-    Arena::SetCurrent(nullptr);
-    WIIXL_LOG("[loader:%s] entry returned, %u of %u arena bytes used",
-              m.id, Arena::UsedIn(m.arena), Arena::GrantedTo(m.arena));
+        auto entry = reinterpret_cast<void (*)()>(
+            reinterpret_cast<uintptr_t>(m.image) + m.entryOffset);
+        WIIXL_LOG("[loader:%s] phase %u reached, calling entry at %p (module %u of %u "
+                  "in load order)", m.id, m.phase, reinterpret_cast<void*>(entry),
+                  i + 1, impl::g_ModuleCount);
+        m.entryCalled = true;
+
+        // Anything this module does is charged and attributed to it: memory to
+        // its arena, hooks to its mod id. Both are cleared afterwards so the
+        // next module cannot inherit either.
+        Arena::SetCurrent(m.arena);
+        Hooks::SetCurrentOwner(m.id);
+        entry();
+        Hooks::SetCurrentOwner(nullptr);
+        Arena::SetCurrent(nullptr);
+
+        WIIXL_LOG("[loader:%s] entry returned, %u of %u arena bytes used",
+                  m.id, Arena::UsedIn(m.arena), Arena::GrantedTo(m.arena));
 #endif
+    }
 }
+
+#if WIIXL_CEMU
+
+namespace impl {
+
+// coreinit's FSDirectoryEntry: a 100-byte stat followed by the name. Pinned,
+// because FSReadDir writes through this and a wrong size is a buffer overrun
+// into whatever follows.
+struct DirEntry { uint8_t stat[0x64]; char name[256]; };
+static_assert(sizeof(DirEntry) == 0x164, "must match coreinit FSDirectoryEntry");
+
+// 64-byte aligned for the same reason every other FS destination is - see
+// ReadVia above. FSReadDir is no more forgiving than FSReadFile.
+alignas(64) inline DirEntry g_DirEntry;
+
+using FnFSOpenDir  = int32_t (*)(void*, void*, const char*, uint32_t*, uint32_t);
+using FnFSReadDir  = int32_t (*)(void*, void*, uint32_t, void*, uint32_t);
+using FnFSCloseDir = int32_t (*)(void*, void*, uint32_t, uint32_t);
+
+// Names of the .wxlm files in `dir`, UNSORTED - FSReadDir's order is not
+// specified by coreinit and is not relied on anywhere. LoadAll sorts.
+//
+// Entries are filtered by extension rather than by stat flags: a directory
+// named "foo.wxlm" is a mistake either way, and matching the name is the same
+// rule scripts/deploy.py writes by.
+inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t cap) {
+    if (!FS::impl::EnsureFSClient()) {
+        WIIXL_LOG("[loader] cannot enumerate %s - no FS client", dir);
+        return 0;
+    }
+
+    auto openDir  = Backend::ResolveCemuFs<FnFSOpenDir>(Backend::CemuFsImport::FSOpenDir);
+    auto readDir  = Backend::ResolveCemuFs<FnFSReadDir>(Backend::CemuFsImport::FSReadDir);
+    auto closeDir = Backend::ResolveCemuFs<FnFSCloseDir>(Backend::CemuFsImport::FSCloseDir);
+    if (!openDir || !readDir || !closeDir) {
+        WIIXL_LOG("[loader] cannot enumerate %s - directory shims not resolved. That is "
+                  "a build problem, not a missing directory.", dir);
+        return 0;
+    }
+
+    void* client = FS::impl::g_FSClient;
+    void* block = FS::impl::g_FSCmdBlock;
+
+    uint32_t handle = 0;
+    if (openDir(client, block, dir, &handle, 0xFFFFFFFF) != 0) {
+        WIIXL_LOG("[loader] %s does not exist or could not be opened", dir);
+        return 0;
+    }
+
+    uint32_t n = 0, seen = 0, skipped = 0;
+    while (seen < 64) {
+        if (readDir(client, block, handle, &g_DirEntry, 0xFFFFFFFF) != 0) break;
+        ++seen;
+        g_DirEntry.name[sizeof(g_DirEntry.name) - 1] = '\0';
+        if (!EndsWithWxlm(g_DirEntry.name)) { ++skipped; continue; }
+        if (n >= cap) {
+            WIIXL_LOG("[loader] %s holds more than the %u modules this host can load; "
+                      "%s and anything after it are ignored", dir, cap, g_DirEntry.name);
+            break;
+        }
+        CopyName(names[n++], g_DirEntry.name);
+    }
+
+    closeDir(client, block, handle, 0xFFFFFFFF);
+    WIIXL_LOG("[loader] %s: %u entries seen, %u are .wxlm, %u skipped",
+              dir, seen, n, skipped);
+    return n;
+}
+
+} // namespace impl
+
+#elif WIIXL_WIIU
+
+namespace impl {
+inline uint32_t ListWxlm(const char* dir, char[][kMaxNameLen], uint32_t) {
+    // Not the same answer as "the directory is empty", and it must not read as
+    // one.
+    WIIXL_LOG("[loader] directory enumeration is not implemented on Wii U yet (%s)", dir);
+    return 0;
+}
+} // namespace impl
+
+#else
+
+namespace impl {
+inline uint32_t ListWxlm(const char*, char[][kMaxNameLen], uint32_t) { return 0; }
+} // namespace impl
+
+#endif
 
 #if WIIXL_CEMU || WIIXL_WIIU
 
@@ -757,15 +914,99 @@ inline void RunPhase(Wxlm::Phase phase) {
 inline Reject Load(const char* path) {
     WIIXL_LOG("[loader] opening %s", path);
 
+    if (impl::g_ModuleCount >= Arena::kMaxModules) {
+        WIIXL_LOG("[loader] %s: already holding %u modules, which is the limit",
+                  RejectName(Reject::NoMemory), Arena::kMaxModules);
+        return Reject::NoMemory;
+    }
+
     FS::File file;
     if (!file.Open(path)) {
         WIIXL_LOG("[loader] %s: could not open %s", RejectName(Reject::ReadFailed), path);
         return Reject::ReadFailed;
     }
 
+    // The slot is claimed for the duration and only KEPT if the load succeeds.
+    // A rejected module leaving a half-filled entry behind is how RunPhase
+    // would end up calling into an image that was never relocated.
+    impl::g_Filling = &impl::g_Modules[impl::g_ModuleCount];
+    *impl::g_Filling = LoadedModule{};
+
     const Reject r = LoadFrom(file);
     file.Close();
+
+    if (r == Reject::None) {
+        impl::g_ModuleCount++;
+    } else {
+        *impl::g_Filling = LoadedModule{};
+    }
+    impl::g_Filling = nullptr;
     return r;
+}
+
+// --- loading every module in a directory -----------------------------------
+//
+// LOAD ORDER IS LEXICAL BY FILENAME, ascending, byte-wise on the raw name.
+//
+// This is a specification, not an accident, and it has to be one: load order
+// determines hook install order, which determines the order mods see a call
+// (docs/hooks.md). It is the user's only lever over which mod acts first, so it
+// has to be something they can rely on and predict from the filenames they can
+// see, rather than whatever order the filesystem happens to return.
+//
+// FSReadDir's order is NOT specified by coreinit and is not stable across
+// filesystems or hosts, so it is never used directly - the names are collected
+// and sorted here. Byte-wise means uppercase sorts before lowercase, which is
+// worth knowing when naming a mod to run first.
+inline uint32_t LoadAll(const char* dir) {
+    WIIXL_LOG("[loader] enumerating %s", dir);
+
+    char names[Arena::kMaxModules][kMaxNameLen];
+    uint32_t count = impl::ListWxlm(dir, names, Arena::kMaxModules);
+    if (count == 0) {
+        WIIXL_LOG("[loader] no .wxlm files in %s - nothing to load. This is the "
+                  "default state of a fresh host and the game boots normally.", dir);
+        return 0;
+    }
+
+    // Insertion sort: at most kMaxModules entries, and being obviously correct
+    // matters more here than being fast.
+    for (uint32_t i = 1; i < count; ++i) {
+        char key[kMaxNameLen];
+        impl::CopyName(key, names[i]);
+        uint32_t j = i;
+        while (j > 0 && impl::NameLess(key, names[j - 1])) {
+            impl::CopyName(names[j], names[j - 1]);
+            --j;
+        }
+        impl::CopyName(names[j], key);
+    }
+
+    WIIXL_LOG("[loader] %u module(s) found; load order is lexical by filename, which "
+              "is also hook priority:", count);
+    for (uint32_t i = 0; i < count; ++i) {
+        WIIXL_LOG("[loader]   %u. %s", i + 1, names[i]);
+    }
+
+    uint32_t loaded = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        char path[kMaxPathLen];
+        impl::JoinPath(path, dir, names[i]);
+        const Reject r = Load(path);
+        if (r == Reject::None) {
+            ++loaded;
+        } else {
+            // A module that was FOUND and REFUSED must not report as an absent
+            // one. Every other module still loads - one bad file must not cost
+            // the user their boot, and must not silently cost them the rest of
+            // their mods either.
+            WIIXL_LOG("[loader] %s not loaded: %s. The remaining %u module(s) are "
+                      "still being loaded.", names[i], RejectName(r), count - i - 1);
+        }
+    }
+
+    WIIXL_LOG("[loader] %u of %u module(s) loaded", loaded, count);
+    return loaded;
 }
 
 #else
@@ -775,6 +1016,11 @@ inline Reject Load(const char* path) {
 inline Reject Load(const char* path) {
     WIIXL_LOG("[loader] not implemented on this target yet (%s)", path);
     return Reject::ReadFailed;
+}
+
+inline uint32_t LoadAll(const char* dir) {
+    WIIXL_LOG("[loader] not implemented on this target yet (%s)", dir);
+    return 0;
 }
 
 #endif

@@ -249,6 +249,37 @@ best-effort path, where "requested" is the interesting half of the answer. When
 a mod misbehaves in-game this is the first line worth having, and the wording
 above is reproduced literally so a bug report can be matched against it.
 
+## Load order
+
+`Loader::LoadAll(dir)` loads every `.wxlm` in a directory. **Load order is
+lexical by filename, ascending, byte-wise on the raw name.**
+
+That is a specification, and it has to be one. Load order determines the order
+module entry points run, which determines the order they install hooks, which
+determines the order they see a hooked call (see [Hooks](hooks.md)). It is the
+user's only lever over which mod acts first, so it has to be predictable from
+the filenames they can see.
+
+**`FSReadDir`'s order is not used.** coreinit does not specify it and it is not
+stable across filesystems or hosts. The names are collected and then sorted, so
+the order is a property of the filenames rather than of the volume they happen
+to sit on.
+
+Byte-wise means:
+
+- uppercase sorts before lowercase — `Zebra.wxlm` loads before `apple.wxlm`
+- digits sort before letters, so a `10_` / `20_` prefix scheme works, but
+  `10_` sorts before `9_` — pad to a fixed width if you use numbers
+- no locale, no case folding, no natural-number handling
+
+A module that is found and rejected does not stop the others: the remaining
+modules still load, and the log says which failed and how many were left. One
+bad file must not cost the user their boot, and it must not silently cost them
+the rest of their mods either.
+
+`scripts/deploy.py` prints the modules it packs in the same sorted order, so
+what the build shows and what the loader will do are the same list.
+
 ## Verifying the loader
 
 Two properties make the loader the component most worth testing hard: it reads

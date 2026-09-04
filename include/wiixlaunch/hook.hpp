@@ -106,7 +106,13 @@ namespace WiiXLaunch::impl {
     // the Cemu path, which speaks in raw addresses, casts them away.
     template <typename Cb, typename Orig>
     inline void InstallVia(uptr target, Cb callback, Orig* originalOut,
-                           const char* owner) {
+                           const char* fallbackOwner) {
+        // A hook installed while a module's entry is running belongs to that
+        // module, whatever the translation unit that compiled the call thought.
+        // WIIXL_HOOK_OWNER is a build-time name and cannot know which .wxlm is
+        // executing; the loader does.
+        const char* owner = ::WiiXLaunch::Hooks::CurrentOwner();
+        if (!owner) owner = fallbackOwner;
 #if WIIXL_CEMU
         // A payload callback is linked at 0 and lives in the code cave, so its
         // compile-time address has to be biased by where the payload landed.

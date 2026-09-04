@@ -16,6 +16,7 @@
 #include <wiixlaunch/debug_log.hpp>
 #include <wiixlaunch/fs.hpp>
 #include <wiixlaunch/loader/arena.hpp>
+#include <wiixlaunch/hook_manager.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -31,7 +32,9 @@ constexpr uint16_t kVersionMajor = 1;
 // 1.1 appends HeapGranted / HeapUsed / HeapRemaining. Appending bumps the
 // MINOR, so every mod built against v1.0 still resolves - which is the whole
 // reason the version is two numbers. This is the rule's first real use.
-constexpr uint16_t kVersionMinor = 1;
+// 1.2 appends InstallHook and HookProbeTarget. Appending bumps the MINOR, so
+// every mod built against v1.0 or v1.1 still resolves.
+constexpr uint16_t kVersionMinor = 2;
 
 // The ABI version of the .wxlm format and this whole boundary. Bumped when a
 // mod built against an older host would misbehave rather than merely miss a
@@ -90,6 +93,47 @@ extern "C" inline uint32_t CoreHeapRemaining() {
     return Arena::RemainingIn(Arena::Current());
 }
 
+// --- appended in v1.2 ------------------------------------------------------
+
+// The host's own hook demonstration target - a real function in the payload
+// whose first four instructions are known relocatable, written in assembly in
+// src/cemu/bootstrap.cpp precisely so that is guaranteed rather than hoped for.
+//
+// It exists so two mods can collide on ONE address deliberately, and the boot
+// can show chain order and the conflict line together, without a wrong chain
+// being able to take the game down. Hooking real game functions is what the
+// game module's own hooks already do; what needed proving here is the chain.
+extern "C" void WiiXLaunch_HookProbe();
+
+extern "C" inline uintptr_t CoreHookProbeTarget() {
+#if WIIXL_CEMU
+    return reinterpret_cast<uintptr_t>(&WiiXLaunch_HookProbe);
+#else
+    return 0;
+#endif
+}
+
+// Installs a hook on behalf of the calling module.
+//
+// The owner is NOT a parameter, and that is deliberate: a mod could then name
+// itself anything, and the conflict report - the entire reason the registry is
+// central - would be worth nothing. The loader sets the current owner around a
+// module's entry, so attribution comes from who the host is running, not from
+// what the module claims.
+//
+// Returns the address to call to continue the chain, or 0 if the hook was
+// refused. A mod that ignores the return value and never calls it has replaced
+// the function, which is legal and reported.
+extern "C" inline uintptr_t CoreInstallHook(uintptr_t target, uintptr_t callback) {
+    uintptr_t original = 0;
+    const char* owner = WiiXLaunch::Hooks::CurrentOwner();
+    const WiiXLaunch::Hooks::Install r =
+        WiiXLaunch::Hooks::InstallHook(target, callback,
+                                       owner ? owner : "unattributed", &original);
+    if (r != WiiXLaunch::Hooks::Install::Ok) return 0;
+    return original;
+}
+
 // Reads a whole file. Returns bytes read, or a negative value on failure.
 // `outRead` may be null.
 extern "C" inline int32_t CoreReadFile(const char* path, void* buffer, uint32_t maxSize) {
@@ -139,6 +183,9 @@ inline const Surface::Symbol kSymbols[] = {
     WIIXL_SURFACE_SYMBOL("HeapGranted",   &CoreHeapGranted),
     WIIXL_SURFACE_SYMBOL("HeapUsed",      &CoreHeapUsed),
     WIIXL_SURFACE_SYMBOL("HeapRemaining", &CoreHeapRemaining),
+    // v1.2. Appended, never inserted.
+    WIIXL_SURFACE_SYMBOL("InstallHook",     &CoreInstallHook),
+    WIIXL_SURFACE_SYMBOL("HookProbeTarget", &CoreHookProbeTarget),
 };
 
 } // namespace impl

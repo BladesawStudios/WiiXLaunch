@@ -577,16 +577,34 @@ version = 7
     print(f"[Cemu] Load-point probe file -> content/WiiXLaunch/mods/probe.bin "
           f"({len(probe_body)} bytes, magic {probe_magic.decode()})")
 
-    # The sample module, if this build produced one. Copied rather than
-    # generated: build_cemu.bat compiles and packs it, because the flags belong
-    # with the other compile flags.
-    sample_src = os.path.join(root_dir, "build", "sample.wxlm")
-    if os.path.exists(sample_src):
-        shutil.copy2(sample_src, os.path.join(probe_dir, "sample.wxlm"))
-        print(f"[Cemu] Module -> content/WiiXLaunch/mods/sample.wxlm "
-              f"({os.path.getsize(sample_src)} bytes)")
+    # Every module this build produced. Copied rather than generated:
+    # build_cemu.bat compiles and packs them, because the flags belong with the
+    # other compile flags.
+    #
+    # EVERY .wxlm in build/ is shipped, not a fixed list. The loader enumerates
+    # the directory and sorts lexically, so a stale module left in build/ would
+    # silently become part of the load order - which is exactly why the names
+    # are printed in sorted order below rather than just counted. What is listed
+    # here is what the loader will find, in the order it will find it.
+    build_dir = os.path.join(root_dir, "build")
+    modules = sorted(f for f in os.listdir(build_dir)
+                     if f.endswith(".wxlm")) if os.path.isdir(build_dir) else []
+
+    # Stale modules from an earlier build must not survive into this pack.
+    for old_name in sorted(os.listdir(probe_dir)):
+        if old_name.endswith(".wxlm") and old_name not in modules:
+            os.remove(os.path.join(probe_dir, old_name))
+            print(f"[Cemu] Removed stale module {old_name} from the pack")
+
+    if modules:
+        print(f"[Cemu] {len(modules)} module(s) -> content/WiiXLaunch/mods/, "
+              f"in the lexical order the loader will load them:")
+        for i, name in enumerate(modules, 1):
+            src = os.path.join(build_dir, name)
+            shutil.copy2(src, os.path.join(probe_dir, name))
+            print(f"[Cemu]   {i}. {name} ({os.path.getsize(src)} bytes)")
     else:
-        print("[Cemu] No build/sample.wxlm - the pack ships no module, and the loader "
+        print("[Cemu] No .wxlm in build/ - the pack ships no module, and the loader "
               "will log that it found nothing to load")
 
     # Package src/resources into content/WiiXLaunch/ for Cemu graphic pack
