@@ -1,4 +1,5 @@
 #include <wiixlaunch.hpp>
+#include <wiixlaunch/loader/load_point.hpp>
 #include <wiixlaunch/botw/botw.hpp>
 
 using namespace WiiXLaunch::BotW;
@@ -49,6 +50,23 @@ extern "C" void WiiXLaunch_Init() {
 #endif
 
     WIIXL_LOG("WiiXLaunch: init OK");
+
+    // --- STAGE 1: load-point validation -------------------------------------
+    //
+    // Site 1 of 2: the Cemu entry hook, which is the earliest point the host
+    // can possibly run. Ghidra (v208 Wii U RPX) says this is NOT early enough,
+    // and says so precisely rather than by guess:
+    //
+    //   FUN_03098928 - the function the entry hook sits on - IS the game's FS
+    //   bring-up. It calls FSInit at 0x030989bc and FSAddClient at 0x030989c8.
+    //   The entry hook replaces its FIRST instruction, so we are running before
+    //   both. FS should therefore be absent here.
+    //
+    // Expected verdict: FS-ABSENT. If it comes back FS-UP-FILE-MISSING or
+    // FS-USABLE, that assumption is wrong and the load point is cheaper than we
+    // thought - which is exactly the kind of thing worth measuring rather than
+    // reasoning about.
+    WiiXLaunch::LoadPoint::Probe("entry-hook");
 
     // Proof the system clock is reachable: console RTC on hardware,
     // host PC clock under Cemu. Reads "unavailable" on Switch.
