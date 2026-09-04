@@ -1,5 +1,6 @@
 #include <wiixlaunch.hpp>
 #include <wiixlaunch/loader/load_point.hpp>
+#include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/botw/botw.hpp>
 
 using namespace WiiXLaunch::BotW;
@@ -145,6 +146,33 @@ extern "C" void WiiXLaunch_Init() {
 #endif
 
     WIIXL_LOG("WiiXLaunch: init OK");
+
+    // --- STAGE 2: the surface registry --------------------------------------
+    //
+    // wiixl.core first, then whatever game modules this project installed.
+    //
+    // Registration is an explicit call, NOT static self-registration. The flat
+    // Cemu payload does not run C++ static constructors: scripts/cemu.ld has no
+    // .init_array output section, the linked ELF has none at all, and the
+    // bootstrap goes straight from relocating to WiiXLaunch_Init without ever
+    // walking one. Everything works today only because every global here is POD
+    // with a constant initialiser. A module that tried to register itself from
+    // a static constructor would simply never run.
+    //
+    // A weak-symbol hook would be the other obvious way to let base call into
+    // modules it cannot name, and it is a trap in THIS codebase specifically:
+    // deploy.py relocates every ADDR32 site by adding the code-cave base, so an
+    // undefined weak symbol resolving to 0 would come out as g_CodeCaveBase and
+    // test as non-null. Explicit calls avoid the whole question.
+    WiiXLaunch::Core::Register();
+
+    // Game modules go here. Base must never name one - this line lives in the
+    // project's own source, which is where knowledge of what was installed
+    // belongs. Stage 4 calls this before loading any .wxlm.
+    //
+    //   WiiXLaunch::BotW::Surfaces::Register();
+
+    WiiXLaunch::Surface::LogRegistered();
 
     // --- STAGE 1: load-point validation -------------------------------------
     //
