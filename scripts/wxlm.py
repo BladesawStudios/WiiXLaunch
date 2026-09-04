@@ -24,6 +24,8 @@ import subprocess
 import sys
 import zlib
 
+import ppc_relocs
+
 # --- must match include/wiixlaunch/loader/wxlm.hpp -------------------------
 MAGIC = 0x57584C4D
 FORMAT_VERSION = 1
@@ -162,96 +164,66 @@ def decode_import_symbol(name):
     return surface_part.replace("_", "."), symbol
 
 
-def read_undefined_symbols(readelf, elf):
-    """Symbols the module references but does not define - its imports."""
-    out = subprocess.check_output([readelf, "-sW", elf], text=True)
-    undefined = set()
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 8:
-            continue
-        if parts[6] == "UND":
-            undefined.add(parts[7])
-    return undefined
-
-
 def read_relocations(readelf, elf, payload, payload_size, undefined):
-    """Same extraction deploy.py performs for the host, plus imports.
+    """Turns the ELF's relocations into (kind, offset, value) triples.
 
-    ADDR32 sites already hold their own base-0 target, so the value is read back
-    out of the payload. A 16-bit half cannot be recovered from the instruction -
-    it is half an address, and HA additionally folds in a sign-extension carry -
-    so those carry the relocation's own resolved S+A.
+    The parsing itself lives in scripts/ppc_relocs.py and is shared with
+    deploy.py, because the host payload and a module are the same problem. This
+    function is only the module-specific policy on top: undefined
+    wiixl_import__* symbols become kind-4 entries carrying an import index.
 
-    A relocation against an UNDEFINED wiixl_import__* symbol is not a module-
-    relative address at all; it becomes a kind-4 entry whose value indexes the
-    import table, and the loader resolves it through the surface registry.
+    That sharing is not tidiness. This function used to do its own parsing and
+    dropped the addend, so every ADDR16_HA/LO pair resolved to its section base
+    - and the first module ever loaded printed the same string five times
+    because every literal pointed at the start of .rodata.
     """
-    out = subprocess.check_output([readelf, "-rW", elf], text=True)
     relocs = []
-    import_specs = []      # (surface, symbol) in first-seen order
+    import_specs = []      # (surface, symbol), in the order kind-4 values index
     import_index = {}
 
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) < 4:
-            continue
-        try:
-            offset = int(parts[0], 16)
-        except ValueError:
-            continue
-        kind_name = parts[2]
-        try:
-            s_plus_a = int(parts[3], 16)
-        except (ValueError, IndexError):
-            continue
+    for r in ppc_relocs.read(readelf, elf):
+        decoded = (decode_import_symbol(r.sym_name)
+                   if r.sym_name in undefined else None)
 
-        # readelf prints the symbol name after the value, when there is one.
-        sym_name = parts[4] if len(parts) > 4 else ""
-        if sym_name.endswith(" + 0"):
-            sym_name = sym_name[:-4]
-
-        decoded = decode_import_symbol(sym_name) if sym_name in undefined else None
         if decoded is not None:
-            if kind_name != "R_PPC_ADDR32":
+            if r.type != "R_PPC_ADDR32":
                 raise SystemExit(
                     "[wxlm] %s is imported by %s, which the loader cannot fix up.\n"
                     "  An import's ADDRESS must be taken into a variable, never called\n"
                     "  directly - calling one emits a branch relocation that cannot reach\n"
                     "  an arbitrary host address. See examples/sample_mod/mod.cpp."
-                    % (sym_name, kind_name))
-            if offset + 4 > payload_size:
+                    % (r.sym_name, r.type))
+            if r.offset + 4 > payload_size:
                 raise SystemExit(
                     "[wxlm] import relocation for %s is at 0x%X, past the %d-byte payload"
-                    % (sym_name, offset, payload_size))
+                    % (r.sym_name, r.offset, payload_size))
             surface, symbol = decoded
             key = (surface, symbol)
             if key not in import_index:
                 import_index[key] = len(import_specs)
                 import_specs.append(key)
-            relocs.append((RELOC_IMPORT, offset, import_index[key]))
+            relocs.append((RELOC_IMPORT, r.offset, import_index[key]))
             continue
 
-        if sym_name in undefined and sym_name:
+        if r.sym_name and r.sym_name in undefined:
             raise SystemExit(
                 "[wxlm] %s references undefined symbol %r, which is not an import.\n"
                 "  A module cannot link against the host. Reach host functions through\n"
                 "  wiixl_import__<surface>__<Symbol>; anything else has to be defined\n"
-                "  inside the module." % (os.path.basename(elf), sym_name))
+                "  inside the module. (libgcc helpers like _restgpr_* mean the module\n"
+                "  was linked without -lgcc.)" % (os.path.basename(elf), r.sym_name))
 
-        if kind_name == "R_PPC_ADDR32":
-            if offset + 4 <= payload_size:
-                value = struct.unpack_from(">I", payload, offset)[0]
-                relocs.append((RELOC_ADDR32, offset, value))
-        elif kind_name == "R_PPC_ADDR16_HA":
-            if offset + 2 <= payload_size:
-                relocs.append((RELOC_HA, offset, s_plus_a))
-        elif kind_name == "R_PPC_ADDR16_HI":
-            if offset + 2 <= payload_size:
-                relocs.append((RELOC_HI, offset, s_plus_a))
-        elif kind_name == "R_PPC_ADDR16_LO":
-            if offset + 2 <= payload_size:
-                relocs.append((RELOC_LO, offset, s_plus_a))
+        if r.type == "R_PPC_ADDR32":
+            if r.offset + 4 <= payload_size:
+                # The site already holds its own base-0 target, so it is read
+                # back rather than recovered from the relocation entry.
+                value = struct.unpack_from(">I", payload, r.offset)[0]
+                relocs.append((RELOC_ADDR32, r.offset, value))
+        elif r.is_half:
+            if r.offset + 2 <= payload_size:
+                # A half cannot be recovered from the instruction, so it carries
+                # its own fully-resolved S+Addend.
+                relocs.append((r.kind, r.offset, r.s_plus_a))
 
     for _kind, offset, _value in relocs:
         if offset > 0x00FFFFFF:
@@ -331,7 +303,7 @@ def build(args):
             "[wxlm] entry symbol %r is at 0x%X, past the end of the %d-byte payload"
             % (args.entry, entry_offset, payload_size))
 
-    undefined = read_undefined_symbols(readelf, args.elf)
+    undefined = ppc_relocs.read_undefined_symbols(readelf, args.elf)
     relocs, discovered = read_relocations(readelf, args.elf, payload, payload_size,
                                           undefined)
     bss_size = args.bss_size if args.bss_size else read_bss_size(readelf, args.elf)

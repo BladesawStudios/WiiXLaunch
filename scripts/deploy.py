@@ -8,6 +8,8 @@ import sys
 import subprocess
 import struct
 
+import ppc_relocs
+
 def find_devkitppc_tool(name):
     """Resolve a devkitPPC binary without hardcoding the install location.
 
@@ -157,76 +159,42 @@ version = 7
 
         # Full 32-bit absolute words: reading the already-linked (base-0) value
         # and adding the runtime delta directly is exact, no extra info needed.
-        readelf_out = subprocess.check_output([readelf_cmd, "-r", elf_path], text=True)
+        # Relocations, parsed by scripts/ppc_relocs.py - the same code
+        # scripts/wxlm.py uses for modules, because the host payload and a
+        # module are the same problem.
+        #
+        # They were separate implementations once, and the copy dropped the
+        # ADDEND: every ADDR16_HA/LO pair resolved to its section base instead
+        # of the symbol it named. Nothing crashed - the first module to load
+        # simply printed the same string five times, because every literal
+        # pointed at the start of .rodata.
+        #
+        # deploy.py keeps its own policy on top:
+        #
+        #   The bootstrap range is EXCLUDED. WiiXLaunch_Cemu_Init hand-computes
+        #   its own runtime-vs-link-time delta from @h/@l immediates that are
+        #   deliberately left as raw link-time constants; "fixing" them like any
+        #   other absolute reference would double-apply the delta and zero out
+        #   g_CodeCaveBase. cemu.ld brackets that range for exactly this.
         reloc_offsets = []
-        # Split 16-bit absolute-address halves (from `lis`/`addis`+`ori`/`addi`
-        # pairs materializing an absolute address in code, e.g. libm's rodata
-        # constant loads - see the sqrtf crash this was added to fix). Unlike
-        # ADDR32, these can't be fixed by adding delta to the bits already
-        # baked into the instruction (that's only half the real address, and
-        # HA additionally bakes in a sign-extension rounding adjustment) - so
-        # each entry instead carries the relocation's own fully-resolved
-        # S+Addend, and the target half is recomputed from scratch at deploy
-        # time against (S+Addend+delta).
         lo_entries, ha_entries, hi_entries = [], [], []
-        # Only relocations for sections that actually end up in the flat
-        # binary may be turned into runtime fixups. Debug sections (.rela.
-        # debug_info etc., present whenever the payload is compiled with -g)
-        # also carry R_PPC_ADDR32 relocs, but their offsets are relative to
-        # the debug sections - applying them would corrupt arbitrary words of
-        # the payload at those offsets. (This happened: the resulting garbage
-        # jump crashed Cemu's recompiler at boot.)
-        current_section = ""
-        for line in readelf_out.splitlines():
-            parts = line.strip().split()
-            if line.startswith("Relocation section"):
-                m = re.search(r"'([^']+)'", line)
-                current_section = m.group(1) if m else ""
+
+        for r in ppc_relocs.read(readelf_cmd, elf_path):
+            if bootstrap_start <= r.offset < bootstrap_end:
                 continue
-            if ".debug" in current_section:
-                continue
-            if "R_PPC_ADDR32" in line or "R_PPC_RELATIVE" in line:
-                if len(parts) >= 1:
-                    offset = int(parts[0], 16)
-                    # The bootstrap keeps raw link-time constants on purpose;
-                    # excluded here for the same reason as the 16-bit halves.
-                    if not (bootstrap_start <= offset < bootstrap_end):
-                        reloc_offsets.append(offset)
-                continue
-            for rtype, bucket in (("R_PPC_ADDR16_LO", lo_entries),
-                                   ("R_PPC_ADDR16_HA", ha_entries),
-                                   ("R_PPC_ADDR16_HI", hi_entries)):
-                if rtype in line and len(parts) >= 5:
-                    offset = int(parts[0], 16)
-                    if bootstrap_start <= offset < bootstrap_end:
-                        break
-                    sym_value = int(parts[3], 16)
-                    # "Sym.Name + Addend" (or "- Addend") is everything from
-                    # parts[4] onward; addend is always the last token.
-                    addend_tok = parts[-1]
-                    sign = -1 if (len(parts) >= 6 and parts[-2] == "-") else 1
-                    addend = sign * int(addend_tok, 16)
-                    s_plus_a = (sym_value + addend) & 0xFFFFFFFF
-                    bucket.append((offset, s_plus_a))
-                    break
+            if r.type in ("R_PPC_ADDR32", "R_PPC_RELATIVE"):
+                reloc_offsets.append(r.offset)
+            elif r.type == "R_PPC_ADDR16_LO":
+                lo_entries.append((r.offset, r.s_plus_a))
+            elif r.type == "R_PPC_ADDR16_HA":
+                ha_entries.append((r.offset, r.s_plus_a))
+            elif r.type == "R_PPC_ADDR16_HI":
+                hi_entries.append((r.offset, r.s_plus_a))
 
         num_relocs = len(reloc_offsets)
         binary_size = len(payload_data)
         entry_hook = int(cemu_cfg.get("entry_hook", "0x00000000"), 16)
 
-        # --- Runtime relocation table ------------------------------------
-        #
-        # The payload used to be relocated here against a hardcoded code cave
-        # address. Cemu assigns code caves sequentially in graphic-pack load
-        # order, so that address depends on which packs the user has enabled
-        # and on the Cemu version - nothing this script can determine, and a
-        # value that is right on one machine and wrong on the next.
-        #
-        # Wrong meant every absolute address in the payload was off by the same
-        # delta: hooks jumped that far past their callbacks into unrelated
-        # code, globals read the wrong memory, and WIIXL_LOG resolved a bogus
-        # shim table so nothing was logged to explain it.
-        #
         # So the payload now ships linked at base 0 and relocates itself. Each
         # entry is a header word of (kind << 24 | offset) plus the relocation's
         # link-time target; WiiXLaunch_Cemu_Relocate adds the real load address
