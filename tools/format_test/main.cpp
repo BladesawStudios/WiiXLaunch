@@ -20,6 +20,12 @@
 static int g_failures = 0;
 static int g_checks = 0;
 
+// How many check() calls must run. If someone deletes a block of cases - or an
+// #if swallows one - the count drops and this fails, instead of reporting
+// success over a smaller suite. Raise it when cases are added; never lower it
+// to make a build go green. See the fourth rule in docs/modules.md.
+static const int kExpectedChecks = 23;
+
 static void check(const char* expect, const char* fmt, ...) {
     char out[256];
     va_list ap;
@@ -77,6 +83,17 @@ int main() {
     check("%q",       "%q", 1);
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
-    std::printf("%s\n", g_failures == 0 ? "ALL FORMAT TESTS PASS" : "FORMAT TESTS FAILED");
+
+    if (g_checks < kExpectedChecks) {
+        std::printf("FORMAT TESTS DISARMED: only %d of the expected %d checks ran.\n"
+                    "A suite that shrinks silently reports success over whatever is\n"
+                    "left of it.\n", g_checks, kExpectedChecks);
+        return 1;
+    }
+
+    std::printf("%s (%d checks: width, argument alignment, unchanged conversions, "
+                "float precision, unknown specifiers)\n",
+                g_failures == 0 ? "ALL FORMAT TESTS PASS" : "FORMAT TESTS FAILED",
+                g_checks);
     return g_failures != 0;
 }

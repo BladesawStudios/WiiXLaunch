@@ -88,6 +88,7 @@ enum class Verdict : uint32_t {
     OpenedNotRead,     // opened, but the read failed or returned nothing
     Verified,          // read back, and the content is what it should be
     Mismatch,          // read back, but the content is wrong
+    NotRun,            // the probe ended before this question was asked
 };
 
 inline const char* VerdictName(Verdict v) {
@@ -95,6 +96,7 @@ inline const char* VerdictName(Verdict v) {
         case Verdict::ShimsMissing:   return "SHIMS-MISSING";
         case Verdict::FsAbsent:       return "FS-ABSENT";
         case Verdict::NotFound:       return "NOT-FOUND";
+        case Verdict::NotRun:         return "NOT-RUN";
         case Verdict::OpenedNotRead:  return "OPENED-NOT-READ";
         case Verdict::Verified:       return "VERIFIED";
         case Verdict::Mismatch:       return "MISMATCH";
@@ -353,6 +355,21 @@ inline void Probe(const char* where,
                   const char* packPathLC = kPackFilePathLC) {
     WIIXL_LOG("[LP:%s] ===== probe start =====", where);
 
+    // FOUR SELF-REPORTED VERDICTS WITH NOTHING ASSERTING ALL FOUR APPEARED is
+    // the fourth rule (docs/modules.md) one level up: a probe that ends early
+    // used to print a reason and simply stop, and a log MISSING three lines
+    // reads like a log that passed. So the questions start at NOT-RUN, every
+    // early exit falls through to a single summary, and the summary counts.
+    // A "2/4 probes ran" is a liveness assertion a human cannot skim past.
+    Verdict stock  = Verdict::NotRun;
+    Verdict pack   = Verdict::NotRun;
+    Verdict packLC = Verdict::NotRun;
+    Verdict dir    = Verdict::NotRun;
+
+    // The body returns instead of falling off the end; the summary below always
+    // runs. This is a lambda purely so `return` keeps meaning "stop asking".
+    [&] {
+
     if (!WiiXLaunch::Backend::CemuFsAvailable()) {
         WIIXL_LOG("[LP:%s] verdict=%s base=%p offset=%u - deploy.py has not patched the "
                   "shim table. Build problem, NOT a timing one.",
@@ -390,21 +407,21 @@ inline void Probe(const char* where,
 
     // 1. Positive control. If this is not VERIFIED, nothing else here means
     //    anything - /vol/content is not mounted or not readable yet.
-    const Verdict stock = ProbeFile(where, "STOCK", stockPath, stockMagic, /*fingerprint=*/true);
+    stock = ProbeFile(where, "STOCK", stockPath, stockMagic, /*fingerprint=*/true);
 
     // 2. The graphic-pack content/ overlay. Only meaningful if STOCK passed:
     //    NOT-FOUND here with STOCK verified means the overlay is not live yet;
     //    NOT-FOUND with STOCK also NOT-FOUND means nothing is mounted.
-    const Verdict pack = ProbeFile(where, "PACK", packPath, nullptr);
+    pack = ProbeFile(where, "PACK", packPath, nullptr);
 
     // Same file, lower-case spelling. If PACK answers and this does not, Cemu's
     // overlay lookup is case-sensitive and stage 8's layout must match the
     // shipped capitalisation exactly. If both answer it is case-insensitive
     // here - a property of this host, not of a real Wii U.
-    const Verdict packLC = ProbeFile(where, "PACK-LC", packPathLC, nullptr);
+    packLC = ProbeFile(where, "PACK-LC", packPathLC, nullptr);
 
     // 3. The directory the loader will enumerate.
-    const Verdict dir = ProbeDir(where, "DIR", modsDir);
+    dir = ProbeDir(where, "DIR", modsDir);
 
     if (delClient) {
         const int32_t delStatus = delClient(g_ProbeClient, 0xFFFFFFFF);
@@ -412,9 +429,23 @@ inline void Probe(const char* where,
         g_ClientUp = false;
     }
 
-    WIIXL_LOG("[LP:%s] ===== SUMMARY  stock=%s  pack=%s  pack-lc=%s  dir=%s =====",
+    }();
+
+    const Verdict all[4] = { stock, pack, packLC, dir };
+    uint32_t ran = 0, verified = 0;
+    for (const Verdict v : all) {
+        if (v != Verdict::NotRun) ++ran;
+        if (v == Verdict::Verified) ++verified;
+    }
+
+    WIIXL_LOG("[LP:%s] ===== SUMMARY  stock=%s  pack=%s  pack-lc=%s  dir=%s  |  "
+              "%u/4 probes ran, %u/4 VERIFIED =====",
               where, VerdictName(stock), VerdictName(pack),
-              VerdictName(packLC), VerdictName(dir));
+              VerdictName(packLC), VerdictName(dir), ran, verified);
+    if (ran != 4) {
+        WIIXL_LOG("[LP:%s] ===== the probe ENDED EARLY - %u of 4 questions were never "
+                  "asked, so this run says nothing about them =====", where, 4u - ran);
+    }
 }
 
 #elif WIIXL_WIIU

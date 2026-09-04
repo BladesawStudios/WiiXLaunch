@@ -88,18 +88,18 @@ def main():
 
     readelf = find_readelf()
     if readelf is None:
-        # A skip is a WARNING, not a pass - the same rule loader_fuzz already
-        # follows. A check that quietly vanishes on a machine without a tool is
-        # worse than no check, because the build still says OK. Loud, because
-        # one grey line in a hundred is how this stops being noticed.
+        # NO GATE EXITS 0 ON A MISSING INPUT. This used to print SKIPPED and
+        # return 0, which is a check that quietly ceases to exist on a machine
+        # without the tool while the build still says OK. "Skipped" is a state
+        # that has to be seen, and the only way to guarantee that is to fail.
         sys.stderr.write(
             "\n"
             "============================================================\n"
             "[test_host] NOT RUN - no powerpc-eabi-readelf found.\n"
-            "[test_host] Host completeness was NOT verified for this build.\n"
+            "[test_host] Host completeness was NOT verified, so this FAILS.\n"
             "[test_host] Set DEVKITPPC, or install devkitPPC.\n"
             "============================================================\n\n")
-        return 0
+        return 1
 
     syms = read_symbols(readelf, elf)
 
@@ -155,7 +155,12 @@ def main():
             "  come from it. See docs/loader.md.\n\n")
         return 1
 
-    print("[test_host] Host is complete without main.cpp (%d symbols checked)" % len(REQUIRED))
+    # Say WHAT was checked, not just that it passed. A count that can visibly
+    # drop to zero is a liveness assertion costing one line.
+    print("[test_host] Host is complete without main.cpp "
+          "(%d required symbols checked against %d in the ELF, %d pinned to address 0, "
+          "WiiXLaunch_Init confirmed WEAK)"
+          % (len(REQUIRED), len(syms), sum(1 for _n, _w, z in REQUIRED if z)))
     return 0
 
 

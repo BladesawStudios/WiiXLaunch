@@ -115,6 +115,10 @@ private:
 // the host end of the arena or another module grant - stated in terms of the
 // memory rather than in terms of the plumbing.
 // ---------------------------------------------------------------------------
+// Counted in the harness below; declared here because arena_backing uses them.
+extern int g_ContainmentChecks;
+extern int g_LivenessChecks;
+
 namespace alloc {
 
 constexpr uint8_t kPoison = 0xA5;
@@ -244,6 +248,17 @@ static Baseline MakeBaseline() {
 static int g_Cases = 0, g_Failures = 0;
 static int g_Accepted = 0, g_Rejected = 0;
 
+// How many cases must run. The dead-hook incident (docs/modules.md, fourth
+// rule) was invisible partly because THE CASE COUNT DID NOT MOVE - there was no
+// number that a disarmed suite would have changed. This is that number. Raise
+// it when cases are added; never lower it to make a build go green.
+static const int kExpectedCases = 1171;
+
+// Both halves of the containment property must actually be exercised, or the
+// pair reduces to the single check that went vacuous last time.
+int g_ContainmentChecks = 0;
+int g_LivenessChecks = 0;
+
 // Offsets of the header fields the mutators poke, derived from the struct so
 // they cannot drift from it.
 #define OFF(field) static_cast<uint32_t>(offsetof(Wxlm::Header, field))
@@ -270,6 +285,7 @@ void Init() {
 // is loaded per case, so ModuleCarved() is that module grant and the region
 // below it is the host end plus whatever is still free.
 bool ContainedInGrant() {
+    ++g_ContainmentChecks;
     const uint32_t carved = WiiXLaunch::Arena::ModuleCarved();
     if (carved > kSize) return false;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(g_Base);
@@ -288,6 +304,7 @@ bool ContainedInGrant() {
 // Together the two say: it wrote, and it wrote only there. Neither statement is
 // worth much without the other.
 bool WroteInGrant() {
+    ++g_LivenessChecks;
     const uint32_t carved = WiiXLaunch::Arena::ModuleCarved();
     if (carved == 0 || carved > kSize) return false;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(g_Base) + (kSize - carved);
@@ -791,6 +808,14 @@ int main() {
                             byte, bit,
                             loaderAccepted ? "ACCEPTED" : Wxlm::RejectName(got),
                             oracleSaysValid ? "well-formed" : "malformed");
+            } else if (loaderAccepted && !arena_backing::WroteInGrant()) {
+                // The liveness half, on the 289 accepted flips too. It used to
+                // run only on the handful of explicitly-accepted cases, so the
+                // bulk of the suite checked containment alone - which passes
+                // trivially when nothing writes at all.
+                ++g_Failures;
+                std::printf("  FAIL  flip %u:%d loaded without writing inside its grant\n",
+                            byte, bit);
             } else {
                 ++flipAgree;
                 if (loaderAccepted) ++flipAccepted;
@@ -807,6 +832,24 @@ int main() {
                     "coreinit would refuse\n", g_AlignmentViolations);
     }
 
+    // WHAT ran, not just that it passed - and a floor under it. A suite that
+    // shrinks silently reports success over whatever is left of itself.
+    if (g_Cases < kExpectedCases) {
+        std::printf("\nLOADER FUZZ DISARMED: %d cases ran, expected at least %d.\n"
+                    "Cases were removed, or a block stopped being reached.\n",
+                    g_Cases, kExpectedCases);
+        return 1;
+    }
+    if (g_ContainmentChecks == 0 || g_LivenessChecks == 0) {
+        std::printf("\nLOADER FUZZ DISARMED: containment ran %d times, liveness %d.\n"
+                    "Both halves must run - containment alone passes trivially when\n"
+                    "nothing writes at all, which is the state a dead hook leaves.\n",
+                    g_ContainmentChecks, g_LivenessChecks);
+        return 1;
+    }
+
+    std::printf("\n%d containment checks, %d liveness checks\n",
+                g_ContainmentChecks, g_LivenessChecks);
     std::printf("\n%d cases, %d rejected, %d accepted, %d FAILURES\n",
                 g_Cases, g_Rejected, g_Accepted + flipAccepted, g_Failures);
     std::printf("%s\n", g_Failures == 0 ? "LOADER FUZZ PASSED" : "LOADER FUZZ FAILED");

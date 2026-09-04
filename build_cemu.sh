@@ -50,9 +50,26 @@ python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
 # is the one failure neither side can detect at runtime.
 python3 scripts/test_wxlm.py
 
+# Are the gates below actually wired in, and is a failure fatal? Every gate
+# self-checks its own liveness, which is the right shape - but no gate can
+# detect that nothing calls it. Runs first, so a missing gate is reported
+# before the build spends time on the ones that are present.
+python3 scripts/audit_gates.py
+
+# WIIXL_LOG's formatter. Every platform's logging goes through it and it cannot
+# be exercised on a console. NOT WIRED IN UNTIL 2026-09-04 - written, passing
+# when run by hand, and never called by a build script, so it could not fail at
+# all. A gate nothing invokes is the limit case of the fourth rule in
+# docs/modules.md, and the one thing a gate cannot detect about itself; see
+# scripts/audit_gates.py.
+bash tools/format_test/build.sh
+
 # Fuzz the loader. Runs on every build rather than on request - a check that
-# has to be remembered is a check that stops happening. Exit 2 means no
-# toolchain, which is a loud warning rather than a silent pass.
+# has to be remembered is a check that stops happening.
+#
+# A MISSING TOOLCHAIN IS A FAILURE, NOT A WARNING. It used to print a banner and
+# let the build succeed; "skipped" is a state that has to be seen, and a banner
+# scrolls past. No gate exits 0 on a missing input.
 set +e
 bash tools/loader_fuzz/build.sh
 FUZZ_RC=$?
@@ -61,9 +78,10 @@ if [ $FUZZ_RC -eq 2 ]; then
     echo
     echo ============================================================
     echo "[loader_fuzz] NOT RUN - no C++ toolchain found on this machine."
-    echo "[loader_fuzz] The loader was NOT fuzzed for this build."
+    echo "[loader_fuzz] The loader was NOT fuzzed, so this build FAILS."
     echo ============================================================
     echo
+    exit 1
 elif [ $FUZZ_RC -ne 0 ]; then
     echo "[loader_fuzz] FAILED - see above."
     exit 1

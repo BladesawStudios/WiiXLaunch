@@ -73,22 +73,46 @@ if errorlevel 1 exit /b 1
 python scripts\test_wxlm.py
 if errorlevel 1 exit /b 1
 
+:: Are the gates below actually wired in, and is a failure fatal? Every gate
+:: self-checks its own liveness, which is the right shape - but no gate can
+:: detect that nothing calls it. This runs FIRST so a missing gate is reported
+:: before the build spends time on the ones that are present.
+python scripts\audit_gates.py
+if errorlevel 1 exit /b 1
+
+:: WIIXL_LOG's formatter. Every platform's logging goes through it, it cannot
+:: be exercised on a console, and when it gets a conversion wrong it prints the
+:: specifier and silently drops the argument - which reads as "the code under
+:: test produced nothing".
+::
+:: THIS WAS NOT WIRED IN UNTIL 2026-09-04. It was written, it passed when run by
+:: hand, and no build script had ever called it - so it could not fail, in the
+:: most complete sense available. A gate nothing invokes is the limit case of
+:: the fourth rule in docs/modules.md, and it is the one thing a gate cannot
+:: detect about itself, which is why scripts/audit_gates.py checks the wiring.
+call tools\format_test\build.bat
+if errorlevel 1 (
+    echo [format_test] FAILED - see above.
+    exit /b 1
+)
+
 :: Fuzz the loader. It reads data it did not produce and then writes to memory
 :: it executes, so it runs on every build rather than on request - a check that
 :: has to be remembered is a check that stops happening.
 ::
-:: Exit 2 means no C++ toolchain here, which is a WARNING, not a pass. A test
-:: that silently vanishes on a machine without a toolchain is worse than no
-:: test, because the build still says OK.
+:: A MISSING TOOLCHAIN IS A FAILURE, NOT A WARNING. It used to print a banner
+:: and let the build succeed; "skipped" is a state that has to be seen, and a
+:: banner scrolls past. No gate exits 0 on a missing input.
 call tools\loader_fuzz\build.bat
 if errorlevel 2 (
     echo.
     echo ============================================================
     echo [loader_fuzz] NOT RUN - no C++ toolchain found on this machine.
-    echo [loader_fuzz] The loader was NOT fuzzed for this build.
+    echo [loader_fuzz] The loader was NOT fuzzed, so this build FAILS.
     echo [loader_fuzz] Install Visual Studio with the C++ workload.
     echo ============================================================
     echo.
+    exit /b 1
 ) else if errorlevel 1 (
     echo [loader_fuzz] FAILED - see above.
     exit /b 1
