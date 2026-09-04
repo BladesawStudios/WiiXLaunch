@@ -3,18 +3,22 @@
 
 using namespace WiiXLaunch::BotW;
 
+// feel free to remove this, its just proof your toolchain works end-end -
+// the OnRender callbacks here and their registration in WiiXLaunch_Init
+// below can both go. The WIIXL_LOG lines in there are the proof-of-life
+// that works on every platform.
 #if WIIXL_SWITCH
-#include <testpic_texture_bytes.hpp>
-#elif WIIXL_WIIU
-#include <testpic_texture_bytes_gx2.hpp>
-#endif
-
-// feel free to remove this, its just proof your toolchain works end-end (line 45-67 can also be removed)
-#if WIIXL_SWITCH
-static NVN::TextureHandle g_LogoTexture = 0;
-
+// Draws nothing. The logo demo the other targets run needs a texture in the
+// container NVN::CreateTexture expects - a 0x200-byte header with width at
+// 0x40, height at 0x44, format at 0x50 - and nothing in this repo produces
+// one. The header it used to include was never tracked, so the Switch target
+// did not build from a clean clone at all.
+//
+// The callback is still registered below, so the draw path is exercised and
+// this is where your own drawing goes. Cemu's logo demo still runs: its asset
+// is src/resources/logo.png, packaged to logo.bin by scripts/pack_resources.py
+// at deploy time, and GX2 reads a different (16-byte header) format.
 void OnRender(NVN::CommandBuffer* cmdBuf, void* dstTexture, int width, int height) {
-    NVN::DrawSprite(cmdBuf, dstTexture, g_LogoTexture, -0.92f, 0.50f, 0.225f, 0.40f);
 }
 #elif WIIXL_CEMU
 static GX2::TextureHandle g_LogoTexture = 0;
@@ -55,10 +59,6 @@ extern "C" void WiiXLaunch_Init() {
 #if WIIXL_SWITCH
     NVN::Init();
     NVN::RegisterDrawCallback(OnRender);
-    NVN::OnInitialized([]() {
-        g_LogoTexture = NVN::CreateTexture(g_TestPicTextureBytes, kTestPicTextureSize);
-        WIIXL_LOG("WiiXLaunch: NVN logo texture initialized: %p", reinterpret_cast<void*>(g_LogoTexture));
-    });
 #elif WIIXL_CEMU
     GX2::Init();
     GX2::RegisterDrawCallback(OnRender);
