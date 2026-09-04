@@ -13,20 +13,20 @@ set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
     echo [format_test] vswhere.exe not found - is Visual Studio installed?
-    exit /b 1
+    exit /b 2
 )
 
 set "VSINSTALL="
 for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALL=%%i"
 if "%VSINSTALL%"=="" (
     echo [format_test] No Visual Studio with the C++ tools found.
-    exit /b 1
+    exit /b 2
 )
 
 :: vcvarsall shells out to vswhere, so it needs the Installer directory on PATH.
 set "PATH=%PATH%;%ProgramFiles(x86)%\Microsoft Visual Studio\Installer"
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvarsall.bat" x64 >nul
-if errorlevel 1 exit /b 1
+if errorlevel 1 exit /b 2
 
 :build
 pushd "%HERE%"

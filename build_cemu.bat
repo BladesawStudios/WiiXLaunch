@@ -91,8 +91,20 @@ if errorlevel 1 exit /b 1
 :: the fourth rule in docs/modules.md, and it is the one thing a gate cannot
 :: detect about itself, which is why scripts/audit_gates.py checks the wiring.
 call tools\format_test\build.bat
-if errorlevel 1 (
-    echo [format_test] FAILED - see above.
+if errorlevel 2 (
+    echo.
+    echo ============================================================
+    echo [format_test] SETUP PROBLEM - not a broken source tree.
+    echo [format_test] This gate requires MSVC, which was not found. Install
+    echo [format_test] Visual Studio with the "Desktop development with C++"
+    echo [format_test] workload, or build on a machine that has it.
+    echo [format_test] The formatter was NOT tested, so this build FAILS rather
+    echo [format_test] than shipping an untested formatter.
+    echo ============================================================
+    echo.
+    exit /b 1
+) else if errorlevel 1 (
+    echo [format_test] FAILED - the formatter is wrong; see above.
     exit /b 1
 )
 
@@ -107,9 +119,12 @@ call tools\loader_fuzz\build.bat
 if errorlevel 2 (
     echo.
     echo ============================================================
-    echo [loader_fuzz] NOT RUN - no C++ toolchain found on this machine.
-    echo [loader_fuzz] The loader was NOT fuzzed, so this build FAILS.
-    echo [loader_fuzz] Install Visual Studio with the C++ workload.
+    echo [loader_fuzz] SETUP PROBLEM - not a broken source tree.
+    echo [loader_fuzz] This gate requires MSVC, which was not found. Install
+    echo [loader_fuzz] Visual Studio with the "Desktop development with C++"
+    echo [loader_fuzz] workload, or build on a machine that has it.
+    echo [loader_fuzz] The loader was NOT fuzzed, so this build FAILS rather
+    echo [loader_fuzz] than shipping an untested loader.
     echo ============================================================
     echo.
     exit /b 1

@@ -77,8 +77,11 @@ set -e
 if [ $FUZZ_RC -eq 2 ]; then
     echo
     echo ============================================================
-    echo "[loader_fuzz] NOT RUN - no C++ toolchain found on this machine."
-    echo "[loader_fuzz] The loader was NOT fuzzed, so this build FAILS."
+    echo "[loader_fuzz] SETUP PROBLEM - not a broken source tree."
+    echo "[loader_fuzz] This gate requires a host C++ compiler, which was not"
+    echo "[loader_fuzz] found. Install one, or build on a machine that has it."
+    echo "[loader_fuzz] The loader was NOT fuzzed, so this build FAILS rather"
+    echo "[loader_fuzz] than shipping an untested loader."
     echo ============================================================
     echo
     exit 1

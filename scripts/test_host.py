@@ -95,9 +95,11 @@ def main():
         sys.stderr.write(
             "\n"
             "============================================================\n"
-            "[test_host] NOT RUN - no powerpc-eabi-readelf found.\n"
-            "[test_host] Host completeness was NOT verified, so this FAILS.\n"
-            "[test_host] Set DEVKITPPC, or install devkitPPC.\n"
+            "[test_host] SETUP PROBLEM - not a broken source tree.\n"
+            "[test_host] This gate requires powerpc-eabi-readelf, which was not\n"
+            "[test_host] found. Set DEVKITPPC, or install devkitPPC.\n"
+            "[test_host] Host completeness was NOT verified, so this FAILS rather\n"
+            "[test_host] than reporting on a host it never inspected.\n"
             "============================================================\n\n")
         return 1
 

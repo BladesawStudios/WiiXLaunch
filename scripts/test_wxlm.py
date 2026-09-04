@@ -199,9 +199,10 @@ def main():
     surface_hpp = os.path.join(ROOT, "include", "wiixlaunch", "loader", "surface.hpp")
     if not os.path.exists(surface_hpp):
         failures.append(
-            "  %s is missing, so the FNV-1a agreement was not checked at all.\n"
-            "           If the header moved, update this path - do not let the check\n"
-            "           silently disappear." % surface_hpp)
+            "  BROKEN TREE, not a setup problem: %s is missing, so the FNV-1a\n"
+            "           agreement was not checked at all. That file is part of this\n"
+            "           repository - if it moved, update this path; do not let the\n"
+            "           check silently disappear." % surface_hpp)
     else:
         stext = open(surface_hpp, encoding="utf-8").read()
         basis = re.search(r"h\s*=\s*(0x[0-9A-Fa-f]+)u", stext)
