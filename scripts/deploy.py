@@ -486,6 +486,42 @@ version = 7
             f.write(cemu_asm_content)
         print(f"[Cemu] Generated Graphic Pack files -> {cemu_deploy_dir}")
 
+    # --- STAGE 1 SCAFFOLDING: the load-point probe's PACK test file ---
+    #
+    # WiiXLaunch::LoadPoint's PACK probe opens
+    # /vol/content/wiixlaunch/mods/probe.bin to find out whether Cemu's
+    # graphic-pack content/ overlay is live at the load point. Without this file
+    # the probe reports NOT-FOUND for the uninteresting reason that nothing ever
+    # shipped one, which answers nothing.
+    #
+    # CASE MATTERS, and this is why the directory is WiiXLaunch and not
+    # wiixlaunch. Wii U's filesystem is case-sensitive, but the HOST filesystem
+    # this pack is written on may not be: on Windows/NTFS, asking for
+    # content/wiixlaunch/ when content/WiiXLaunch/ already exists (created by
+    # pack_resources.py for logo.bin) silently resolves to the existing
+    # directory, so the file ships under the capitalised name whatever is
+    # written here. Two directories differing only in case cannot coexist there
+    # at all.
+    #
+    # Rather than guess whether Cemu's content overlay lookup is case-sensitive,
+    # the probe asks for BOTH spellings and logs which one answered - see the
+    # PACK and PACK-LC probes in load_point.hpp. Stage 8 picks the layout once
+    # that is known instead of assuming.
+    #
+    # Remove this once the load point is settled - it exists only so one boot
+    # answers the overlay question.
+    probe_dir = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch", "mods")
+    os.makedirs(probe_dir, exist_ok=True)
+    probe_path = os.path.join(probe_dir, "probe.bin")
+    probe_magic = b"WXLP"
+    probe_body = probe_magic + b"ROBE stage-1 load point probe file. "
+    probe_body += bytes(range(0x10)) * 2
+    probe_body = probe_body[:64].ljust(64, b"\x00")
+    with open(probe_path, "wb") as f:
+        f.write(probe_body)
+    print(f"[Cemu] Load-point probe file -> content/WiiXLaunch/mods/probe.bin "
+          f"({len(probe_body)} bytes, magic {probe_magic.decode()})")
+
     # Package src/resources into content/WiiXLaunch/ for Cemu graphic pack
     resources_src = os.path.join(root_dir, "src", "resources")
     resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")

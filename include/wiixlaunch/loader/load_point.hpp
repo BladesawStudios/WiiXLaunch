@@ -112,8 +112,14 @@ inline const char* VerdictName(Verdict v) {
 // title passes its own.
 constexpr const char* kStockPath      = "/vol/content/Pack/Bootup.pack";
 constexpr const char* kStockMagic     = "SARC";
-constexpr const char* kPackFilePath   = "/vol/content/wiixlaunch/mods/probe.bin";
-constexpr const char* kModsDirPath    = "/vol/content/wiixlaunch/mods";
+// The pack ships this at content/WiiXLaunch/mods/, because a case-insensitive
+// host filesystem will not let that coexist with a lower-case sibling (see
+// deploy.py). Wii U's own filesystem IS case-sensitive, and whether Cemu's
+// content overlay preserves that is not something to assume - so both spellings
+// are probed and the log says which answered.
+constexpr const char* kPackFilePath   = "/vol/content/WiiXLaunch/mods/probe.bin";
+constexpr const char* kPackFilePathLC = "/vol/content/wiixlaunch/mods/probe.bin";
+constexpr const char* kModsDirPath    = "/vol/content/WiiXLaunch/mods";
 
 #if WIIXL_CEMU
 
@@ -343,7 +349,8 @@ inline void Probe(const char* where,
                   const char* stockPath = kStockPath,
                   const char* stockMagic = kStockMagic,
                   const char* packPath = kPackFilePath,
-                  const char* modsDir = kModsDirPath) {
+                  const char* modsDir = kModsDirPath,
+                  const char* packPathLC = kPackFilePathLC) {
     WIIXL_LOG("[LP:%s] ===== probe start =====", where);
 
     if (!WiiXLaunch::Backend::CemuFsAvailable()) {
@@ -390,6 +397,12 @@ inline void Probe(const char* where,
     //    NOT-FOUND with STOCK also NOT-FOUND means nothing is mounted.
     const Verdict pack = ProbeFile(where, "PACK", packPath, nullptr);
 
+    // Same file, lower-case spelling. If PACK answers and this does not, Cemu's
+    // overlay lookup is case-sensitive and stage 8's layout must match the
+    // shipped capitalisation exactly. If both answer it is case-insensitive
+    // here - a property of this host, not of a real Wii U.
+    const Verdict packLC = ProbeFile(where, "PACK-LC", packPathLC, nullptr);
+
     // 3. The directory the loader will enumerate.
     const Verdict dir = ProbeDir(where, "DIR", modsDir);
 
@@ -399,8 +412,9 @@ inline void Probe(const char* where,
         g_ClientUp = false;
     }
 
-    WIIXL_LOG("[LP:%s] ===== SUMMARY  stock=%s  pack=%s  dir=%s =====",
-              where, VerdictName(stock), VerdictName(pack), VerdictName(dir));
+    WIIXL_LOG("[LP:%s] ===== SUMMARY  stock=%s  pack=%s  pack-lc=%s  dir=%s =====",
+              where, VerdictName(stock), VerdictName(pack),
+              VerdictName(packLC), VerdictName(dir));
 }
 
 #elif WIIXL_WIIU
