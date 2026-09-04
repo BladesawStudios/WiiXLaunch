@@ -50,6 +50,21 @@ using Wxlm::Reject;
 // ---------------------------------------------------------------------------
 // A reader over a byte vector, satisfying what the loader needs.
 // ---------------------------------------------------------------------------
+// It ENFORCES coreinit's constraints, and that is the point rather than a
+// detail.
+//
+// A plain byte array will happily serve any pointer and any length, so the
+// first version of this reader accepted reads the real filesystem refuses - and
+// the loader shipped violating them at every structured read. Cemu answered
+// "FS handleAsyncResult(): unexpected error ffffffff" on the first boot, which
+// is a failure at the FS layer that says nothing about alignment.
+//
+// A stand-in more permissive than the thing it stands in for does not test that
+// thing. This one refuses what coreinit refuses: a destination that is not
+// 64-byte aligned, and a length that is not a multiple of 64 unless the read
+// reaches the end of the file.
+int g_AlignmentViolations = 0;
+
 class MemoryReader {
 public:
     explicit MemoryReader(const std::vector<uint8_t>& data) : m_Data(data) {}
@@ -57,6 +72,21 @@ public:
     uint32_t Size() const { return static_cast<uint32_t>(m_Data.size()); }
 
     uint32_t ReadAt(uint32_t offset, void* out, uint32_t size) {
+        if ((reinterpret_cast<uintptr_t>(out) & 63u) != 0) {
+            ++g_AlignmentViolations;
+            std::printf("  FAIL  ReadAt destination is not 64-byte aligned - "
+                        "coreinit refuses this\n");
+            return 0;
+        }
+        const bool reachesEnd =
+            (static_cast<uint64_t>(offset) + size >= m_Data.size());
+        if ((size & 63u) != 0 && !reachesEnd) {
+            ++g_AlignmentViolations;
+            std::printf("  FAIL  ReadAt size %u is not a multiple of 64 and is not a "
+                        "tail read - coreinit refuses this\n", size);
+            return 0;
+        }
+
         if (offset >= m_Data.size()) return 0;
         uint32_t avail = static_cast<uint32_t>(m_Data.size()) - offset;
         if (size > avail) size = avail;
@@ -77,22 +107,36 @@ namespace alloc {
 constexpr uint32_t kRedZone = 64;
 constexpr uint8_t  kPattern = 0xA5;
 
-struct Block { uint8_t* raw; uint32_t size; };
+struct Block { uint8_t* raw; uint8_t* user; uint32_t size; };
 std::vector<Block> g_Blocks;
 uint32_t g_Limit = 8u << 20;   // generous; NoMemory is exercised explicitly
 uint32_t g_Used = 0;
 
+// Honours the requested alignment, which the first version did not - it added a
+// 64-byte red zone to a malloc pointer and returned that, so blocks came back
+// 16-aligned. Backend::AllocCemuHeap aligns properly, so the harness was
+// handing the loader memory the real allocator never would, and the loader's
+// aligned reads then looked like violations. A stand-in that is WEAKER than the
+// real thing produces false failures; one that is more permissive hides real
+// ones. Both are the same mistake.
 void* Alloc(uint32_t size, uint32_t align) {
-    (void)align;
     if (size == 0) return nullptr;
+    if (align < 64) align = 64;
     if (g_Used + size > g_Limit) return nullptr;
-    uint8_t* raw = static_cast<uint8_t*>(std::calloc(size + 2 * kRedZone, 1));
+
+    const size_t slack = align + 2 * kRedZone;
+    uint8_t* raw = static_cast<uint8_t*>(std::calloc(size + slack, 1));
     if (!raw) return nullptr;
-    std::memset(raw, kPattern, kRedZone);
-    std::memset(raw + kRedZone + size, kPattern, kRedZone);
-    g_Blocks.push_back({raw, size});
+
+    uintptr_t p = reinterpret_cast<uintptr_t>(raw) + kRedZone;
+    p = (p + (align - 1)) & ~static_cast<uintptr_t>(align - 1);
+    uint8_t* user = reinterpret_cast<uint8_t*>(p);
+
+    std::memset(user - kRedZone, kPattern, kRedZone);
+    std::memset(user + size, kPattern, kRedZone);
+    g_Blocks.push_back({raw, user, size});
     g_Used += size;
-    return raw + kRedZone;
+    return user;
 }
 
 void Flush(uintptr_t, uint32_t) {}
@@ -100,8 +144,8 @@ void Flush(uintptr_t, uint32_t) {}
 bool CheckRedZones() {
     for (const Block& b : g_Blocks) {
         for (uint32_t i = 0; i < kRedZone; ++i) {
-            if (b.raw[i] != kPattern) return false;
-            if (b.raw[kRedZone + b.size + i] != kPattern) return false;
+            if (b.user[-static_cast<int>(kRedZone) + static_cast<int>(i)] != kPattern) return false;
+            if (b.user[b.size + i] != kPattern) return false;
         }
     }
     return true;
@@ -667,6 +711,12 @@ int main() {
     }
     std::printf("  %d flips checked against the oracle, %d agreed (%d of them valid)\n",
                 flipAgree + 0, flipAgree, flipAccepted);
+
+    g_Failures += g_AlignmentViolations;
+    if (g_AlignmentViolations != 0) {
+        std::printf("\n  %d FS alignment violations - the loader asked for reads "
+                    "coreinit would refuse\n", g_AlignmentViolations);
+    }
 
     std::printf("\n%d cases, %d rejected, %d accepted, %d FAILURES\n",
                 g_Cases, g_Rejected, g_Accepted + flipAccepted, g_Failures);

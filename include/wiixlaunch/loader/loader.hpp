@@ -111,7 +111,11 @@ alignas(64) inline uint8_t g_Scratch[1024];
 
 // The header, read whole and aligned so it can be overlaid. Safe to overlay
 // only after the endian check, which is why that check comes first.
-alignas(8) inline uint8_t g_HeaderBytes[sizeof(Wxlm::Header)];
+//
+// alignas(64), not 8: coreinit's FSReadFile family requires a 64-byte aligned
+// destination. At alignas(8) this happened to work - a static usually lands
+// more aligned than it asks for - which is the worst kind of working.
+alignas(64) inline uint8_t g_HeaderBytes[sizeof(Wxlm::Header)];
 
 inline void CopyId(char* dst, const char* src) {
     for (int i = 0; i < 16; ++i) dst[i] = src[i];
@@ -137,6 +141,53 @@ inline void CopyId(char* dst, const char* src) {
 inline bool InFile(uint64_t offset, uint64_t size, uint64_t fileSize) {
     if (offset > fileSize) return false;
     return offset + size <= fileSize;
+}
+
+// Reads through the aligned scratch, for destinations that are neither
+// 64-byte aligned nor a multiple of 64 - which is every struct and string this
+// loader reads.
+//
+// WHY THIS EXISTS. coreinit's FSReadFile family requires a 64-BYTE ALIGNED
+// buffer and, unless it is reading the tail of the file, a size that is a
+// multiple of 64. wiixlaunch/fs.hpp says so at FS::File::ReadAt. Reading an
+// 8-byte RequiredSurface into a stack local satisfies neither, and Cemu answers
+// with "FS handleAsyncResult(): unexpected error ffffffff" - a failure at the
+// FS layer, reported by the loader as READ-FAILED, with nothing about
+// alignment anywhere in it.
+//
+// The fuzzer could not have found this: its reader is a byte array with no
+// alignment requirement at all. It took a boot. tools/loader_fuzz's
+// MemoryReader now enforces the same constraints, so the next one is caught on
+// the host.
+//
+// Returns the number of bytes delivered, like ReadAt, so a short read at the
+// end of a file stays distinguishable from a failure.
+template <typename Reader>
+inline uint32_t ReadVia(Reader& file, uint32_t offset, void* dst, uint32_t size) {
+    if (size == 0 || size > sizeof(g_Scratch)) return 0;
+    const uint32_t fileSize = file.Size();
+    if (offset >= fileSize) return 0;
+
+    uint32_t want = (size + 63u) & ~63u;
+    const uint32_t avail = fileSize - offset;
+    if (want > avail) want = avail;          // tail read: short is allowed
+
+    const uint32_t got = file.ReadAt(offset, g_Scratch, want);
+    const uint32_t n = got < size ? got : size;
+    for (uint32_t i = 0; i < n; ++i) static_cast<uint8_t*>(dst)[i] = g_Scratch[i];
+    return n;
+}
+
+// Reads into a destination that IS 64-byte aligned - the module image. Whole
+// 64-byte chunks go straight in; only the ragged tail is bounced, so a large
+// payload is still one read.
+template <typename Reader>
+inline bool ReadAligned(Reader& file, uint32_t offset, uint8_t* dst, uint32_t size) {
+    const uint32_t whole = size & ~63u;
+    if (whole != 0 && file.ReadAt(offset, dst, whole) != whole) return false;
+    const uint32_t rest = size - whole;
+    if (rest != 0 && ReadVia(file, offset + whole, dst + whole, rest) != rest) return false;
+    return true;
 }
 
 } // namespace impl
@@ -344,7 +395,7 @@ inline Reject LoadFrom(Reader& file) {
         return Reject::TooSmall;
     }
 
-    if (file.ReadAt(0, impl::g_HeaderBytes, sizeof(Wxlm::Header)) != sizeof(Wxlm::Header)) {
+    if (impl::ReadVia(file, 0, impl::g_HeaderBytes, sizeof(Wxlm::Header)) != sizeof(Wxlm::Header)) {
         WIIXL_LOG("[loader] %s: could not read the header", RejectName(Reject::ReadFailed));
         return Reject::ReadFailed;
     }
@@ -387,7 +438,7 @@ inline Reject LoadFrom(Reader& file) {
     for (uint32_t i = 0; i < h.requiredCount; ++i) {
         Wxlm::RequiredSurface req{};
         const uint32_t off = h.requiredOffset + i * sizeof(req);
-        if (file.ReadAt(off, &req, sizeof(req)) != sizeof(req)) {
+        if (impl::ReadVia(file, off, &req, sizeof(req)) != sizeof(req)) {
             WIIXL_LOG("[loader:%s] %s: reading required surface %u",
                       id, RejectName(Reject::ReadFailed), i);
             return Reject::ReadFailed;
@@ -395,7 +446,7 @@ inline Reject LoadFrom(Reader& file) {
         char name[64] = {};
         const uint32_t nameAt = h.stringOffset + req.nameOffset;
         if (req.nameOffset >= h.stringSize ||
-            file.ReadAt(nameAt, name, sizeof(name) - 1) == 0) {
+            impl::ReadVia(file, nameAt, name, sizeof(name) - 1) == 0) {
             WIIXL_LOG("[loader:%s] %s: required surface %u has a bad name offset",
                       id, RejectName(Reject::BadSectionBounds), i);
             return Reject::BadSectionBounds;
@@ -442,7 +493,7 @@ inline Reject LoadFrom(Reader& file) {
         return Reject::NoMemory;
     }
 
-    if (file.ReadAt(h.payloadOffset, image, h.payloadSize) != h.payloadSize) {
+    if (!impl::ReadAligned(file, h.payloadOffset, image, h.payloadSize)) {
         WIIXL_LOG("[loader:%s] %s: short read of the %u-byte payload",
                   id, RejectName(Reject::ReadFailed), h.payloadSize);
         return Reject::ReadFailed;
@@ -457,7 +508,7 @@ inline Reject LoadFrom(Reader& file) {
 
     for (uint32_t i = 0; i < h.relocCount; ++i) {
         uint32_t pair[2];
-        if (file.ReadAt(h.relocOffset + i * 8u, pair, 8) != 8) {
+        if (impl::ReadVia(file, h.relocOffset + i * 8u, pair, 8) != 8) {
             WIIXL_LOG("[loader:%s] %s: reading relocation %u",
                       id, RejectName(Reject::ReadFailed), i);
             return Reject::ReadFailed;
@@ -481,15 +532,15 @@ inline Reject LoadFrom(Reader& file) {
                 return Reject::BadRelocation;
             }
             Wxlm::ImportEntry imp{};
-            if (file.ReadAt(h.importOffset + value * sizeof(imp), &imp, sizeof(imp)) != sizeof(imp)) {
+            if (impl::ReadVia(file, h.importOffset + value * sizeof(imp), &imp, sizeof(imp)) != sizeof(imp)) {
                 WIIXL_LOG("[loader:%s] %s: reading import %u",
                           id, RejectName(Reject::ReadFailed), value);
                 return Reject::ReadFailed;
             }
             char surfaceName[64] = {};
             char symbolName[64] = {};
-            file.ReadAt(h.stringOffset + imp.surfaceNameOffset, surfaceName, sizeof(surfaceName) - 1);
-            file.ReadAt(h.stringOffset + imp.symbolNameOffset, symbolName, sizeof(symbolName) - 1);
+            impl::ReadVia(file, h.stringOffset + imp.surfaceNameOffset, surfaceName, sizeof(surfaceName) - 1);
+            impl::ReadVia(file, h.stringOffset + imp.symbolNameOffset, symbolName, sizeof(symbolName) - 1);
             surfaceName[sizeof(surfaceName) - 1] = '\0';
             symbolName[sizeof(symbolName) - 1] = '\0';
 
