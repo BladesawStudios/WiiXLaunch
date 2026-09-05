@@ -33,6 +33,12 @@ BASE = os.path.join(ROOT, "include", "wiixlaunch")
 SCANNED = [
     (os.path.join(MODULE, "game"), "botw"),
     (os.path.join(MODULE, "gui", "gui.hpp"), "botw"),
+    # The graphics headers were MISSING from this list until asked whether the
+    # port had parity. botw.gfx was written and never measured, so "0 uncovered"
+    # was 0 uncovered OF WHAT THIS LOOKED AT - which is the same error the impl
+    # skip made, one level up. A scan's blind spot reports as coverage.
+    (os.path.join(MODULE, "graphics", "gx2.hpp"), "botw"),
+    (os.path.join(MODULE, "graphics", "nvn.hpp"), "botw"),
     (os.path.join(BASE, "mem.hpp"), "base"),
     (os.path.join(BASE, "time.hpp"), "base"),
     (os.path.join(BASE, "call.hpp"), "base"),
@@ -318,6 +324,58 @@ EXCLUDED = {
     "DaysFromCivil": "calendar arithmetic behind GetCalendarTime",
     "ToUnixSeconds": "calendar arithmetic behind GetCalendarTime",
     "OSGetTime": "the coreinit call behind the wall clock",
+
+    # --- the GX2/NVN command layer -------------------------------------------
+    #
+    # These are one-line wrappers around the graphics driver's own entry points,
+    # used to BUILD DrawSprite and DrawMesh. Exposing them would mean handing a
+    # mod the command buffer to drive directly, which is a different and much
+    # larger contract than "draw this sprite" - every one of them can corrupt the
+    # frame or hang the GPU, and none of them can be made safe by this boundary.
+    #
+    # A mod that genuinely needs the command layer wants a surface designed for
+    # it, not these leaked through one at a time.
+    "SetContextState": "GX2 command layer",
+    "SetAttribBuffer": "GX2 command layer",
+    "SetFetchShader": "GX2 command layer",
+    "SetVertexShader": "GX2 command layer",
+    "SetPixelShader": "GX2 command layer",
+    "SetPixelSampler": "GX2 command layer",
+    "SetPixelTexture": "GX2 command layer",
+    "SetShaderModeEx": "GX2 command layer",
+    "SetViewport": "GX2 command layer",
+    "SetScissor": "GX2 command layer",
+    "SetBlendControl": "GX2 command layer",
+    "SetColorControl": "GX2 command layer",
+    "SetColorBuffer": "GX2 command layer",
+    "SetDepthBuffer": "GX2 command layer",
+    "SetDepthOnlyControl": "GX2 command layer",
+    "SetCullOnlyControl": "GX2 command layer",
+    "SetTargetChannelMasks": "GX2 command layer",
+    "InitSampler": "GX2 command layer",
+    "InitSamplerClamping": "GX2 command layer",
+    "InitTextureRegs": "GX2 command layer",
+    "Invalidate": "GX2 cache management, done by the calls that need it",
+    "DrawEx": "GX2 command layer",
+    "CalcSurfaceSizeAndAlignment": "GX2 surface arithmetic",
+    "CalcFetchShaderSizeEx": "GX2 shader arithmetic",
+    "InitFetchShaderEx": "GX2 shader setup",
+    "EnsureMeshPipeline": "pipeline setup, done on first DrawMesh",
+    "EnsureMeshDepthTexture": "pipeline setup",
+    "EnsureSpritePipeline": "pipeline setup",
+    "AllocTextureSurface": "surface-level allocation; CreateTexture covers the mod case",
+    "CreateTextureFromSurface": "surface-level creation; CreateTexture covers the mod case",
+    "FinalizeTexture": "host texture teardown; the host owns texture lifetime",
+    "FactorFromLyt": "layout blend-factor decoding",
+    "FromLyt": "layout blend-mode decoding",
+    "NominateSource": "the host names its own frame source",
+    "OSLog": "host logging; wiixl.core Log is the mod's",
+    "AliasScene": "aliases the colour buffer as a texture; internal to BlurBackdrop",
+    "BlurPass": "one pass of BlurBackdrop",
+    "BatchFlush": "internal to EndBatch",
+    "DrawDone": "GPU fence, issued by the calls that need it",
+    "EnsureDepthBuffer": "pipeline setup, done on first DrawMesh",
+    "CombineFromLyt": "layout blend-combine decoding",
 }
 
 PUBLIC_FN = re.compile(
