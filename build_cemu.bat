@@ -200,30 +200,15 @@ echo Cemu build complete!
 exit /b 0
 
 :: --- one module, built and packed ---------------------------------------
-:build_mod
 :: %1 = mod id and output name, %2 = directory under examples/
-"%DKP_PPC_GXX%" ^
-  -std=gnu++20 -fno-pie -fno-pic -msdata=none -Os ^
-  -ffreestanding -fno-exceptions -fno-rtti ^
-  -D__CEMU__=1 -DWIIXL_CEMU=1 -I include ^
-  -nostartfiles -nostdlib -T scripts\wxlm_mod.ld -Wl,-q ^
-  -Wl,--unresolved-symbols=ignore-all ^
-  examples\%2\mod.cpp -lgcc ^
-  -o build\%1.elf
-if %ERRORLEVEL% NEQ 0 exit /b 1
-python scripts\wxlm.py build\%1.elf build\%1.wxlm --id %1 --phase load
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: Stage this module's resources under its ID. deploy.py copies
-:: build/moddata/<id>/ into content/WiiXLaunch/mods/<id>/ - the mapping
-:: from id to source directory lives HERE, where the two are already
-:: named together, rather than being duplicated in the deploy script.
-if exist "examples\%2\data" (
-    if not exist build\moddata mkdir build\moddata
-    if exist build\moddata\%1 rmdir /s /q build\moddata\%1
-    xcopy /e /i /q "examples\%2\data" "build\moddata\%1" >nul
-    if %ERRORLEVEL% NEQ 0 exit /b 1
-)
+::
+:: Delegated to scripts/build_mod.py, which is the ONLY definition of how a
+:: module is compiled and packed. An external mod project calls the same
+:: script, so the flags cannot drift between the in-tree samples and a real
+:: third-party mod - and these flags are not obvious enough to keep two
+:: copies of. See the header comment there for what each one is for.
+:build_mod
+python scripts\build_mod.py --source examples\%2 --id %1
 if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0
 
