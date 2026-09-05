@@ -133,12 +133,29 @@ struct Registration {
 namespace impl {
 
 // Fixed capacity, no allocation. Registration happens once at host init, long
-// before any arena exists, and a host with more than this many surfaces has a
-// design problem rather than a capacity problem.
-constexpr uint32_t kMaxSurfaces = 16;
+// before any arena exists.
+//
+// This said 16, and said a host with more than 16 surfaces had a design problem
+// rather than a capacity problem. Then the BotW module grew to 18 surfaces and
+// the base to 6, and eight of them were refused in registration order - so the
+// host advertised botw.player through botw.events and simply did not exist from
+// botw.sound onward. Every refusal was logged correctly and the mod that needed
+// one was rejected by name; none of that made the CAP visible, because the
+// count that mattered lived in a different file from the number it exceeded.
+//
+// The figure now has headroom, and scripts/surface_coverage.py counts the
+// declared surfaces at build time and fails before a boot can find this again.
+constexpr uint32_t kMaxSurfaces = 48;
 
 inline Registration g_Surfaces[kMaxSurfaces];
 inline uint32_t g_SurfaceCount = 0;
+
+// Registrations the host built and then refused, for any reason. A truncated
+// registry has a loud symptom at the moment of refusal and an invisible one
+// afterwards: Count() and the surface list both read as healthy, because they
+// report what IS registered, and a mod rejected for a missing surface looks
+// exactly like a mod asking for something this host was never built with.
+inline uint32_t g_SurfaceRefused = 0;
 
 inline bool NameEquals(const char* a, const char* b) {
     if (!a || !b) return false;
@@ -167,16 +184,21 @@ inline const Registration* Find(const char* name) {
 //   - a full registry
 inline bool Register(const Registration& reg) {
     if (!reg.name || !reg.symbols) {
+        ++impl::g_SurfaceRefused;
         WIIXL_LOG("Surface: rejected a registration with no name or no table");
         return false;
     }
     if (Find(reg.name)) {
+        ++impl::g_SurfaceRefused;
         WIIXL_LOG("Surface: '%s' is already registered - refusing the second one", reg.name);
         return false;
     }
     if (impl::g_SurfaceCount >= impl::kMaxSurfaces) {
+        ++impl::g_SurfaceRefused;
         WIIXL_LOG("Surface: registry full (%u), cannot register '%s'",
                   impl::kMaxSurfaces, reg.name);
+        WIIXL_LOG("Surface:   every mod requiring it will now be rejected as if this "
+                  "host never had it. Raise kMaxSurfaces in loader/surface.hpp.");
         return false;
     }
     for (uint32_t i = 0; i < reg.symbolCount; ++i) {
@@ -185,6 +207,7 @@ inline bool Register(const Registration& reg) {
                 WIIXL_LOG("Surface: '%s' has a duplicate symbol hash 0x%08X at %u and %u "
                           "- a collision or the same name twice; refusing to register",
                           reg.name, reg.symbols[i].hash, i, j);
+                ++impl::g_SurfaceRefused;
                 return false;
             }
         }
@@ -312,6 +335,14 @@ inline void LogRegistered() {
         const Registration& r = impl::g_Surfaces[i];
         WIIXL_LOG("Surface:   %s v%u.%u (%u symbols)",
                   r.name, r.versionMajor, r.versionMinor, r.symbolCount);
+    }
+    if (impl::g_SurfaceRefused) {
+        WIIXL_LOG("Surface: INCOMPLETE - %u built by this host, REFUSED at "
+                  "registration (capacity %u).",
+                  impl::g_SurfaceRefused, impl::kMaxSurfaces);
+        WIIXL_LOG("Surface:   the list above is what survived, not what was written. "
+                  "A mod rejected for a missing surface may be asking for a refused "
+                  "one.");
     }
     if (impl::g_SurfaceCount <= 1) {
         WIIXL_LOG("Surface: no GAME surfaces registered - this host has no game module "

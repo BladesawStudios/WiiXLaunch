@@ -51,6 +51,69 @@ SURFACE_DIRS = [
     os.path.join(BASE, "loader"),
 ]
 
+# --- the registry ceiling ---------------------------------------------------
+#
+# Surfaces are declared in one set of files and stored in a fixed array declared
+# in another. Nothing in the compiler connects the two: registration is a
+# runtime call that returns false, so twenty-four surfaces against a cap of
+# sixteen builds cleanly, boots, logs eight refusals, and rejects the mod that
+# needed one of them - by the RIGHT name, for the WRONG reason.
+#
+# Both numbers are static text. This reads them and compares them.
+SURFACE_NAME = re.compile(  # BROKEN
+    r'constexpr\s+const\s+char\s*\*\s*k\w*\s*=\s*"((?:wiixl|botw)\.\w+)"')
+CAP = re.compile(r'constexpr\s+uint32_t\s+kMaxSurfaces\s*=\s*(\d+)\s*;')
+CAP_HEADER = os.path.join(BASE, "loader", "surface.hpp")
+
+# A floor, because "0 surfaces declared, plenty of headroom" is the failure this
+# check would otherwise report as a pass.
+MIN_SURFACES = 20
+
+
+def declared_surfaces():
+    names = set()
+    for target in SURFACE_DIRS:
+        paths = []
+        if os.path.isfile(target):
+            paths = [target]
+        elif os.path.isdir(target):
+            paths = [os.path.join(target, n) for n in os.listdir(target) if n.endswith(".hpp")]
+        for path in paths:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                names.update(SURFACE_NAME.findall(f.read()))
+    return names
+
+
+def check_registry_capacity():
+    names = declared_surfaces()
+    with open(CAP_HEADER, encoding="utf-8", errors="replace") as f:
+        m = CAP.search(f.read())
+    if not m:
+        sys.stderr.write("[surface_coverage] could not find kMaxSurfaces in %s - this\n"
+                         "  check cannot report a pass it did not perform.\n" % CAP_HEADER)
+        return 1
+    cap = int(m.group(1))
+
+    if len(names) < MIN_SURFACES:
+        sys.stderr.write("[surface_coverage] only %d surface name(s) found, expected at\n"
+                         "  least %d - the scan is broken, not the tree.\n"
+                         % (len(names), MIN_SURFACES))
+        return 1
+
+    print("[surface_coverage] %d surface(s) declared, registry holds %d"
+          % (len(names), cap))
+    if len(names) > cap:
+        over = sorted(names)
+        sys.stderr.write("\n[surface_coverage] %d surfaces are declared and kMaxSurfaces is\n"
+                         "  %d. The %d that lose the race are decided by registration\n"
+                         "  ORDER, and the build will not say which. Raise kMaxSurfaces in\n"
+                         "  include/wiixlaunch/loader/surface.hpp.\n"
+                         "  Declared: %s\n"
+                         % (len(names), cap, len(names) - cap, ", ".join(over)))
+        return 1
+    return 0
+
+
 # Public functions deliberately NOT on a surface, and why. Each of these was a
 # decision; leaving the reason here is what stops the next person re-deciding it
 # by accident.
@@ -460,6 +523,10 @@ def surface_symbols():
 
 
 def main():
+    rc = check_registry_capacity()
+    if rc:
+        return rc
+
     exported = surface_symbols()
     if not exported:
         sys.stderr.write("[surface_coverage] found NO surface symbols at all - the\n"
