@@ -42,6 +42,33 @@ alignas(32) inline uint8_t g_FSClient[0x1700];
 alignas(32) inline uint8_t g_FSCmdBlock[0xA80];
 inline bool g_FSClientReady = false;
 
+// coreinit's FSReadFile family requires a 64-BYTE-ALIGNED destination buffer.
+// ReadAt has always said so in a comment; ReadFile did not, and did not check.
+//
+// The failure is quiet and it is not deterministic, which is the worst
+// combination. An unaligned buffer does not fault - the read simply transfers
+// nothing, or less than asked - so whether a mod's file read works depends on
+// where the compiler happened to put its stack buffer that build. Two example
+// mods doing the identical thing, `char buf[64]` on the stack, disagreed:
+// b_second read its greeting and a_first got zero bytes back for an 18-byte
+// file. Nothing in either mod was different; the stack offsets were.
+//
+// A mod cannot reasonably be expected to know this, and telling it to use
+// alignas(64) only moves the trap - it still bites whoever forgets. So an
+// unaligned destination is STAGED through this buffer instead: correct for any
+// caller, at the cost of one copy for the callers that need it.
+constexpr uint32_t kFSBufferAlign = 64;
+alignas(kFSBufferAlign) inline uint8_t g_FSStaging[4096];
+
+inline bool IsFSAligned(const void* p) {
+    return (reinterpret_cast<uintptr_t>(p) & (kFSBufferAlign - 1)) == 0;
+}
+
+// How many times an unaligned read has been staged. Logged for the first few
+// only: it is worth knowing that a caller is paying for a copy, and not worth
+// one line a frame if something reads in a tick.
+inline uint32_t g_StagedReads = 0;
+
 // The path candidates a relative name is tried through, in order.
 //
 // ONE list, because a directory that resolves differently from the files inside
@@ -200,18 +227,59 @@ inline bool ReadFile(const char* path, void* outBuffer, size_t maxBufferSize, si
         return false;
     }
 
-    int32_t readBytes = readFile(impl::g_FSClient, impl::g_FSCmdBlock, outBuffer, 1, toRead, handle, 0, 0xFFFFFFFF);
+    int32_t readBytes;
+    if (impl::IsFSAligned(outBuffer)) {
+        readBytes = readFile(impl::g_FSClient, impl::g_FSCmdBlock, outBuffer, 1, toRead,
+                             handle, 0, 0xFFFFFFFF);
+    } else {
+        // Staged, in chunks, through an aligned buffer. FSReadFile advances the
+        // file position, so successive calls continue where the last stopped.
+        if (impl::g_StagedReads < 3) {
+            WIIXL_LOG("WiiXLaunch: ReadFile '%s' - caller's buffer is not 64-byte "
+                      "aligned, staging the read through the host's buffer", openedPath);
+        }
+        impl::g_StagedReads++;
+
+        size_t done = 0;
+        readBytes = 0;
+        while (done < toRead) {
+            size_t chunk = toRead - done;
+            if (chunk > sizeof(impl::g_FSStaging)) chunk = sizeof(impl::g_FSStaging);
+
+            const int32_t got = readFile(impl::g_FSClient, impl::g_FSCmdBlock,
+                                         impl::g_FSStaging, 1, static_cast<uint32_t>(chunk),
+                                         handle, 0, 0xFFFFFFFF);
+            if (got < 0) { readBytes = got; break; }
+            for (int32_t b = 0; b < got; ++b) {
+                static_cast<uint8_t*>(outBuffer)[done + b] = impl::g_FSStaging[b];
+            }
+            done += static_cast<size_t>(got);
+            readBytes = static_cast<int32_t>(done);
+            if (static_cast<size_t>(got) < chunk) break;   // short read, stop
+        }
+    }
     closeFile(impl::g_FSClient, impl::g_FSCmdBlock, handle, 0xFFFFFFFF);
 
-    if (readBytes >= 0) {
-        if (outReadSize) *outReadSize = static_cast<size_t>(readBytes);
-        WIIXL_LOG("WiiXLaunch: ReadFile '%s' OK (%d bytes, stat=%d size=%u)",
-                  openedPath, readBytes, statStatus, (unsigned)statBuf.size);
-        return true;
+    if (readBytes < 0) {
+        WIIXL_LOG("WiiXLaunch: FSReadFile failed for '%s' (status=%d)", openedPath, readBytes);
+        return false;
     }
 
-    WIIXL_LOG("WiiXLaunch: FSReadFile failed for '%s' (status=%d)", openedPath, readBytes);
-    return false;
+    // A SHORT READ IS NOT SUCCESS, and used to be reported as one. "OK (0
+    // bytes, size=18)" was printed for a file the caller then found empty - the
+    // log asserted a success the code had not achieved, which is worse than
+    // silence because it points the search away from the real fault.
+    if (static_cast<size_t>(readBytes) < toRead) {
+        WIIXL_LOG("WiiXLaunch: ReadFile '%s' SHORT - got %d of %u bytes (stat=%d)",
+                  openedPath, readBytes, (unsigned)toRead, statStatus);
+        if (outReadSize) *outReadSize = static_cast<size_t>(readBytes);
+        return false;
+    }
+
+    if (outReadSize) *outReadSize = static_cast<size_t>(readBytes);
+    WIIXL_LOG("WiiXLaunch: ReadFile '%s' OK (%d bytes, stat=%d size=%u)",
+              openedPath, readBytes, statStatus, (unsigned)statBuf.size);
+    return true;
 #elif WIIXL_WIIU
     FSFileHandle handle = 0;
     FSStatus status = FSOpenFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
@@ -229,18 +297,54 @@ inline bool ReadFile(const char* path, void* outBuffer, size_t maxBufferSize, si
         }
     }
 
-    int32_t readBytes = FSReadFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
-                                   reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
-                                   reinterpret_cast<uint8_t*>(outBuffer), 1, toRead, handle, 0, FS_ERROR_FLAG_ALL);
+    // Identical alignment requirement and identical short-read rule as the Cemu
+    // branch above - it is the same coreinit call underneath, so the fix is
+    // swept here in the same commit rather than left for the next boot on
+    // hardware to rediscover.
+    int32_t readBytes;
+    if (impl::IsFSAligned(outBuffer)) {
+        readBytes = FSReadFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
+                               reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
+                               reinterpret_cast<uint8_t*>(outBuffer), 1, toRead, handle, 0,
+                               FS_ERROR_FLAG_ALL);
+    } else {
+        if (impl::g_StagedReads < 3) {
+            WIIXL_LOG("WiiXLaunch: ReadFile '%s' - caller's buffer is not 64-byte "
+                      "aligned, staging the read through the host's buffer", path);
+        }
+        impl::g_StagedReads++;
+
+        size_t done = 0;
+        readBytes = 0;
+        while (done < toRead) {
+            size_t chunk = toRead - done;
+            if (chunk > sizeof(impl::g_FSStaging)) chunk = sizeof(impl::g_FSStaging);
+
+            const int32_t got = FSReadFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
+                                           reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
+                                           impl::g_FSStaging, 1, static_cast<uint32_t>(chunk),
+                                           handle, 0, FS_ERROR_FLAG_ALL);
+            if (got < 0) { readBytes = got; break; }
+            for (int32_t b = 0; b < got; ++b) {
+                static_cast<uint8_t*>(outBuffer)[done + b] = impl::g_FSStaging[b];
+            }
+            done += static_cast<size_t>(got);
+            readBytes = static_cast<int32_t>(done);
+            if (static_cast<size_t>(got) < chunk) break;
+        }
+    }
     FSCloseFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
                 reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
                 handle, FS_ERROR_FLAG_ALL);
 
-    if (readBytes >= 0) {
-        if (outReadSize) *outReadSize = static_cast<size_t>(readBytes);
-        return true;
+    if (readBytes < 0) return false;
+    if (outReadSize) *outReadSize = static_cast<size_t>(readBytes);
+    if (static_cast<size_t>(readBytes) < toRead) {
+        WIIXL_LOG("WiiXLaunch: ReadFile '%s' SHORT - got %d of %u bytes",
+                  path, readBytes, (unsigned)toRead);
+        return false;
     }
-    return false;
+    return true;
 #else
     return false;
 #endif

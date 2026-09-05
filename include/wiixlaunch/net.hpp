@@ -275,8 +275,8 @@ inline Result Open(Handle* outHandle) {
 
     const int fd = Transport::Open();
     if (fd < 0) {
-        WIIXL_LOG("Net: %s got %s - the platform would not open a socket",
-                  owner, ResultName(Result::PlatformError));
+        WIIXL_LOG("Net: %s got %s - the platform would not open a socket, error %d",
+                  owner, ResultName(Result::PlatformError), Transport::LastError());
         return Result::PlatformError;
     }
 
@@ -343,14 +343,26 @@ inline Result Bind(Handle h, uint16_t port) {
     Slot* s = nullptr;
     const Result r = Resolve(h, &s);
     if (r != Result::Ok) return r;
-    return Transport::Bind(s->fd, port) ? Result::Ok : Result::PlatformError;
+    if (Transport::Bind(s->fd, port)) return Result::Ok;
+
+    // The one refusal that is almost never a bug in the mod. A port already in
+    // use is the ordinary case, and PLATFORM-ERROR on its own sent the reader
+    // looking at the wrong thing entirely.
+    WIIXL_LOG("Net: %s could not bind port %u - platform error %d. A port already "
+              "held by another process is the usual cause.",
+              s->owner, port, Transport::LastError());
+    return Result::PlatformError;
 }
 
 inline Result Listen(Handle h, uint32_t backlog) {
     Slot* s = nullptr;
     const Result r = Resolve(h, &s);
     if (r != Result::Ok) return r;
-    if (!Transport::Listen(s->fd, static_cast<int32_t>(backlog))) return Result::PlatformError;
+    if (!Transport::Listen(s->fd, static_cast<int32_t>(backlog))) {
+        WIIXL_LOG("Net: %s could not listen - platform error %d",
+                  s->owner, Transport::LastError());
+        return Result::PlatformError;
+    }
     s->listener = true;
     return Result::Ok;
 }

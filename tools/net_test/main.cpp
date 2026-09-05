@@ -86,6 +86,8 @@ static int  g_FakePendingAccepts = 0;
 static int  g_FakeCloseCount = 0;
 static int  g_FakeLastClosed = -1;
 static int  g_FakeRecvBytes = 0;      // what the next Recv should deliver
+static bool g_FakeBindFails = false;
+static int  g_FakeLastError = 0;      // what the platform would say went wrong
 
 static void FakeReset() {
     for (int i = 0; i < kFakeFds; ++i) {
@@ -97,6 +99,8 @@ static void FakeReset() {
     g_FakeCloseCount = 0;
     g_FakeLastClosed = -1;
     g_FakeRecvBytes = 0;
+    g_FakeBindFails = false;
+    g_FakeLastError = 0;
 }
 
 static bool FakeInit() { return g_FakeAvailable; }
@@ -125,6 +129,7 @@ static bool FakeSetOptInt(int fd, int32_t level, int32_t option, int32_t value) 
 
 static bool FakeBind(int fd, uint16_t port) {
     if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open) return false;
+    if (g_FakeBindFails) { g_FakeLastError = 48; return false; }   // EADDRINUSE
     g_Fake[fd].port = port;
     return true;
 }
@@ -178,6 +183,8 @@ static void FakeClose(int fd) {
     }
 }
 
+static int32_t FakeLastError() { return g_FakeLastError; }
+
 static uint32_t FakeLocalIp(int fd) {
     if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open) return 0;
     return 0xC0A80164u;   // 192.168.1.100
@@ -186,6 +193,7 @@ static uint32_t FakeLocalIp(int fd) {
 static const T::HostOps kFakeOps = {
     &FakeInit, &FakeOpen, &FakeSetOptInt, &FakeBind, &FakeListen,
     &FakeAccept, &FakeRecv, &FakeSend, &FakeClose, &FakeLocalIp, &FakeAvailable,
+    &FakeLastError,
 };
 
 // Fresh table AND fresh fake, so no case can pass on state another left behind.
@@ -539,6 +547,37 @@ int main() {
     EndSection(4);
 
     // -----------------------------------------------------------------------
+    // A bind that fails is the ordinary case, not a bug in the mod - a port
+    // already held by another process. The first real boot returned
+    // PLATFORM-ERROR and nothing else, which sent the search at the socket
+    // layer when the answer was "something else has 8080".
+    BeginSection("a refusal carries the platform's own reason");
+    {
+        FreshWorld();
+        MC::SetCurrent("modA");
+
+        N::Handle h = 0;
+        ok("a socket opens", N::Open(&h) == N::Result::Ok);
+        ok("and binds when the port is free", N::Bind(h, 8080) == N::Result::Ok);
+        ok("with nothing to report", T::LastError() == 0);
+
+        // Now the same call, refused by the platform.
+        g_FakeBindFails = true;
+        N::Handle h2 = 0;
+        N::Open(&h2);
+        ok("a taken port is a platform error",
+           N::Bind(h2, 8080) == N::Result::PlatformError);
+
+        // The assertion that matters: the reason SURVIVED to where a caller can
+        // read it. A Result alone cannot distinguish EADDRINUSE from EINVAL,
+        // and those want completely different responses.
+        ok("and the platform's reason is readable afterwards", T::LastError() == 48);
+
+        MC::SetCurrent(nullptr);
+    }
+    EndSection(5);
+
+    // -----------------------------------------------------------------------
     BeginSection("byte accounting");
     {
         FreshWorld();
@@ -606,7 +645,7 @@ int main() {
 
     // A floor, so a build that compiled away half the file cannot report
     // success. Raise it deliberately when checks are added.
-    static const int kExpectedChecks = 81;
+    static const int kExpectedChecks = 86;
     if (g_checks < kExpectedChecks) {
         std::printf("NET TESTS INCOMPLETE: ran %d checks, expected at least %d\n",
                     g_checks, kExpectedChecks);
@@ -615,7 +654,8 @@ int main() {
 
     std::printf("ALL NET TESTS PASS (%d checks: attribution, handle validity, "
                 "use-after-close, quotas, host limit, close-all, accept, "
-                "untracked-accept, availability, accounting, result names)\n",
+                "untracked-accept, availability, platform reasons, accounting, "
+                "result names)\n",
                 g_checks);
     return 0;
 }

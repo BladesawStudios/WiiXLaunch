@@ -117,6 +117,7 @@ struct HostOps {
     void     (*close)(int fd);
     uint32_t (*localIp)(int fd);
     bool     (*available)();
+    int32_t  (*lastError)();
 };
 
 namespace impl { inline const HostOps* g_HostOps = nullptr; }
@@ -142,6 +143,7 @@ using FnSend          = int32_t (*)(int32_t fd, const void* buf, uint32_t len, i
 using FnSetSockOpt    = int32_t (*)(int32_t fd, int32_t level, int32_t opt, const void* val, int32_t len);
 using FnGetSockOpt    = int32_t (*)(int32_t fd, int32_t level, int32_t opt, void* val, int32_t* len);
 using FnSocketClose   = int32_t (*)(int32_t fd);
+using FnSocketLastErr = int32_t (*)();
 
 // The whole nsysnet entry table, resolved once through the dynamic loader.
 //
@@ -162,6 +164,11 @@ struct NsysnetTable {
     FnSetSockOpt    setsockopt;
     FnGetSockOpt    getsockopt;
     FnSocketClose   socketclose;
+    // Why the last call failed. Without it every transport refusal collapses
+    // into one PLATFORM-ERROR, which says a call failed and nothing about which
+    // of a dozen reasons it was - "the port is in use" and "the address family
+    // is wrong" want completely different responses from whoever reads the log.
+    FnSocketLastErr socketlasterr;
 };
 
 inline NsysnetTable g_Nsysnet = {};
@@ -200,10 +207,12 @@ inline const NsysnetTable* Nsysnet() {
         reinterpret_cast<void**>(&g_Nsysnet.setsockopt),
         reinterpret_cast<void**>(&g_Nsysnet.getsockopt),
         reinterpret_cast<void**>(&g_Nsysnet.socketclose),
+        reinterpret_cast<void**>(&g_Nsysnet.socketlasterr),
     };
     const char* names[] = {
         "socket_lib_init", "socket", "bind", "listen", "accept",
         "recv", "send", "setsockopt", "getsockopt", "socketclose",
+        "socketlasterr",
     };
     constexpr uint32_t kCount = sizeof(names) / sizeof(names[0]);
 
@@ -412,6 +421,27 @@ inline void Close(int fd) {
     RPLWRAP(socketclose)(fd);
 #elif WIIXL_HOST
     if (impl::g_HostOps->close) impl::g_HostOps->close(fd);
+#endif
+}
+
+// The platform's own reason for the last failure, or 0 if it cannot say.
+//
+// Not interpreted here: these are nsysnet's error numbers and this layer has no
+// business pretending to know all of them. It is reported verbatim so a log line
+// carries something specific enough to act on. The common ones on Cemu, which
+// forwards to the host stack: 9 EBADF, 13 EACCES, 22 EINVAL, 48 EADDRINUSE,
+// 49 EADDRNOTAVAIL.
+inline int32_t LastError() {
+#if WIIXL_CEMU
+    const impl::NsysnetTable* net = impl::Nsysnet();
+    return net ? net->socketlasterr() : 0;
+#elif WIIXL_WIIU
+    return RPLWRAP(socketlasterr)();
+#elif WIIXL_HOST
+    return impl::g_HostOps && impl::g_HostOps->lastError
+               ? impl::g_HostOps->lastError() : 0;
+#else
+    return 0;
 #endif
 }
 

@@ -67,7 +67,17 @@ static U32Fn     volatile g_Held      = &wiixl_import__wiixl_net__Held;
 static U32Fn     volatile g_Quota     = &wiixl_import__wiixl_net__Quota;
 static NameFn    volatile g_ResultName = &wiixl_import__wiixl_net__ResultName;
 
-static const uint32_t kPort = 8080;
+// SEVERAL PORTS, TRIED IN ORDER.
+//
+// The first boot of this mod failed at bind, and the reason was not the socket
+// layer: something else on the machine already held 8080. A demonstration that
+// only works when a popular port happens to be free proves nothing on the
+// machines where it matters most, so it tries a few and says which it got.
+//
+// A real server should take its port from configuration rather than guessing;
+// this is a sample, and guessing quietly is the thing worth avoiding.
+static const uint32_t kPorts[] = { 8080, 8099, 9080, 51080 };
+static const uint32_t kPortCount = sizeof(kPorts) / sizeof(kPorts[0]);
 static const uint32_t kResultOk = 0;
 
 // .bss, so the loader has to have zeroed it. volatile so the compiler cannot
@@ -196,9 +206,27 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
     LogResult("set non-blocking", r);
     if (r != kResultOk) { close(listener); return; }
 
-    r = bind(listener, kPort);
-    LogResult("bind", r);
-    if (r != kResultOk) { close(listener); return; }
+    uint32_t port = 0;
+    for (uint32_t i = 0; i < kPortCount; ++i) {
+        r = bind(listener, kPorts[i]);
+        if (r == kResultOk) { port = kPorts[i]; break; }
+
+        char line[112];
+        char* o = AppendText(line, line + sizeof(line), "d_net: port ");
+        o = AppendU32(o, line + sizeof(line), kPorts[i]);
+        o = AppendText(o, line + sizeof(line), " refused (");
+        NameFn name = g_ResultName;
+        o = AppendText(o, line + sizeof(line), name ? name(r) : "?");
+        o = AppendText(o, line + sizeof(line), ") - see the Net: line for the "
+                                               "platform's own reason");
+        *o = 0;
+        log(line);
+    }
+    if (!port) {
+        log("d_net: no port in my list was free - not listening");
+        close(listener);
+        return;
+    }
 
     r = listen(listener, 4);
     LogResult("listen", r);
@@ -211,7 +239,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
         char* o = AppendText(line, line + sizeof(line), "d_net: listening on http://");
         o = AppendIp(o, line + sizeof(line), localIp(listener));
         o = AppendText(o, line + sizeof(line), ":");
-        o = AppendU32(o, line + sizeof(line), kPort);
+        o = AppendU32(o, line + sizeof(line), port);
         o = AppendText(o, line + sizeof(line), "/");
         *o = 0;
         log(line);
