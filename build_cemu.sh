@@ -71,6 +71,11 @@ bash tools/format_test/build.sh
 # instructions it emitted. Construction, not execution - the boot proves that.
 bash tools/hook_test/build.sh
 
+# Socket ownership. The fake transport underneath RECYCLES file descriptors,
+# because a use-after-close only becomes cross-mod corruption once the number
+# has been handed to somebody else - and no real platform will do that on cue.
+bash tools/net_test/build.sh
+
 # Fuzz the loader. Runs on every build rather than on request - a check that
 # has to be remembered is a check that stops happening.
 #

@@ -1,6 +1,7 @@
 #include <wiixlaunch.hpp>
 #include <wiixlaunch/loader/load_point.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
+#include <wiixlaunch/loader/net_surface.hpp>
 #include <wiixlaunch/botw/botw.hpp>
 
 using namespace WiiXLaunch::BotW;
@@ -71,6 +72,12 @@ extern "C" void WiiXLaunch_Init() {
     // undefined weak symbol resolving to 0 would come out as g_CodeCaveBase and
     // test as non-null. Explicit calls avoid the whole question.
     WiiXLaunch::Core::Register();
+
+    // wiixl.net is base's too, but SEPARATE, because not every platform can
+    // back it. On Switch this deliberately registers nothing and says so, and
+    // a mod that declared wiixl.net required is then refused by name at load
+    // rather than loading and silently failing at its first send.
+    WiiXLaunch::NetSurface::Register();
 
     // Game modules register here. Base must never name one - this line lives in
     // the project's own source, which is where knowledge of what was installed

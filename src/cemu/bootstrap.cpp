@@ -52,6 +52,11 @@
 #include <wiixlaunch/loader/wxlm.hpp>
 #include <wiixlaunch/hook_probe.hpp>
 #include <wiixlaunch/patches.hpp>
+// Pulls in cemu/cemu_dynload.hpp, whose g_CemuDynLoadShimTableOffset is
+// patched by deploy.py and read only by src/cemu/cemu_dynload.asm. Base asm
+// must always have its offset symbol resolve, and `used` cannot rescue a
+// header nobody included - so the host's own translation unit includes it.
+#include <wiixlaunch/loader/net_surface.hpp>
 #endif
 
 // The address this payload is running at. Set by the bootstrap below, from the

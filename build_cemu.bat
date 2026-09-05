@@ -130,6 +130,19 @@ if errorlevel 2 (
     exit /b 1
 )
 
+:: Socket ownership. The transport underneath is a fake that RECYCLES file
+:: descriptors, because a use-after-close is only dangerous when the number is
+:: handed to somebody else - and no real platform will do that on cue. Every
+:: refusal here is paired with the same call succeeding.
+call tools\net_test\build.bat
+if errorlevel 2 (
+    echo [net_test] SETUP PROBLEM - MSVC not found; see the loader_fuzz note below.
+    exit /b 1
+) else if errorlevel 1 (
+    echo [net_test] FAILED - see above.
+    exit /b 1
+)
+
 :: Fuzz the loader. It reads data it did not produce and then writes to memory
 :: it executes, so it runs on every build rather than on request - a check that
 :: has to be remembered is a check that stops happening.
@@ -192,6 +205,13 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 call :build_mod b_second hook_mod_b
 if %ERRORLEVEL% NEQ 0 exit /b 1
 call :build_mod c_patch patch_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: The wiixl.net demonstration. Opens a real listener and answers a real
+:: request, so a boot proves the surface rather than the build proving it
+:: compiles - and closes a handle and reuses it on purpose, so the boot log
+:: shows STALE-HANDLE happening instead of a comment claiming it would.
+call :build_mod d_net net_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\deploy.py

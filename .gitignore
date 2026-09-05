@@ -42,3 +42,7 @@ tools/loader_fuzz/*.obj
 tools/hook_test/hook_test.exe
 tools/hook_test/hook_test.obj
 tools/hook_test/hook_test
+
+tools/net_test/net_test.exe
+tools/net_test/net_test.obj
+tools/net_test/net_test

@@ -52,6 +52,7 @@ WIRING = [
         ("test_log_lengths.py",     "test_log_lengths"),
         ("format_test\\build.bat",  "format_test"),
         ("hook_test\\build.bat",    "hook_test"),
+        ("net_test\\build.bat",     "net_test"),
         ("loader_fuzz\\build.bat",  "loader_fuzz"),
         ("audit_gates.py",          "audit_gates (this file)"),
     ]),
@@ -61,6 +62,7 @@ WIRING = [
         ("test_log_lengths.py",    "test_log_lengths"),
         ("format_test/build.sh",   "format_test"),
         ("hook_test/build.sh",     "hook_test"),
+        ("net_test/build.sh",      "net_test"),
         ("loader_fuzz/build.sh",   "loader_fuzz"),
         ("audit_gates.py",         "audit_gates (this file)"),
     ]),
@@ -72,8 +74,8 @@ WIRING = [
 # them: deleting a row from WIRING would have dropped the count and still
 # printed success. A gate that checks other gates for liveness and has none of
 # its own is the joke writing itself.
-EXPECTED_MIN_INVOCATIONS = 14
-EXPECTED_MIN_SCRIPTS = 14
+EXPECTED_MIN_INVOCATIONS = 16
+EXPECTED_MIN_SCRIPTS = 17
 
 MUST_EXIST = [
     "scripts/test_host.py",
@@ -87,6 +89,9 @@ MUST_EXIST = [
     "tools/hook_test/build.bat",
     "tools/hook_test/build.sh",
     "tools/hook_test/main.cpp",
+    "tools/net_test/build.bat",
+    "tools/net_test/build.sh",
+    "tools/net_test/main.cpp",
     "tools/loader_fuzz/build.bat",
     "tools/loader_fuzz/build.sh",
     "tools/loader_fuzz/main.cpp",
