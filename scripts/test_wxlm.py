@@ -31,7 +31,7 @@ HEADER = os.path.join(ROOT, "include", "wiixlaunch", "loader", "wxlm.hpp")
 # NOTHING is a failure rather than a vacuous pass - see the fourth rule in
 # docs/modules.md. Raise them when asserts are added; never lower them to make a
 # build go green.
-EXPECTED_MIN_SIZES = 4
+EXPECTED_MIN_SIZES = 5
 EXPECTED_MIN_OFFSETS = 8
 
 sys.path.insert(0, HERE)

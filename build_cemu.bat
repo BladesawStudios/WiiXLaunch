@@ -182,6 +182,8 @@ call :build_mod a_first hook_mod_a
 if %ERRORLEVEL% NEQ 0 exit /b 1
 call :build_mod b_second hook_mod_b
 if %ERRORLEVEL% NEQ 0 exit /b 1
+call :build_mod c_patch patch_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\deploy.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
@@ -194,7 +196,7 @@ exit /b 0
 "%DKP_PPC_GXX%" ^
   -std=gnu++20 -fno-pie -fno-pic -msdata=none -Os ^
   -ffreestanding -fno-exceptions -fno-rtti ^
-  -D__CEMU__=1 -DWIIXL_CEMU=1 ^
+  -D__CEMU__=1 -DWIIXL_CEMU=1 -I include ^
   -nostartfiles -nostdlib -T scripts\wxlm_mod.ld -Wl,-q ^
   -Wl,--unresolved-symbols=ignore-all ^
   examples\%2\mod.cpp -lgcc ^

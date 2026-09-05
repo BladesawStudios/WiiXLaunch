@@ -46,6 +46,7 @@
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
 #include <wiixlaunch/hook_manager.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/loader/wxlm.hpp>
 
 #include <cstdint>
@@ -89,10 +90,14 @@ inline const char* ResultName(Result r) {
     return "?";
 }
 
-// One applied patch, kept so a later one can be told who it collides with.
+// One applied patch, kept so a later one can be told who it collides with -
+// and so the host can go back and READ the target rather than believing the
+// applier's return value.
 struct Applied {
     uintptr_t addr;
     uint32_t  size;
+    uint8_t   origin[Wxlm::kMaxPatchBytes];
+    uint8_t   data[Wxlm::kMaxPatchBytes];
     char      owner[kOwnerLen];
 };
 
@@ -180,8 +185,20 @@ inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
 
     const uintptr_t addr = impl::Resolve(p.targetAddr);
 
-    if (impl::g_ArenaSize != 0 &&
-        impl::Overlaps(addr, p.size, impl::g_ArenaBase, impl::g_ArenaSize)) {
+    // DERIVED, not set. An explicit SetArena would be a check that goes dead
+    // the day someone forgets to call it, and a dead check is indistinguishable
+    // from a passing one - the whole subject of the fourth rule. The real host
+    // reads the arena it already owns; only a host test, which has no arena,
+    // supplies one.
+    uintptr_t arenaBase = impl::g_ArenaBase;
+    uint32_t arenaSize = impl::g_ArenaSize;
+#if WIIXL_CEMU
+    if (arenaSize == 0) {
+        arenaBase = Arena::Base();
+        arenaSize = Arena::Total();
+    }
+#endif
+    if (arenaSize != 0 && impl::Overlaps(addr, p.size, arenaBase, arenaSize)) {
         return Result::IntoArena;
     }
 
@@ -281,11 +298,80 @@ inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
     Applied& a = impl::g_Applied[impl::g_AppliedCount++];
     a.addr = where;
     a.size = p.size;
+    for (uint32_t i = 0; i < Wxlm::kMaxPatchBytes; ++i) {
+        a.origin[i] = p.origin[i];
+        a.data[i] = p.data[i];
+    }
     impl::CopyOwner(a.owner, owner ? owner : "?");
 
     WIIXL_LOG("Patch: %s applied %u B at %p (origin verified)",
               a.owner, p.size, reinterpret_cast<void*>(impl::Resolve(p.targetAddr)));
     return Result::Ok;
+}
+
+// Goes back and READS every applied patch's target.
+//
+// WHY THIS IS NOT REDUNDANT. Apply returning Ok says the applier believed it
+// wrote. This says the bytes are there now, read back from the target by code
+// that did not do the writing. A refusal is self-evidencing - nothing changed,
+// and the origin still matches - but a success is not: without a readback the
+// applied path would be verified only by the thing that performed it.
+//
+// Two properties, and the second is the one that would be missed:
+//
+//   1. the target now holds `data`
+//   2. `data` is actually DIFFERENT from `origin`
+//
+// Without (2) a patch that wrote the bytes already there would pass, and so
+// would an applier that wrote nothing at all to a target whose origin and data
+// happened to be equal. A patch that changes nothing is a patch that proves
+// nothing.
+inline bool VerifyApplied() {
+    if (impl::g_AppliedCount == 0) {
+        WIIXL_LOG("Patch: nothing was applied, so there is nothing to verify");
+        return true;
+    }
+
+    uint32_t ok = 0, wrong = 0, inert = 0;
+    for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
+        const Applied& a = impl::g_Applied[i];
+        const volatile uint8_t* at = reinterpret_cast<const volatile uint8_t*>(a.addr);
+
+        bool holds = true, changed = false;
+        for (uint32_t b = 0; b < a.size; ++b) {
+            if (at[b] != a.data[b]) holds = false;
+            if (a.data[b] != a.origin[b]) changed = true;
+        }
+
+        if (!holds) {
+            ++wrong;
+            WIIXL_LOG("Patch: VERIFY FAILED at %p (%s) - wrote %02X %02X %02X %02X but "
+                      "the target now reads %02X %02X %02X %02X. Something wrote over "
+                      "it, or the write never landed.",
+                      reinterpret_cast<void*>(a.addr), a.owner,
+                      a.data[0], a.data[1], a.data[2], a.data[3],
+                      at[0], at[1], at[2], at[3]);
+        } else if (!changed) {
+            ++inert;
+            WIIXL_LOG("Patch: VERIFY INCONCLUSIVE at %p (%s) - the bytes are correct, "
+                      "but they are the same as the origin, so this proves nothing "
+                      "about whether anything was written.",
+                      reinterpret_cast<void*>(a.addr), a.owner);
+        } else {
+            ++ok;
+            WIIXL_LOG("Patch: verified %p (%s) - %02X %02X %02X %02X became "
+                      "%02X %02X %02X %02X, read back from the target",
+                      reinterpret_cast<void*>(a.addr), a.owner,
+                      a.origin[0], a.origin[1], a.origin[2], a.origin[3],
+                      at[0], at[1], at[2], at[3]);
+        }
+    }
+
+    const bool pass = (wrong == 0 && inert == 0);
+    WIIXL_LOG("Patch: %s - %u of %u applied patch(es) verified by reading the target "
+              "back%s", pass ? "VERIFY PASS" : "VERIFY FAIL", ok, impl::g_AppliedCount,
+              inert ? " (some changed nothing, which proves nothing)" : "");
+    return pass;
 }
 
 // Everything patched, and by whom. Printed at the load point beside the hook

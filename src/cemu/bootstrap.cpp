@@ -51,6 +51,7 @@
 // scripts/wxlm.py is the one thing neither side can detect at runtime.
 #include <wiixlaunch/loader/wxlm.hpp>
 #include <wiixlaunch/hook_probe.hpp>
+#include <wiixlaunch/patches.hpp>
 #endif
 
 // The address this payload is running at. Set by the bootstrap below, from the

@@ -233,6 +233,69 @@ def read_relocations(readelf, elf, payload, payload_size, undefined):
     return relocs, import_specs
 
 
+PATCH_ENTRY_SIZE = 40
+
+
+def read_patch_table(readelf, elf):
+    """The .wxlm.patches section, verbatim.
+
+    The mod declares patches with WIIXL_DECLARE_PATCH, which emits records
+    already laid out as Wxlm::PatchEntry. They are copied byte-for-byte rather
+    than re-encoded here, so there is no second place for the layout to drift
+    from the header - the same reasoning as scripts/test_wxlm.py parsing the
+    static_asserts instead of restating them.
+    """
+    out = subprocess.check_output([readelf, "-SW", elf], text=True)
+    offset = size = None
+    for line in out.splitlines():
+        if ".wxlm.patches" not in line:
+            continue
+        # [Nr] Name Type Addr Off Size ES Flg Lk Inf Al
+        parts = line.replace("[", " ").replace("]", " ").split()
+        i = parts.index(".wxlm.patches")
+        offset = int(parts[i + 3], 16)
+        size = int(parts[i + 4], 16)
+        break
+
+    if offset is None or size == 0:
+        return b""
+
+    if size % PATCH_ENTRY_SIZE != 0:
+        raise SystemExit(
+            "[wxlm] .wxlm.patches is %d bytes, not a multiple of %d.\n"
+            "       A patch record is fixed-size; a partial one means the section\n"
+            "       holds something WIIXL_DECLARE_PATCH did not put there."
+            % (size, PATCH_ENTRY_SIZE))
+
+    with open(elf, "rb") as f:
+        f.seek(offset)
+        blob = f.read(size)
+    if len(blob) != size:
+        raise SystemExit("[wxlm] short read of .wxlm.patches")
+
+    # Validate what the host will validate, here, where the fix is cheap. A
+    # module that ships a patch the loader will always refuse is a build bug,
+    # and finding it at build time costs a script run rather than a boot.
+    count = size // PATCH_ENTRY_SIZE
+    for i in range(count):
+        rec = blob[i * PATCH_ENTRY_SIZE:(i + 1) * PATCH_ENTRY_SIZE]
+        addr, psize = struct.unpack(">II", rec[:8])
+        if psize == 0 or psize > 16:
+            raise SystemExit("[wxlm] patch %d has size %d, must be 1..16" % (i, psize))
+        if addr == 0:
+            raise SystemExit("[wxlm] patch %d targets address 0" % i)
+        origin = rec[8:8 + psize]
+        data = rec[24:24 + psize]
+        if origin == data:
+            raise SystemExit(
+                "[wxlm] patch %d at 0x%08X writes exactly what it expects to find.\n"
+                "       That changes nothing and cannot be verified - the host reads\n"
+                "       the target back and cannot tell a write from a no-op."
+                % (i, addr))
+
+    return blob
+
+
 def read_bss_size(readelf, elf):
     """objcopy -O binary drops .bss, so its size has to come from the sections."""
     out = subprocess.check_output([readelf, "-SW", elf], text=True)
@@ -276,7 +339,8 @@ def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
                 reloc_offset, reloc_count, import_offset, import_count,
                 export_offset, export_count, required_offset, required_count,
                 string_offset, string_size, entry_offset, init_offset,
-                init_count, bss_size, heap_request):
+                init_count, bss_size, heap_request,
+                declared_patch_offset=0, declared_patch_count=0):
     """The single place a .wxlm header is laid out.
 
     Extracted out of build() so scripts/test_wxlm.py can call the real thing.
@@ -308,7 +372,8 @@ def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
         init_offset, init_count,
         bss_size,
         heap_request,
-        0, 0, 0, 0,               # declared hooks / patches, stages 6 and 7
+        0, 0,                     # declared hooks - still reserved
+        declared_patch_offset, declared_patch_count,
         0, 0, 0, 0,               # reserved1
     )
 
@@ -419,6 +484,10 @@ def build(args):
         struct.pack(">IHH", n, mj, mn) for n, mj, mn in required)
     string_bytes = strings.bytes()
 
+    # Declared patches, lifted from the ELF section WIIXL_DECLARE_PATCH emits.
+    patch_bytes = read_patch_table(readelf, args.elf)
+    patch_count = len(patch_bytes) // PATCH_ENTRY_SIZE
+
     def align4(n):
         return (n + 3) & ~3
 
@@ -429,6 +498,7 @@ def build(args):
     export_offset = offset;    offset = align4(offset + len(export_bytes))
     required_offset = offset;  offset = align4(offset + len(required_bytes))
     string_offset = offset;    offset = align4(offset + len(string_bytes))
+    patch_offset = offset;     offset = align4(offset + len(patch_bytes))
     file_size = offset
 
     content = bytearray(file_size - HEADER_SIZE)
@@ -443,6 +513,7 @@ def build(args):
     place(export_offset, export_bytes)
     place(required_offset, required_bytes)
     place(string_offset, string_bytes)
+    place(patch_offset, patch_bytes)
 
     content_crc = zlib.crc32(bytes(content)) & 0xFFFFFFFF
 
@@ -458,6 +529,7 @@ def build(args):
         string_offset, len(string_bytes),
         entry_offset, init_offset, init_count,
         bss_size, args.heap_request,
+        patch_offset, patch_count,
     )
 
     with open(args.output, "wb") as f:
@@ -474,6 +546,14 @@ def build(args):
                             len(required), len(string_bytes)))
     print("[wxlm]   entry %s @0x%X, init_array %d, bss %d B, heap request %d B" %
           (args.entry, entry_offset, init_count, bss_size, args.heap_request))
+    if patch_count:
+        for i in range(patch_count):
+            rec = patch_bytes[i * PATCH_ENTRY_SIZE:(i + 1) * PATCH_ENTRY_SIZE]
+            addr, psize = struct.unpack(">II", rec[:8])
+            org = " ".join("%02X" % b for b in rec[8:8 + psize])
+            new = " ".join("%02X" % b for b in rec[24:24 + psize])
+            print("[wxlm]   patch 0x%08X %d B: %s -> %s" % (addr, psize, org, new))
+    print("[wxlm]   %d declared patch(es)" % patch_count)
     print("[wxlm]   file %d B, content crc32 0x%08X" % (file_size, content_crc))
     return 0
 

@@ -16,7 +16,13 @@ SECTIONS
 {
     . = 0x0;
 
-    .text : {
+    /* Declared patches. Its own output section so scripts/wxlm.py can lift
+     it out by name, and KEEP because nothing in the module references
+     these records - they are read by a script and consumed by the host,
+     which is the same shape as the `used` rule in docs/modules.md. */
+  .wxlm.patches : { KEEP(*(.wxlm.patches)) }
+
+  .text : {
         *(.text*)
         *(.init)
         *(.fini)
