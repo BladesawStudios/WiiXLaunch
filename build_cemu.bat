@@ -214,6 +214,14 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 call :build_mod d_net net_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:: The botw.player v1.1 demonstration. Reads Link's real life through the
+:: surface's real symbols and contains no offsets of its own, so a boot proves
+:: the accessors rather than the build proving they compile - and takes the raw
+:: pointer once on purpose, so the "opted out of versioning" line lands in the
+:: log with a module name on it.
+call :build_mod e_player player_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 python scripts\deploy.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 echo Cemu build complete!
