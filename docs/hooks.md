@@ -158,6 +158,34 @@ build their own trampolines; the manager records the hook so conflict reporting
 works there too, but it does not reimplement their mechanism. Chain order on
 those platforms is whatever the platform does.
 
+## Patches and hook windows
+
+A hook displaces the first **16 bytes** of its target into a trampoline and
+writes a long jump over them. So a raw patch aimed inside that window does not
+write into the game at all — the instructions it is aiming at live somewhere
+else now, and what it actually corrupts is the branch into the hook chain.
+
+`WiiXLaunch::Patches` checks every patch against every hook site's 16-byte
+window and refuses the overlap by name, saying which hook it collided with:
+
+```
+Patch: modA REFUSED HOOKED-WINDOW at 0x03A75D4C (4 B) - those bytes are inside
+the 16-byte jump the hook manager wrote for host.
+```
+
+**This is reachable today, not hypothetically.** The host's own GX2 hook is
+installed during `WiiXLaunch_Init`, before any module is loaded, so the very
+first patch any mod declares is already able to land in a hooked window.
+
+A hooked window will *also* fail the origin check — the jump is there, not the
+prologue — so the order of the two decides which diagnosis a user gets.
+`HOOKED-WINDOW` is tested first deliberately: it points at another mod, where
+`ORIGIN-MISMATCH` would send someone to check their game version.
+
+The reverse direction needs no check, and the reason is the load order in
+[the loader](loader.md#the-load-sequence): declared patches are applied before
+any module entry, so a hook installed later captures the patched bytes.
+
 ## Finding offsets
 
 Offsets are addresses into the game binary. WiiXLaunch doesn't locate these for you; that's reverse-engineering work done in a disassembler (Ghidra, IDA) against the specific game version you're targeting. WiiXLaunch uses relative offsets, so taking an address from Ghidra using the SwitchLoader plugin, ensure you subtract `0x7100000000`. Using the RPX plugin for Ghidra already yields the proper offsets when reverse engineering Wii U binaries.

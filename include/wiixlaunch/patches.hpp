@@ -1,0 +1,307 @@
+#pragma once
+
+// WiiXLaunch::Patches - raw byte patches, declared as data and applied by the
+// host before any module code runs.
+//
+// A patch is not a hook. A hook redirects a function and can be chained; a
+// patch overwrites bytes and cannot. Both are legitimate, and both are things
+// two mods can do to the same address, so both need one registry that can name
+// the parties when they collide.
+//
+// ---------------------------------------------------------------------------
+// THE LOAD SEQUENCE, AND WHY IT IS THIS ORDER.
+//
+//   1. host hooks          installed by WiiXLaunch_Init, before any module
+//   2. DECLARED PATCHES    every module's, at load, in load order
+//   3. module entries      which may install more hooks
+//
+// This is a specification, not an implementation detail, and reordering it
+// breaks two different things.
+//
+// PATCHES BEFORE ENTRIES is what makes patch conflicts detectable at all. The
+// host sees every patch every module declares before any mod code runs, so
+// patch-vs-patch and patch-vs-hook overlaps are known up front rather than
+// discovered when someone's game misbehaves. Applying patches on request from
+// inside a module's entry would give that up entirely - the host would learn
+// about the second patch only after the first had already been written.
+//
+// PATCHES BEFORE LATER HOOKS is what makes patching a to-be-hooked function
+// safe. The hook manager captures a target's prologue exactly once, when the
+// first hook on that address is installed. Because declared patches run before
+// any module entry, a module hooking an address another module patched captures
+// the PATCHED bytes - which is correct, and is the only reason that direction
+// needs no check. Reverse the order and the manager would capture the original
+// prologue, the patch would then overwrite the jump the manager had just
+// written, and the trampoline would carry bytes that no longer match anything.
+//
+// THE OTHER DIRECTION IS NOT SAFE AND IS CHECKED. A patch landing inside the
+// 16 bytes a hook has already displaced writes into the long jump, not into the
+// game: the bytes it is aiming at now live in a trampoline somewhere else, and
+// what it actually corrupts is the branch to the first hook in the chain. This
+// is reachable today, not hypothetically - the host's own GX2 hook is installed
+// during WiiXLaunch_Init, before any module is loaded, so the very first patch
+// any mod declares is already able to land in a hooked window.
+// ---------------------------------------------------------------------------
+
+#include <wiixlaunch/platform.hpp>
+#include <wiixlaunch/debug_log.hpp>
+#include <wiixlaunch/hook_manager.hpp>
+#include <wiixlaunch/loader/wxlm.hpp>
+
+#include <cstdint>
+
+#if WIIXL_CEMU
+#include <wiixl_cemu_backend.hpp>
+#endif
+
+namespace WiiXLaunch::Patches {
+
+constexpr uint32_t kMaxPatches = 32;
+constexpr uint32_t kOwnerLen = 17;
+
+// WHY THIS IS AN ENUM AND NOT A BOOL. Six refusals that want six different
+// fixes: a malformed record is a build problem, an origin mismatch is a
+// game-version problem, a hooked window is a mod-interaction problem. A caller
+// that gets `false` cannot tell them apart, and neither can a test - see the
+// log-string rule in docs/modules.md.
+enum class Result : uint32_t {
+    Ok = 0,
+    BadSize,          // size is 0, or larger than kMaxPatchBytes
+    BadTarget,        // null, or somewhere no patch may write
+    IntoArena,        // aimed at the module arena, whose addresses move per boot
+    OriginMismatch,   // the target does not hold what the patch expected
+    HookedWindow,     // overlaps the 16 bytes a hook has already displaced
+    PatchOverlap,     // overlaps bytes another module already patched
+    NoSlots,          // kMaxPatches already recorded
+};
+
+inline const char* ResultName(Result r) {
+    switch (r) {
+        case Result::Ok:             return "OK";
+        case Result::BadSize:        return "BAD-SIZE";
+        case Result::BadTarget:      return "BAD-TARGET";
+        case Result::IntoArena:      return "INTO-ARENA";
+        case Result::OriginMismatch: return "ORIGIN-MISMATCH";
+        case Result::HookedWindow:   return "HOOKED-WINDOW";
+        case Result::PatchOverlap:   return "PATCH-OVERLAP";
+        case Result::NoSlots:        return "NO-SLOTS";
+    }
+    return "?";
+}
+
+// One applied patch, kept so a later one can be told who it collides with.
+struct Applied {
+    uintptr_t addr;
+    uint32_t  size;
+    char      owner[kOwnerLen];
+};
+
+namespace impl {
+
+inline Applied g_Applied[kMaxPatches];
+inline uint32_t g_AppliedCount = 0;
+inline uint32_t g_RefusedCount = 0;
+inline uint32_t g_ExaminedCount = 0;
+
+// The arena, whose addresses are different on every boot because the code cave
+// moves with the graphic-pack load order. A patch written by absolute address
+// into that range cannot mean anything - it is either a mod trying to rewrite
+// another module's image, or a build mistake. Both are refused.
+//
+// Supplied rather than read, so a host test can describe a range without a
+// console. Zero size means "no arena known", and the check is skipped.
+inline uintptr_t g_ArenaBase = 0;
+inline uint32_t g_ArenaSize = 0;
+
+// Where a 32-bit game address lands in this process.
+//
+// On a console or in Cemu this is zero and the answer is the address itself -
+// the game's address space IS the process's. It exists because a host test runs
+// on a 64-bit machine, where a buffer to patch is far above anything a uint32_t
+// can name, and a patch record cannot hold a 64-bit address without changing
+// the format for every real target that will never need one.
+//
+// This is a test seam, not a hook: it is consulted on EVERY patch, so it cannot
+// quietly stop being called the way an unused allocation hook did.
+inline uintptr_t g_AddrBase = 0;
+
+inline uintptr_t Resolve(uint32_t targetAddr) {
+    return g_AddrBase + static_cast<uintptr_t>(targetAddr);
+}
+
+inline void CopyOwner(char* dst, const char* src) {
+    uint32_t i = 0;
+    for (; i + 1 < kOwnerLen && src && src[i]; ++i) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+// Do [a, a+an) and [b, b+bn) share a byte?
+inline bool Overlaps(uintptr_t a, uint32_t an, uintptr_t b, uint32_t bn) {
+    return a < b + bn && b < a + an;
+}
+
+} // namespace impl
+
+// Only a host test calls this. Zero - the default - means a game address is a
+// process address, which is what every real target is.
+inline void SetAddressBase(uintptr_t base) { impl::g_AddrBase = base; }
+
+inline void SetArena(uintptr_t base, uint32_t size) {
+    impl::g_ArenaBase = base;
+    impl::g_ArenaSize = size;
+}
+
+inline void ResetForTest() {
+    impl::g_AddrBase = 0;
+    impl::g_AppliedCount = 0;
+    impl::g_RefusedCount = 0;
+    impl::g_ExaminedCount = 0;
+}
+
+inline uint32_t AppliedCount()  { return impl::g_AppliedCount; }
+inline uint32_t RefusedCount()  { return impl::g_RefusedCount; }
+inline uint32_t ExaminedCount() { return impl::g_ExaminedCount; }
+
+// Decides whether a patch may be written, without writing it.
+//
+// Separate from Apply so a test can assert the REASON on a target it has no
+// intention of letting anything write to. The order of the checks is the order
+// of the diagnoses: a malformed record is not a game-version problem, and a
+// hooked window is not an origin mismatch even though a hooked window will
+// always ALSO fail an origin check - the jump is there, not the prologue. That
+// is exactly why HookedWindow is tested first: reporting ORIGIN-MISMATCH for a
+// patch into a hook would send someone looking at their game version when the
+// answer is another mod.
+inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
+    if (collidesWith) *collidesWith = nullptr;
+
+    if (p.size == 0 || p.size > Wxlm::kMaxPatchBytes) return Result::BadSize;
+    if (p.targetAddr == 0) return Result::BadTarget;
+
+    const uintptr_t addr = impl::Resolve(p.targetAddr);
+
+    if (impl::g_ArenaSize != 0 &&
+        impl::Overlaps(addr, p.size, impl::g_ArenaBase, impl::g_ArenaSize)) {
+        return Result::IntoArena;
+    }
+
+    // Against every hook site's displaced window.
+    for (uint32_t i = 0; i < Hooks::SiteCount(); ++i) {
+        const Hooks::Site* s = Hooks::SiteAt(i);
+        if (!s) continue;
+        if (impl::Overlaps(addr, p.size, s->target, Hooks::kJumpWords * 4)) {
+            if (collidesWith && s->head) *collidesWith = s->head->owner;
+            return Result::HookedWindow;
+        }
+    }
+
+    // Against every patch already applied.
+    for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
+        const Applied& a = impl::g_Applied[i];
+        if (impl::Overlaps(addr, p.size, a.addr, a.size)) {
+            if (collidesWith) *collidesWith = a.owner;
+            return Result::PatchOverlap;
+        }
+    }
+
+    // Last, because it is the one that reads the target. Everything above is
+    // arithmetic and can be answered without touching the game's memory.
+    const volatile uint8_t* at = reinterpret_cast<const volatile uint8_t*>(addr);
+    for (uint32_t i = 0; i < p.size; ++i) {
+        if (at[i] != p.origin[i]) return Result::OriginMismatch;
+    }
+
+    if (impl::g_AppliedCount >= kMaxPatches) return Result::NoSlots;
+    return Result::Ok;
+}
+
+// Applies one patch on behalf of `owner`, or refuses it by name.
+//
+// Never fatal. A refused patch leaves the target untouched and the boot
+// continues - one mod's bad patch must not cost the user their game, and must
+// not silently cost them the other mods either.
+inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
+    impl::g_ExaminedCount++;
+
+    const char* collides = nullptr;
+    const Result r = Check(p, &collides);
+
+    if (r != Result::Ok) {
+        impl::g_RefusedCount++;
+        switch (r) {
+            case Result::HookedWindow:
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - those bytes are inside "
+                          "the 16-byte jump the hook manager wrote for %s. The patch "
+                          "would corrupt the branch into the chain, not the game; the "
+                          "original instructions live in a trampoline now.",
+                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                          p.size, collides ? collides : "a hook");
+                break;
+            case Result::PatchOverlap:
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - %s already patched those "
+                          "bytes. Both mods are trying to write the same address; this "
+                          "is the pair to disable one of.",
+                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                          p.size, collides ? collides : "another module");
+                break;
+            case Result::OriginMismatch: {
+                const volatile uint8_t* at =
+                    reinterpret_cast<const volatile uint8_t*>(impl::Resolve(p.targetAddr));
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - expected %02X %02X %02X "
+                          "%02X, found %02X %02X %02X %02X. This patch was built "
+                          "against a different build of the game; writing it anyway "
+                          "would corrupt a function the mod has never seen.",
+                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                          p.size, p.origin[0], p.origin[1], p.origin[2], p.origin[3],
+                          at[0], at[1], at[2], at[3]);
+                break;
+            }
+            case Result::IntoArena:
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - that is inside the module "
+                          "arena, whose addresses differ on every boot. A patch written "
+                          "by absolute address cannot mean anything there.",
+                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                          p.size);
+                break;
+            default:
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B)", owner, ResultName(r),
+                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)), p.size);
+                break;
+        }
+        return r;
+    }
+
+    const uintptr_t where = impl::Resolve(p.targetAddr);
+    volatile uint8_t* at = reinterpret_cast<volatile uint8_t*>(where);
+    for (uint32_t i = 0; i < p.size; ++i) at[i] = p.data[i];
+#if WIIXL_CEMU
+    Backend::FlushCache(where, p.size);
+#endif
+
+    Applied& a = impl::g_Applied[impl::g_AppliedCount++];
+    a.addr = where;
+    a.size = p.size;
+    impl::CopyOwner(a.owner, owner ? owner : "?");
+
+    WIIXL_LOG("Patch: %s applied %u B at %p (origin verified)",
+              a.owner, p.size, reinterpret_cast<void*>(impl::Resolve(p.targetAddr)));
+    return Result::Ok;
+}
+
+// Everything patched, and by whom. Printed at the load point beside the hook
+// summary, because "which mods touched this address" is one question with two
+// mechanisms behind it.
+inline void LogState() {
+    WIIXL_LOG("Patch: %u examined, %u applied, %u refused",
+              impl::g_ExaminedCount, impl::g_AppliedCount, impl::g_RefusedCount);
+    for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
+        const Applied& a = impl::g_Applied[i];
+        WIIXL_LOG("Patch:   %p %u B by %s",
+                  reinterpret_cast<void*>(a.addr), a.size, a.owner);
+    }
+    if (impl::g_AppliedCount == 0) {
+        WIIXL_LOG("Patch:   no module declared a patch");
+    }
+}
+
+} // namespace WiiXLaunch::Patches

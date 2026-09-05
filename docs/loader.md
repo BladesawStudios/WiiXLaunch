@@ -280,6 +280,75 @@ the rest of their mods either.
 `scripts/deploy.py` prints the modules it packs in the same sorted order, so
 what the build shows and what the loader will do are the same list.
 
+## The load sequence
+
+Fixed, and it is a specification rather than an implementation detail:
+
+```
+1. host hooks         installed by WiiXLaunch_Init, before any module exists
+2. declared patches   every module's, at load, in lexical load order
+3. module entries     called by RunPhase; these may install more hooks
+```
+
+`LoadAll` loads every module before `RunPhase` calls a single entry, so by the
+time any mod code runs the host has already applied every patch every mod
+declared.
+
+**Patches before entries** is what makes patch conflicts detectable at all. The
+host sees the whole set up front, so patch-vs-patch and patch-vs-hook overlaps
+are known before anything executes rather than discovered when someone's game
+misbehaves. Applying patches on request from inside a module's entry would give
+that up: the host would learn about the second patch only after the first had
+been written.
+
+**Patches before later hooks** is what makes patching a to-be-hooked function
+safe. The hook manager captures a target's prologue exactly once, when the first
+hook on that address is installed — so a module hooking an address another
+module patched captures the **patched** bytes, which is correct. That is the
+only reason that direction needs no check. Reverse the order and the manager
+would capture the original prologue, the patch would then overwrite the jump the
+manager had just written, and the trampoline would hold bytes matching nothing.
+
+**The other direction is not safe and is checked** — see
+[Hooks](hooks.md#patches-and-hook-windows).
+
+## Declared patches
+
+A patch is raw bytes written to an absolute address, declared in the `.wxlm`
+header as data rather than performed by code. `PatchEntry` is 40 bytes:
+
+```
+targetAddr   absolute address in the game
+size         1..16
+origin[16]   what must be there now
+data[16]     what to write
+```
+
+**Every patch carries the bytes it expects to find, and the host refuses to
+write if the target does not hold them.** A patch is built against one build of
+one game and written by absolute address; applied to a different build the
+address means something else and the write *succeeds*, silently, into a function
+the mod has never heard of. Nothing crashes at the write — something unrelated
+misbehaves later. Cemu graphic packs have carried `.origin` for exactly this
+reason, and moving the mechanism into the header is not a licence to drop the
+property that made it usable.
+
+Refusals are values, not log strings (`Patches::Result`), so a test can assert
+which one happened:
+
+| Result | Means | Whose problem |
+|---|---|---|
+| `BAD-SIZE` | size 0 or above 16 | the mod's build |
+| `BAD-TARGET` | address 0 | the mod's build |
+| `INTO-ARENA` | aimed at module memory, which moves per boot | the mod's build |
+| `ORIGIN-MISMATCH` | target does not hold what was expected | game version |
+| `HOOKED-WINDOW` | inside 16 bytes a hook displaced | another mod |
+| `PATCH-OVERLAP` | bytes another module already patched | another mod |
+
+A refused patch never fails the module. It is named and skipped, the module
+still loads, and its other patches are still tried — one bad address must not
+cost a user the mod, and must not silently cost them its other patches either.
+
 ## Verifying the loader
 
 Two properties make the loader the component most worth testing hard: it reads

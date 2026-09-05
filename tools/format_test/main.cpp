@@ -74,6 +74,13 @@ static void SectionEnd(int atLeast) {
 }
 
 int main() {
+    // Unbuffered, because this binary can crash. With block-buffered stdout
+    // a segfault discards everything printed so far, so the run looks like a
+    // program that produced no output at all - which says nothing about where
+    // it got to. Documented in docs/modules.md; it applies to every test
+    // binary here, not only the one where it was first noticed.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     (void)BeginSection;
     SectionStart("width");
     std::printf("width and zero-padding (unsupported until they silently broke a hex dump):\n");

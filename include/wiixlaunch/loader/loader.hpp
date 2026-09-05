@@ -39,6 +39,7 @@
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/hook_manager.hpp>
+#include <wiixlaunch/patches.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -364,10 +365,15 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
     // the matching count flip was refused - the fuzzer's per-field attribution
     // is what made that visible. A reserved field is reserved whether or not
     // this host would have read it.
+    //
+    // declaredPatch* is IMPLEMENTED as of stage 7 and is no longer reserved.
+    // declaredHook* still is - a mod installs hooks through wiixl.core at
+    // runtime, and declaring them as data is a separate decision nobody has
+    // made yet.
     bool reservedSet = (h.reserved0 != 0);
     for (int i = 0; i < 4; ++i) reservedSet = reservedSet || (h.reserved1[i] != 0);
-    reservedSet = reservedSet || h.declaredHookOffset != 0 || h.declaredPatchOffset != 0;
-    if (reservedSet || h.declaredHookCount != 0 || h.declaredPatchCount != 0) {
+    reservedSet = reservedSet || h.declaredHookOffset != 0;
+    if (reservedSet || h.declaredHookCount != 0) {
         WIIXL_LOG("[loader:%s] %s: a reserved field is set, so this file wants "
                   "something this host does not implement yet. Refusing rather than "
                   "loading it partially.", id, RejectName(Reject::ReservedNotZero));
@@ -376,6 +382,9 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
 
     // Structure. Every section must lie inside the file.
     struct { uint64_t off, size; const char* what; } spans[] = {
+        { h.declaredPatchOffset,
+          static_cast<uint64_t>(h.declaredPatchCount) * sizeof(Wxlm::PatchEntry),
+          "patches" },
         { h.payloadOffset,  static_cast<uint64_t>(h.payloadSize),   "payload"  },
         { h.relocOffset,    static_cast<uint64_t>(h.relocCount) * 8ull, "relocs" },
         { h.importOffset,   static_cast<uint64_t>(h.importCount)
@@ -771,6 +780,49 @@ inline Reject LoadFrom(Reader& file) {
     // COMMITTED. Everything above could still have failed; from here the module
     // is visible to RunPhase.
     impl::g_ModuleCount++;
+
+    // --- declared patches ----------------------------------------------------
+    //
+    // APPLIED HERE, AT LOAD, BEFORE ANY MODULE ENTRY RUNS. LoadAll loads every
+    // module before RunPhase calls a single entry, so by the time any mod code
+    // executes the host has seen and applied every patch every mod declared.
+    // That is what makes patch conflicts detectable at all rather than
+    // discovered later - see the load-sequence comment in wiixlaunch/patches.hpp
+    // for why reordering this breaks two separate things.
+    //
+    // A refused patch does not fail the module. The patch is named and skipped,
+    // the module still loads, and the rest of its patches are still tried: one
+    // bad address must not cost a user the mod, and must not silently cost them
+    // its other patches either.
+    if (h.declaredPatchCount != 0) {
+        WIIXL_LOG("[loader:%s] %u declared patch(es), applied before any module entry",
+                  id, h.declaredPatchCount);
+        uint32_t applied = 0, refused = 0;
+        for (uint32_t i = 0; i < h.declaredPatchCount; ++i) {
+            Wxlm::PatchEntry pe{};
+            const uint32_t at = h.declaredPatchOffset +
+                                i * static_cast<uint32_t>(sizeof(Wxlm::PatchEntry));
+            if (impl::ReadVia(file, at, &pe, sizeof(pe)) != sizeof(pe)) {
+                WIIXL_LOG("[loader:%s] %s: reading declared patch %u",
+                          id, RejectName(Reject::ReadFailed), i);
+                Arena::SetCurrent(nullptr);
+                return Reject::ReadFailed;
+            }
+#if WIIXL_HOST
+            // A host test must not write to an address a .wxlm names - it is a
+            // number from a file, and here it is not a game address at all.
+            WIIXL_LOG("[loader:%s] declared patch %u at %p not applied (host test)",
+                      id, i, reinterpret_cast<void*>(pe.targetAddr));
+            (void)applied; (void)refused;
+#else
+            if (Patches::Apply(pe, m.id) == Patches::Result::Ok) ++applied;
+            else ++refused;
+#endif
+        }
+#if !WIIXL_HOST
+        WIIXL_LOG("[loader:%s] patches: %u applied, %u refused", id, applied, refused);
+#endif
+    }
 
     // --- init_array ----------------------------------------------------------
     // Nothing else will ever run these: the flat build has no .init_array output

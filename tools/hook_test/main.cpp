@@ -22,15 +22,17 @@
 #include <cstdint>
 
 #include <wiixlaunch/hook_manager.hpp>
+#include <wiixlaunch/patches.hpp>
 
 namespace H = WiiXLaunch::Hooks;
+namespace P = WiiXLaunch::Patches;
 
 static int g_checks = 0;
 static int g_failures = 0;
 
 // A floor, so a suite that shrinks cannot report success over what is left of
 // itself. See the fourth rule in docs/modules.md.
-static const int kExpectedChecks = 52;
+static const int kExpectedChecks = 72;
 
 // Section bookkeeping: how many checks each block contributed.
 static int g_SectionBase = 0;
@@ -217,6 +219,13 @@ static void FuzzDecoder() {
 }
 
 int main() {
+    // Unbuffered, because this binary can crash. With block-buffered stdout
+    // a segfault discards everything printed so far, so the run looks like a
+    // program that produced no output at all - which says nothing about where
+    // it got to. Documented in docs/modules.md; it applies to every test
+    // binary here, not only the one where it was first noticed.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     BeginSection("encoding");
     std::printf("encoding round-trip:\n");
     {
@@ -411,7 +420,204 @@ int main() {
     BeginSection("decoder fuzz");
     FuzzDecoder();
 
-    EndSection(6);
+    EndSection(4);
+    BeginSection("patches vs hooks");
+    std::printf("\npatches against hook windows:\n");
+    {
+        // A patch landing inside the 16 bytes a hook displaced writes into the
+        // long jump, not the game - the instructions it is aiming at live in a
+        // trampoline now. The host's own GX2 hook installs before any module
+        // loads, so this is reachable on a real boot, not hypothetically.
+        // ONE buffer, and every address in this section is an offset into it.
+        //
+        // The first version used two separate static arrays and computed a
+        // patch's target as the difference between them. That is undefined
+        // behaviour across distinct objects, and in practice it crashed: the
+        // difference is not guaranteed positive, and a negative one truncated
+        // to uint32_t resolves to an address nowhere near either array.
+        //
+        // A 32-bit game address cannot name a 64-bit host buffer at all, which
+        // is what Patches::SetAddressBase exists for - the test declares where
+        // game address 0 lives and then speaks in the offsets a real patch
+        // record would hold.
+        alignas(64) static uint8_t world[256];
+        // Deliberately NOT offset 0: targetAddr 0 is refused as BAD-TARGET
+        // before any window check runs, and a game address of zero is never a
+        // real patch target. Putting the function there made 15 of 16 window
+        // bytes refuse for the right reason and one for a different one.
+        const uint32_t kHookedAt = 64;     // a function, for InstallHook
+        const uint32_t kPlainAt = 128;     // ordinary bytes, hooked by nobody
+
+        uint32_t* const hooked = reinterpret_cast<uint32_t*>(world + kHookedAt);
+        uint8_t* const plain = world + kPlainAt;
+
+        auto ResetWorld = [&]() {
+            H::ResetForTest();
+            P::ResetForTest();
+            P::SetArena(0, 0);
+            P::SetAddressBase(Addr(world));
+            FillPrologue();
+            for (int i = 0; i < 32; ++i) hooked[i] = 0x60000000u;
+            hooked[0] = 0x9421FFE0u;
+            hooked[1] = 0x7C0802A6u;
+            hooked[2] = 0x90010024u;
+            hooked[3] = 0x38600001u;
+            for (int i = 0; i < 64; ++i) plain[i] = static_cast<uint8_t>(0x10 + i);
+        };
+
+        // Builds a patch that expects whatever is currently at `addr`, so the
+        // origin check passes and the OTHER checks are what decide.
+        // `at` is an OFFSET into world, which is what targetAddr holds.
+        auto PatchAt = [&](uint32_t off, uint32_t size) {
+            const uintptr_t addr = off;
+            WiiXLaunch::Wxlm::PatchEntry pe{};
+            pe.targetAddr = static_cast<uint32_t>(addr);
+            pe.size = size;
+            const uint8_t* at = world + off;
+            for (uint32_t i = 0; i < size && i < WiiXLaunch::Wxlm::kMaxPatchBytes; ++i) {
+                pe.origin[i] = at[i];
+                pe.data[i] = static_cast<uint8_t>(~at[i]);
+            }
+            return pe;
+        };
+
+        // --- the positive control, first ------------------------------------
+        //
+        // Without this the whole section passes if Apply refuses everything.
+        ResetWorld();
+        {
+            auto pe = PatchAt(kPlainAt + 8, 4);
+            const uint8_t want[4] = { pe.data[0], pe.data[1], pe.data[2], pe.data[3] };
+            ok("a patch to an unhooked address is applied",
+               P::Apply(pe, "modP") == P::Result::Ok);
+            ok("and the bytes actually changed",
+               plain[8] == want[0] && plain[9] == want[1] &&
+               plain[10] == want[2] && plain[11] == want[3]);
+            ok("neighbouring bytes were left alone",
+               plain[7] == 0x17 && plain[12] == 0x1C);
+            ok("it is recorded as applied", P::AppliedCount() == 1);
+        }
+
+        // --- into a hooked window -------------------------------------------
+        ResetWorld();
+        {
+            uintptr_t orig = 0;
+            H::InstallHook(Addr(hooked), 0x01810000u, "modH", &orig);
+
+            // Every byte of the displaced window, and the two bytes either side
+            // of it. A window check written with <= or off by one shows up here
+            // rather than on someone's console.
+            int refusedInside = 0, allowedOutside = 0;
+            for (uint32_t off = 0; off < 16u; ++off) {
+                ResetWorld();
+                H::InstallHook(Addr(hooked), 0x01810000u, "modH", &orig);
+                auto pe = PatchAt(kHookedAt + off, 1);
+                const char* who = nullptr;
+                if (P::Check(pe, &who) == P::Result::HookedWindow) ++refusedInside;
+            }
+            ok("all 16 bytes of the displaced window are refused", refusedInside == 16);
+
+            ResetWorld();
+            H::InstallHook(Addr(hooked), 0x01810000u, "modH", &orig);
+            {
+                auto pe = PatchAt(kHookedAt + 16, 4);
+                ok("the byte after the window is not refused",
+                   P::Check(pe, nullptr) == P::Result::Ok);
+                ++allowedOutside;
+            }
+            {
+                // A four-byte patch ending one byte INTO the window overlaps.
+                auto pe = PatchAt(kHookedAt + 13, 4);
+                ok("a patch straddling the end of the window is refused",
+                   P::Check(pe, nullptr) == P::Result::HookedWindow);
+            }
+
+            // Refused BY NAME, and naming the hook it collided with - that is
+            // the whole diagnosis, and a bare false would carry neither.
+            const char* who = nullptr;
+            auto pe = PatchAt(kHookedAt + 4, 4);
+            const P::Result r = P::Check(pe, &who);
+            ok("refused as HOOKED-WINDOW, not something generic",
+               std::strcmp(P::ResultName(r), "HOOKED-WINDOW") == 0);
+            ok("and names the hook owner it collided with",
+               who && std::strcmp(who, "modH") == 0);
+
+            // Nothing was written by any of that.
+            ok("a refused patch leaves the target untouched",
+               H::DecodeLongJump(hooked) == Low(0x01810000u));
+        }
+
+        // --- origin verification --------------------------------------------
+        ResetWorld();
+        {
+            auto pe = PatchAt(kPlainAt + 8, 4);
+            pe.origin[2] ^= 0xFF;          // built against a different build
+            ok("a patch whose origin does not match is refused",
+               P::Apply(pe, "modP") == P::Result::OriginMismatch);
+            ok("and the target is unchanged", plain[8] == 0x18 && plain[10] == 0x1A);
+            ok("nothing was recorded as applied", P::AppliedCount() == 0);
+        }
+
+        // A hooked window ALSO fails an origin check - the jump is there, not
+        // the prologue - so the order of the two decides which diagnosis a user
+        // gets. HookedWindow must win: it sends them to another mod, where
+        // ORIGIN-MISMATCH would send them to their game version.
+        ResetWorld();
+        {
+            uintptr_t orig = 0;
+            H::InstallHook(Addr(hooked), 0x01810000u, "modH", &orig);
+            WiiXLaunch::Wxlm::PatchEntry pe{};
+            pe.targetAddr = kHookedAt;
+            pe.size = 4;
+            for (int i = 0; i < 4; ++i) { pe.origin[i] = 0xAB; pe.data[i] = 0xCD; }
+            ok("a hooked window is reported as HOOKED-WINDOW, not ORIGIN-MISMATCH",
+               P::Check(pe, nullptr) == P::Result::HookedWindow);
+        }
+
+        // --- patch vs patch --------------------------------------------------
+        ResetWorld();
+        {
+            ok("first patch applies", P::Apply(PatchAt(kPlainAt + 8, 4), "modA")
+                                      == P::Result::Ok);
+            const char* who = nullptr;
+            auto pe = PatchAt(kPlainAt + 10, 4);
+            ok("an overlapping second patch is refused",
+               P::Check(pe, &who) == P::Result::PatchOverlap);
+            ok("and names the module that got there first",
+               who && std::strcmp(who, "modA") == 0);
+            ok("a non-overlapping second patch is allowed",
+               P::Check(PatchAt(kPlainAt + 12, 4), nullptr) == P::Result::Ok);
+        }
+
+        // --- malformed records ------------------------------------------------
+        ResetWorld();
+        {
+            auto pe = PatchAt(kPlainAt, 4);
+            pe.size = 0;
+            ok("size 0 is refused", P::Check(pe, nullptr) == P::Result::BadSize);
+            pe.size = WiiXLaunch::Wxlm::kMaxPatchBytes + 1;
+            ok("size past the maximum is refused",
+               P::Check(pe, nullptr) == P::Result::BadSize);
+            pe = PatchAt(kPlainAt, 4);
+            pe.targetAddr = 0;
+            ok("a null target is refused", P::Check(pe, nullptr) == P::Result::BadTarget);
+        }
+
+        // --- the arena is off limits ------------------------------------------
+        ResetWorld();
+        {
+            P::SetArena(Addr(world) + kPlainAt, 64);
+            ok("a patch into the arena is refused",
+               P::Check(PatchAt(kPlainAt + 8, 4), nullptr) == P::Result::IntoArena);
+            P::SetArena(0, 0);
+            ok("and allowed once that range is not the arena",
+               P::Check(PatchAt(kPlainAt + 8, 4), nullptr) == P::Result::Ok);
+        }
+        P::ResetForTest();
+        H::ResetForTest();
+    }
+
+    EndSection(20);
     BeginSection("site isolation");
     std::printf("\ntwo separate targets do not interfere:\n");
     {
@@ -442,7 +648,7 @@ int main() {
     }
     std::printf("%s (%d checks: encoding, PC-relative refusal, three-deep chain "
                 "construction, Original stability, site isolation, 526k-word "
-                "decoder fuzz)\n",
+                "decoder fuzz, patch-vs-hook)\n",
                 g_failures == 0 ? "ALL HOOK TESTS PASS" : "HOOK TESTS FAILED", g_checks);
     return g_failures != 0;
 }

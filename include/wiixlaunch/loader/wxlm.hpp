@@ -131,6 +131,41 @@ struct RequiredSurface {
 };
 static_assert(sizeof(RequiredSurface) == 8, "RequiredSurface layout is part of the format");
 
+// The most bytes one patch may write.
+//
+// 16 is the same width as a long jump, and that is not a coincidence worth
+// hiding: it is the size of the window the hook manager displaces, so the two
+// mechanisms measure in the same units and a patch can never straddle more of a
+// hooked function than the hook itself occupies. It is also four instructions,
+// which is enough for anything that belongs in a declared patch rather than in
+// a hook.
+constexpr uint32_t kMaxPatchBytes = 16;
+
+// One raw patch, declared as DATA rather than executed as code.
+//
+// WHY IT CARRIES THE ORIGINAL BYTES. A patch is built against one build of one
+// game and written by absolute address. Applied to a different build, the
+// address means something else - and the write SUCCEEDS, silently, into a
+// function the mod has never heard of. Nothing crashes at the write; something
+// unrelated misbehaves later. That is the same shape as the prologue decoder
+// relocating a PC-relative branch: still executes, goes somewhere else.
+//
+// So every patch states what it expects to find, and the host refuses to write
+// if the target does not hold it. Cemu graphic packs have carried `.origin` for
+// exactly this reason; moving the mechanism into the header is not a licence to
+// drop the safety property that made it usable.
+//
+// Bytes are INLINE rather than offsets into the string blob. A patch is at most
+// 16 bytes, the record is fixed at 40, and a table of these needs no second
+// bounds check against a separate blob - one fewer place to get wrong.
+struct PatchEntry {
+    uint32_t targetAddr;                 // absolute address in the game
+    uint32_t size;                       // 1..kMaxPatchBytes
+    uint8_t  origin[kMaxPatchBytes];     // what must be there now
+    uint8_t  data[kMaxPatchBytes];       // what to write
+};
+static_assert(sizeof(PatchEntry) == 40, "PatchEntry layout is part of the format");
+
 // The header. Every offset is from the start of the file; every size is bytes.
 struct Header {
     uint32_t magic;              // kMagic

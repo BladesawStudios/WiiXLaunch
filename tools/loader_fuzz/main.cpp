@@ -255,7 +255,7 @@ static int g_Accepted = 0, g_Rejected = 0;
 // rule) was invisible partly because THE CASE COUNT DID NOT MOVE - there was no
 // number that a disarmed suite would have changed. This is that number. Raise
 // it when cases are added; never lower it to make a build go green.
-static const int kExpectedCases = 1179;
+static const int kExpectedCases = 1181;
 
 // And a floor on how many of them are ACCEPTED.
 //
@@ -264,8 +264,8 @@ static const int kExpectedCases = 1179;
 // suite still passed, but accepted collapsed from 293 to 8 because the loader
 // was refusing valid modules for a reason that had nothing to do with them. A
 // suite that only counts how many times it ran cannot see that.
-static const int kExpectedAccepted = 295;
-static const int kExpectedRejected = 884;
+static const int kExpectedAccepted = 327;
+static const int kExpectedRejected = 853;
 
 // Both halves of the containment property must actually be exercised, or the
 // pair reduces to the single check that went vacuous last time.
@@ -540,8 +540,29 @@ int main() {
         Case("declaredHookCount set (stage 6 field)", v, Reject::ReservedNotZero);
     }
     {
+        // declaredPatch* is IMPLEMENTED now, so a count set with no table
+        // behind it is a STRUCTURE error rather than a reserved-field one. The
+        // expectation changed with the format; the case did not go away,
+        // because "a count pointing at nothing" still has to be refused.
         auto v = base.bytes; Put32(v, OFF(declaredPatchCount), 1);
-        Case("declaredPatchCount set (stage 7 field)", v, Reject::ReservedNotZero);
+        Case("declaredPatchCount set with no table", v, Reject::BadSectionBounds);
+    }
+    {
+        // A count large enough that count * sizeof(PatchEntry) wraps 32 bits.
+        // Same shape as the payloadSize + bssSize wrap: the multiply is the
+        // dangerous part, and the loader does it in 64 bits for this reason.
+        auto v = base.bytes;
+        Put32(v, OFF(declaredPatchOffset), kHdr);
+        Put32(v, OFF(declaredPatchCount), 0xFFFFFFFFu / sizeof(Wxlm::PatchEntry) + 2u);
+        Case("declaredPatchCount * 40 wraps 32 bits", v, Reject::BadSectionBounds);
+    }
+    {
+        // A patch table that overlaps the payload. Sections may not overlap,
+        // and the newest section is no exception.
+        auto v = base.bytes;
+        Put32(v, OFF(declaredPatchOffset), base.payloadOffset);
+        Put32(v, OFF(declaredPatchCount), 1);
+        Case("patch table overlaps the payload", v, Reject::BadSectionBounds);
     }
 
     // --- integrity ----------------------------------------------------------
@@ -934,11 +955,21 @@ int main() {
         if (h.reserved0 != 0) return false;
         for (int i = 0; i < 4; ++i) if (h.reserved1[i] != 0) return false;
         if (h.declaredHookOffset || h.declaredHookCount) return false;
-        if (h.declaredPatchOffset || h.declaredPatchCount) return false;
+        // declaredPatch* is IMPLEMENTED as of stage 7, so it is a real section
+        // with real bounds rather than a reserved field that must be zero. The
+        // oracle follows the FORMAT, not the loader - when the format grows a
+        // section, the independent model grows the same section, derived from
+        // the same rule every other section obeys.
+        if (h.declaredPatchCount != 0 &&
+            (uint64_t)h.declaredPatchCount * sizeof(Wxlm::PatchEntry) > 0xFFFFFFFFull) {
+            return false;
+        }
         if (h.fileSize != v.size()) return false;
 
         struct Span { uint64_t off, size; };
         const Span spans[] = {
+            { h.declaredPatchOffset,
+              (uint64_t)h.declaredPatchCount * sizeof(Wxlm::PatchEntry) },
             { h.payloadOffset,  (uint64_t)h.payloadSize },
             { h.relocOffset,    (uint64_t)h.relocCount * 8ull },
             { h.importOffset,   (uint64_t)h.importCount * sizeof(Wxlm::ImportEntry) },
@@ -1054,43 +1085,46 @@ int main() {
                     "coreinit would refuse\n", g_AlignmentViolations);
     }
 
-    // WHAT ran, not just that it passed - and a floor under it. A suite that
-    // shrinks silently reports success over whatever is left of itself.
+    // The numbers FIRST, then the floors that judge them. A disarm message that
+    // withholds the counts it is complaining about sends the reader back to run
+    // the suite again to find out what they were.
+    const int acceptedTotal = g_Accepted + flipAccepted;
+
+    std::printf("\n%d containment checks, %d liveness checks\n",
+                g_ContainmentChecks, g_LivenessChecks);
+    std::printf("\n%d cases, %d rejected, %d accepted, %d FAILURES\n",
+                g_Cases, g_Rejected, acceptedTotal, g_Failures);
+
+    // FLOORS. A suite that shrinks silently reports success over whatever is
+    // left of itself, and a floor on the TOTAL does not constrain the split -
+    // see the fourth rule in docs/modules.md.
     if (g_Cases < kExpectedCases) {
-        std::printf("\nLOADER FUZZ DISARMED: %d cases ran, expected at least %d.\n"
+        std::printf("LOADER FUZZ DISARMED: %d cases ran, expected at least %d.\n"
                     "Cases were removed, or a block stopped being reached.\n",
                     g_Cases, kExpectedCases);
         return 1;
     }
-    // The same total the summary reports - explicit accept cases plus the flips
-    // the oracle agreed were valid. Checking only g_Accepted would compare
-    // against a number the report does not use.
-    const int acceptedTotal = g_Accepted + flipAccepted;
     if (acceptedTotal < kExpectedAccepted) {
-        std::printf("\nLOADER FUZZ DISARMED: only %d of the expected %d cases were "
+        std::printf("LOADER FUZZ DISARMED: only %d of the expected %d cases were "
                     "ACCEPTED.\nValid modules are being rejected for a reason that is "
                     "not about the modules -\nleftover state between cases looks exactly "
-                    "like this.\n", g_Accepted, kExpectedAccepted);
+                    "like this.\n", acceptedTotal, kExpectedAccepted);
         return 1;
     }
     if (g_Rejected < kExpectedRejected) {
-        std::printf("\nLOADER FUZZ DISARMED: only %d of the expected %d cases were "
+        std::printf("LOADER FUZZ DISARMED: only %d of the expected %d cases were "
                     "REJECTED.\nMalformed modules are being accepted, or cases "
                     "stopped running.\n", g_Rejected, kExpectedRejected);
         return 1;
     }
     if (g_ContainmentChecks == 0 || g_LivenessChecks == 0) {
-        std::printf("\nLOADER FUZZ DISARMED: containment ran %d times, liveness %d.\n"
+        std::printf("LOADER FUZZ DISARMED: containment ran %d times, liveness %d.\n"
                     "Both halves must run - containment alone passes trivially when\n"
                     "nothing writes at all, which is the state a dead hook leaves.\n",
                     g_ContainmentChecks, g_LivenessChecks);
         return 1;
     }
 
-    std::printf("\n%d containment checks, %d liveness checks\n",
-                g_ContainmentChecks, g_LivenessChecks);
-    std::printf("\n%d cases, %d rejected, %d accepted, %d FAILURES\n",
-                g_Cases, g_Rejected, g_Accepted + flipAccepted, g_Failures);
     std::printf("%s\n", g_Failures == 0 ? "LOADER FUZZ PASSED" : "LOADER FUZZ FAILED");
     return g_Failures != 0;
 }
