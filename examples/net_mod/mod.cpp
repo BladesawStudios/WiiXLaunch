@@ -116,6 +116,13 @@ static volatile uint32_t g_ConnTicks;
 static volatile uint32_t g_ConnSent;      // bytes of the reply written so far
 static volatile uint32_t g_ConnGotRequest;
 static volatile uint32_t g_Match;         // how much of "\r\n\r\n" we have seen
+// Whether anything has been read on THIS connection yet. The not-HTTP check
+// below must look at the connection's genuinely first byte and no other: a
+// request split across reads can easily resume mid-line, and "the chunk starts
+// with a lowercase letter" would then reject a perfectly good request.
+static volatile uint32_t g_ConnRead;
+static volatile uint32_t g_Timeouts;      // connections that never finished a request
+static volatile uint32_t g_NotHttp;       // connections that were not HTTP at all
 
 // No libc here, so this module builds its own strings.
 static char* AppendText(char* out, char* end, const char* text) {
@@ -179,6 +186,7 @@ static void FinishConn() {
     g_ConnTicks = 0;
     g_ConnSent = 0;
     g_ConnGotRequest = 0;
+    g_ConnRead = 0;
     g_Match = 0;
 }
 
@@ -189,6 +197,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
     AcceptFn accept = g_Accept;
     SendFn send = g_Send;
     RecvFn recv = g_Recv;
+    LogFn log = g_Log;
     if (!accept || !send || !recv) return;
 
     // --- take a connection if we are free ----------------------------------
@@ -202,6 +211,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
         g_ConnTicks = 0;
         g_ConnSent = 0;
         g_ConnGotRequest = 0;
+        g_ConnRead = 0;
         g_Match = 0;
         return;   // the client has not sent anything yet; read next frame
     }
@@ -212,6 +222,16 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
     // the rest of the session.
     g_ConnTicks = g_ConnTicks + 1;
     if (g_ConnTicks > kMaxConnTicks) {
+        // Silence is not a diagnosis. Before this line the connection was just
+        // dropped, and a client that connected and never sent a valid request
+        // looked exactly like a server that was not listening.
+        const uint32_t t = g_Timeouts + 1;
+        g_Timeouts = t;
+        LogFn tlog = g_Log;
+        if (tlog && t <= 3) {
+            tlog("d_net: dropped a connection that never sent a complete HTTP "
+                 "request within ~10s");
+        }
         FinishConn();
         return;
     }
@@ -226,6 +246,34 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
         const int32_t n = recv(conn, in, sizeof(in));
         if (n == 0) { FinishConn(); return; }        // peer went away
         if (n > 0) {
+            // A request that is not HTTP at all. Every HTTP method starts with
+            // an uppercase letter; a TLS ClientHello starts with 0x16, and
+            // waiting ten seconds to time out on one tells the person at the
+            // other end nothing. This is the exact case that cost a boot:
+            // `curl https://...` against a plain-HTTP server.
+            const bool firstRead = (g_ConnRead == 0);
+            g_ConnRead = 1;
+            if (firstRead && (in[0] < 'A' || in[0] > 'Z')) {
+                const uint32_t k = g_NotHttp + 1;
+                g_NotHttp = k;
+                if (log && k <= 3) {
+                    char line[144];
+                    char* o = AppendText(line, line + sizeof(line),
+                                         "d_net: that was not an HTTP request (first byte 0x");
+                    const char* hex = "0123456789ABCDEF";
+                    const uint8_t b = static_cast<uint8_t>(in[0]);
+                    if (o < line + sizeof(line) - 1) *o++ = hex[(b >> 4) & 0xF];
+                    if (o < line + sizeof(line) - 1) *o++ = hex[b & 0xF];
+                    o = AppendText(o, line + sizeof(line),
+                                   "). 0x16 means TLS - this server speaks plain "
+                                   "http://, not https://");
+                    *o = 0;
+                    log(line);
+                }
+                FinishConn();
+                return;
+            }
+
             // Look for the blank line ending the headers, across reads.
             uint32_t m = g_Match;
             for (int32_t i = 0; i < n; ++i) {
@@ -258,7 +306,6 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
     const uint32_t served = g_Served + 1;
     g_Served = served;
 
-    LogFn log = g_Log;
     if (log && served <= 3) {
         char line[96];
         char* o = AppendText(line, line + sizeof(line), "d_net: served request ");
@@ -352,11 +399,14 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
             o = AppendU32(o, line + sizeof(line), port);
             o = AppendText(o, line + sizeof(line), "/");
         } else {
-            o = AppendText(o, line + sizeof(line), "port ");
+            // The exact command, because "curl localhost" left the scheme to
+            // be guessed and https:// was guessed twice. A plain-HTTP server
+            // meeting a TLS handshake says nothing useful on its own.
+            o = AppendText(o, line + sizeof(line), "all interfaces, port ");
             o = AppendU32(o, line + sizeof(line), port);
-            o = AppendText(o, line + sizeof(line),
-                           ", all interfaces (no local address to report - "
-                           "curl localhost on the machine running this)");
+            o = AppendText(o, line + sizeof(line), " - try:  curl http://localhost:");
+            o = AppendU32(o, line + sizeof(line), port);
+            o = AppendText(o, line + sizeof(line), "/");
         }
         *o = 0;
         log(line);
