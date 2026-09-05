@@ -408,6 +408,61 @@ scheme — that is how someone later concludes the scheme is optional. A whole
 prefix is reserved rather than one name, so a future reserved id needs no new
 check and no new refusal path.
 
+## Per-frame ticks
+
+A `.wxlm` entry is called once, at a phase, and nothing after. That is enough
+for a mod that installs hooks and gets out of the way, and useless for one that
+polls. `wiixl.core`'s `RegisterTick` is the repeating call.
+
+**Base has no concept of a frame and does not invent one.** A frame is a
+graphics idea and graphics is game-specific, so the source is *nominated* -
+exactly as the load point is. `wiixlaunch-botw` calls `Tick::RunAll()` from the
+GX2 swap, after the host's own draw callbacks; base owns the registry, the
+ordering and the attribution.
+
+A host with no game module therefore has no tick, and `Tick::LogState` **says
+so** rather than leaving a mod that registered a callback to fail silently:
+
+```
+Tick: NO FRAME SOURCE - these callbacks will never run.
+```
+
+Call order is registration order, which is load order, which is lexical
+filename order — the same lever the user already has over hook priority, so
+there is one answer to "which mod goes first" rather than two.
+
+Refusals are values: `NO-MODULE`, `NULL-CALLBACK`, `NO-SLOTS`,
+`ALREADY-REGISTERED`. One tick per module.
+
+### A hang in a tick has an owner
+
+A tick runs every frame, so a mod that crashes or spins in one takes the game
+down — and the report that reaches you is *"my game freezes with these mods
+installed"* with nothing narrowing it. The log's last line is whatever printed
+before the freeze, usually from something else entirely.
+
+So the dispatcher writes who it is **about to** call into a record before
+calling, and clears it after:
+
+```c
+struct InFlightRecord {
+    uint32_t magic;      // 'WXTK' - findable in a dump without symbols
+    uint32_t sequence;   // ++ per dispatch; frozen means frozen
+    uint32_t depth;      // 1 while a tick runs
+    char     owner[17];  // who is running, or "" between ticks
+};
+```
+
+If the game stops, `owner` still names the module. The magic makes it findable
+in a memory dump or by `tools/ring_log_reader` without a symbol table, and the
+sequence counter distinguishes **a hang inside a tick** from **the game no
+longer calling `RunAll` at all** — different problems that look identical from
+outside.
+
+A tick also runs with its module's identity and arena current, so a file read
+or an allocation from inside one is attributed and charged to the right mod
+rather than to whoever ran last.
+
 ## Verifying the loader
 
 Two properties make the loader the component most worth testing hard: it reads

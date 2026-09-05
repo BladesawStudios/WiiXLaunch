@@ -23,16 +23,19 @@
 
 #include <wiixlaunch/hook_manager.hpp>
 #include <wiixlaunch/patches.hpp>
+#include <wiixlaunch/tick.hpp>
 
 namespace H = WiiXLaunch::Hooks;
 namespace P = WiiXLaunch::Patches;
+namespace T = WiiXLaunch::Tick;
+namespace MC = WiiXLaunch::ModContext;
 
 static int g_checks = 0;
 static int g_failures = 0;
 
 // A floor, so a suite that shrinks cannot report success over what is left of
 // itself. See the fourth rule in docs/modules.md.
-static const int kExpectedChecks = 72;
+static const int kExpectedChecks = 90;
 
 // Section bookkeeping: how many checks each block contributed.
 static int g_SectionBase = 0;
@@ -80,6 +83,32 @@ static void eq_addr(const char* what, uintptr_t got, uintptr_t want) {
 // checked against the low 32 bits - which is exactly what the instruction pair
 // can carry, and what the real payload uses.
 alignas(64) static uint32_t g_Target[16];
+
+// What the tick callbacks below recorded, and in what order.
+static char g_TickOrder[64];
+static uint32_t g_TickOrderLen = 0;
+static char g_SeenInFlight[3][WiiXLaunch::Tick::kOwnerLen];
+static uint32_t g_SeenCount = 0;
+
+static void RecordTick(char mark) {
+    if (g_TickOrderLen + 1 < sizeof(g_TickOrder)) g_TickOrder[g_TickOrderLen++] = mark;
+    g_TickOrder[g_TickOrderLen] = 0;
+    // Who does the dispatcher SAY is running, from inside the call? This is the
+    // field a hang leaves behind, so it has to be correct while the tick runs -
+    // checking it afterwards would prove nothing about a freeze.
+    if (g_SeenCount < 3) {
+        const char* who = WiiXLaunch::Tick::InFlight().owner;
+        uint32_t i = 0;
+        for (; i + 1 < WiiXLaunch::Tick::kOwnerLen && who[i]; ++i) {
+            g_SeenInFlight[g_SeenCount][i] = who[i];
+        }
+        g_SeenInFlight[g_SeenCount][i] = 0;
+        ++g_SeenCount;
+    }
+}
+
+static void TickA() { RecordTick('A'); }
+static void TickB() { RecordTick('B'); }
 
 static uintptr_t Addr(const void* p) { return reinterpret_cast<uintptr_t>(p); }
 static uint32_t Low(uintptr_t a) { return static_cast<uint32_t>(a); }
@@ -618,6 +647,109 @@ int main() {
     }
 
     EndSection(20);
+    BeginSection("per-frame ticks");
+    std::printf("\nper-frame ticks:\n");
+    {
+        auto reg = [&](const char* what, T::Register got, T::Register want) {
+            ++g_checks;
+            if (got != want) {
+                ++g_failures;
+                std::printf("  FAIL  %s gave %s, expected %s\n", what,
+                            T::RegisterName(got), T::RegisterName(want));
+            } else {
+                std::printf("  ok    %s -> %s\n", what, T::RegisterName(got));
+            }
+        };
+
+        T::ResetForTest();
+
+        // --- refusals, each by its own name --------------------------------
+        MC::SetCurrent(nullptr);
+        reg("registering outside a module", T::Add(&TickA), T::Register::NoModule);
+
+        MC::SetCurrent("modA");
+        reg("a null callback", T::Add(nullptr), T::Register::NullCallback);
+
+        // --- and the positive control ---------------------------------------
+        reg("modA registers", T::Add(&TickA), T::Register::Ok);
+        reg("modA registering twice", T::Add(&TickA), T::Register::AlreadyRegistered);
+
+        MC::SetCurrent("modB");
+        reg("modB registers", T::Add(&TickB), T::Register::Ok);
+        MC::SetCurrent(nullptr);
+
+        ok("two ticks are registered", T::Count() == 2);
+
+        // --- dispatch --------------------------------------------------------
+        g_TickOrderLen = 0; g_TickOrder[0] = 0; g_SeenCount = 0;
+        const uint32_t seqBefore = T::InFlight().sequence;
+
+        T::RunAll();
+        ok("one dispatch calls every tick once",
+           std::strcmp(g_TickOrder, "AB") == 0);
+        if (std::strcmp(g_TickOrder, "AB") != 0) {
+            std::printf("        order was '%s'\n", g_TickOrder);
+        }
+
+        T::RunAll();
+        ok("a second dispatch calls them again in the same order",
+           std::strcmp(g_TickOrder, "ABAB") == 0);
+        ok("registration order is call order - modA registered first",
+           g_TickOrder[0] == 'A');
+
+        // --- the field a hang leaves behind ----------------------------------
+        //
+        // This is the whole reason the marker exists: "my game freezes with
+        // these mods installed" has to name a module. Checked from INSIDE the
+        // callbacks, because that is the only moment it matters.
+        ok("in-flight named modA while modA's tick ran",
+           g_SeenCount >= 1 && std::strcmp(g_SeenInFlight[0], "modA") == 0);
+        ok("in-flight named modB while modB's tick ran",
+           g_SeenCount >= 2 && std::strcmp(g_SeenInFlight[1], "modB") == 0);
+        if (g_SeenCount >= 2 &&
+            (std::strcmp(g_SeenInFlight[0], "modA") != 0 ||
+             std::strcmp(g_SeenInFlight[1], "modB") != 0)) {
+            std::printf("        saw '%s' then '%s'\n",
+                        g_SeenInFlight[0], g_SeenInFlight[1]);
+        }
+
+        ok("in-flight is cleared between dispatches",
+           T::InFlight().owner[0] == '\0');
+        ok("depth returns to zero", T::InFlight().depth == 0);
+        ok("the sequence advanced once per tick call",
+           T::InFlight().sequence == seqBefore + 4u);
+        ok("the record carries its magic so a dump can find it",
+           T::InFlight().magic == T::kInFlightMagic);
+        ok("dispatches were counted", T::Dispatches() == 2);
+
+        // --- a registered tick with nothing driving it ------------------------
+        //
+        // The state a host with no game module is in. It must be visible, not
+        // inferred from a mod that quietly does nothing.
+        ok("no source is nominated by default", T::SourceName() == nullptr);
+        T::NominateSource("test harness");
+        ok("a nominated source is recorded",
+           T::SourceName() != nullptr &&
+           std::strcmp(T::SourceName(), "test harness") == 0);
+
+        // --- slots ------------------------------------------------------------
+        T::ResetForTest();
+        char ids[T::kMaxTicks + 2][8];
+        uint32_t accepted = 0;
+        for (uint32_t i = 0; i < T::kMaxTicks + 2u; ++i) {
+            ids[i][0] = 'm'; ids[i][1] = (char)('0' + (i / 10));
+            ids[i][2] = (char)('0' + (i % 10)); ids[i][3] = 0;
+            MC::SetCurrent(ids[i]);
+            if (T::Add(&TickA) == T::Register::Ok) ++accepted;
+        }
+        MC::SetCurrent(nullptr);
+        ok("registration stops at the slot limit", accepted == T::kMaxTicks);
+
+        T::ResetForTest();
+        ok("reset clears the registry", T::Count() == 0);
+    }
+
+    EndSection(18);
     BeginSection("site isolation");
     std::printf("\ntwo separate targets do not interfere:\n");
     {
@@ -648,7 +780,7 @@ int main() {
     }
     std::printf("%s (%d checks: encoding, PC-relative refusal, three-deep chain "
                 "construction, Original stability, site isolation, 526k-word "
-                "decoder fuzz, patch-vs-hook)\n",
+                "decoder fuzz, patch-vs-hook, ticks)\n",
                 g_failures == 0 ? "ALL HOOK TESTS PASS" : "HOOK TESTS FAILED", g_checks);
     return g_failures != 0;
 }

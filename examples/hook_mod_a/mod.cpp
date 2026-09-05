@@ -46,6 +46,11 @@ extern "C" {
     extern int32_t   wiixl_import__wiixl_core__ModReadFile(const char* path,
                                                            void* buffer,
                                                            uint32_t maxSize);
+    // v1.5. A .wxlm entry is called once; this is how a mod that needs to poll
+    // gets called again. The callback is attributed to whichever module the
+    // host is running, not to anything passed here - so a hang inside a tick
+    // names the module that really registered it.
+    extern uint32_t  wiixl_import__wiixl_core__RegisterTick(void (*fn)());
 }
 
 using LogFn    = void (*)(const char*);
@@ -55,6 +60,7 @@ using VoidFn   = void (*)(void);
 using ClaimFn  = uint32_t (*)(uint32_t);
 using MarkFn   = void (*)(uint32_t);
 using ReadFn   = int32_t (*)(const char*, void*, uint32_t);
+using TickRegFn = uint32_t (*)(void (*)());
 
 // This module's marker. Self-chosen, but worthless on its own: the host refuses
 // a tag another module already claimed, and records the binding itself, so the
@@ -67,6 +73,12 @@ static TargetFn volatile g_Target = &wiixl_import__wiixl_core__HookProbeTarget;
 static ClaimFn  volatile g_Claim = &wiixl_import__wiixl_core__HookProbeClaimTag;
 static MarkFn   volatile g_Mark  = &wiixl_import__wiixl_core__HookProbeMark;
 static ReadFn   volatile g_Read  = &wiixl_import__wiixl_core__ModReadFile;
+static TickRegFn volatile g_RegTick = &wiixl_import__wiixl_core__RegisterTick;
+
+// Counted in .bss, so the loader has to have zeroed it for the first tick to
+// report call 1. volatile because the host writes nothing here but the
+// compiler must not fold a counter it can see is only incremented.
+static volatile uint32_t g_Ticks;
 
 // The next link in the chain. Written by the host at install time, so volatile
 // for the same reason the imports are - and read back through the pointer
@@ -78,6 +90,24 @@ static VoidFn volatile g_Original = nullptr;
 static char* AppendText(char* out, char* end, const char* text) {
     while (text && *text && out < end - 1) *out++ = *text++;
     return out;
+}
+
+// Called once a frame, by whatever the game module nominated as a frame source.
+// Base has no idea what a frame is; this runs because wiixlaunch-botw drives it
+// from the GX2 swap.
+extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
+    const uint32_t n = g_Ticks + 1;
+    g_Ticks = n;
+
+    // Only the first few, and then silence. A per-frame log is not a log, it is
+    // a denial of service against every other line in it - and three is enough
+    // to prove the callback is genuinely repeating rather than fired once.
+    LogFn log = g_Log;
+    if (log && n <= 3) {
+        log(n == 1 ? "a_first: tick 1 - my per-frame callback is running"
+                   : (n == 2 ? "a_first: tick 2"
+                             : "a_first: tick 3 (quiet from here)"));
+    }
 }
 
 extern "C" __attribute__((used)) void WiiXLaunch_ModHook() {
@@ -156,6 +186,18 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
             log("a_first: reading ../b_second/greeting.txt was refused, as it should be");
         } else {
             log("a_first: ESCAPED ITS OWN DIRECTORY - containment is broken");
+        }
+    }
+
+    // A per-frame callback. Refused if there is no module context, if the
+    // callback is null, if this module already has one, or if the slots are
+    // full - and the host log names which.
+    TickRegFn regTick = g_RegTick;
+    if (regTick) {
+        if (regTick(&WiiXLaunch_ModTick)) {
+            log("a_first: registered a per-frame tick");
+        } else {
+            log("a_first: RegisterTick was refused - see the Tick: line above");
         }
     }
 

@@ -19,6 +19,7 @@
 #include <wiixlaunch/hook_manager.hpp>
 #include <wiixlaunch/hook_probe.hpp>
 #include <wiixlaunch/mod_fs.hpp>
+#include <wiixlaunch/tick.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -34,9 +35,9 @@ constexpr uint16_t kVersionMajor = 1;
 // 1.1 appends HeapGranted / HeapUsed / HeapRemaining. Appending bumps the
 // MINOR, so every mod built against v1.0 still resolves - which is the whole
 // reason the version is two numbers. This is the rule's first real use.
-// 1.4 appends ModReadFile, ModFileExists and GameReadFile. Appending bumps the
-// MINOR, so every mod built against v1.0 through v1.3 still resolves.
-constexpr uint16_t kVersionMinor = 4;
+// 1.5 appends RegisterTick. Appending bumps the MINOR, so every mod built
+// against v1.0 through v1.4 still resolves.
+constexpr uint16_t kVersionMinor = 5;
 
 // The ABI version of the .wxlm format and this whole boundary. Bumped when a
 // mod built against an older host would misbehave rather than merely miss a
@@ -225,6 +226,22 @@ extern "C" inline int32_t CoreGameReadFile(const char* path, void* buffer,
     return static_cast<int32_t>(read);
 }
 
+// --- appended in v1.5 ------------------------------------------------------
+
+// Asks to be called once a frame.
+//
+// Returns 1 on success, 0 if refused - and the log names which of the four
+// refusals it was. The callback is attributed to whichever module the host is
+// running, never to anything passed here, so a hang inside a tick names the
+// module that actually registered it.
+//
+// A host with no game module has no frame source and these never run; that is
+// reported at the load point rather than left to be inferred from a mod that
+// quietly does nothing.
+extern "C" inline uint32_t CoreRegisterTick(void (*fn)()) {
+    return WiiXLaunch::Tick::Add(fn) == WiiXLaunch::Tick::Register::Ok ? 1u : 0u;
+}
+
 // Reads a whole file from game content. Returns bytes read, or a negative value
 // on failure. `outRead` may be null.
 //
@@ -286,6 +303,8 @@ inline const Surface::Symbol kSymbols[] = {
     WIIXL_SURFACE_SYMBOL("ModReadFile",   &CoreModReadFile),
     WIIXL_SURFACE_SYMBOL("ModFileExists", &CoreModFileExists),
     WIIXL_SURFACE_SYMBOL("GameReadFile",  &CoreGameReadFile),
+    // v1.5. Appended, never inserted.
+    WIIXL_SURFACE_SYMBOL("RegisterTick",  &CoreRegisterTick),
 };
 
 } // namespace impl
