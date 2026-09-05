@@ -99,6 +99,7 @@ struct Applied {
     uint8_t   origin[Wxlm::kMaxPatchBytes];
     uint8_t   data[Wxlm::kMaxPatchBytes];
     char      owner[kOwnerLen];
+    bool      restored;      // put back, so the target holds `origin` again
 };
 
 namespace impl {
@@ -304,6 +305,7 @@ inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
         a.origin[i] = p.origin[i];
         a.data[i] = p.data[i];
     }
+    a.restored = false;
     impl::CopyOwner(a.owner, owner ? owner : "?");
 
     WIIXL_LOG("Patch: %s applied %u B at %p (origin verified)",
@@ -376,6 +378,64 @@ inline bool VerifyApplied() {
     return pass;
 }
 
+// Puts every applied patch back, and checks the restore took.
+//
+// WHY A DEMONSTRATION WANTS THIS. Proving the applier writes to game memory
+// needs a target the host can read back. Proving it is HARMLESS needs either a
+// target whose modification is provably inert forever, or a much cheaper
+// property: that the modification does not outlive the load sequence.
+//
+// The second is easier to support and does not depend on being right about an
+// address. `examples/patch_mod` uses both - its target is an instruction whose
+// replacement is a different encoding of the same operation, AND it is put back
+// here - so the demonstration is safe even if the inertness analysis is wrong.
+//
+// A SHIPPING HOST WITH REAL PATCH MODS MUST NOT CALL THIS. A patch is meant to
+// persist; undoing one is only useful for a demonstration, or for a host tearing
+// down before a reload. The log says so on every call rather than leaving it to
+// whoever reads this header.
+inline bool RestoreAll() {
+    if (impl::g_AppliedCount == 0) return true;
+
+    uint32_t done = 0, failed = 0;
+    for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
+        Applied& a = impl::g_Applied[i];
+        if (a.restored) continue;
+
+        volatile uint8_t* at = reinterpret_cast<volatile uint8_t*>(a.addr);
+        for (uint32_t b = 0; b < a.size; ++b) at[b] = a.origin[b];
+#if WIIXL_CEMU
+        Backend::FlushCache(a.addr, a.size);
+#endif
+
+        // Read it back. A restore that silently did not take would leave the
+        // game running modified for the rest of the session, which is the exact
+        // thing this is here to prevent - so it is checked, not assumed.
+        bool holds = true;
+        for (uint32_t b = 0; b < a.size; ++b) {
+            if (at[b] != a.origin[b]) holds = false;
+        }
+
+        if (holds) {
+            a.restored = true;
+            ++done;
+            WIIXL_LOG("Patch: restored %p (%s) - target holds %02X %02X %02X %02X again",
+                      reinterpret_cast<void*>(a.addr), a.owner,
+                      at[0], at[1], at[2], at[3]);
+        } else {
+            ++failed;
+            WIIXL_LOG("Patch: RESTORE FAILED at %p (%s) - target still reads "
+                      "%02X %02X %02X %02X", reinterpret_cast<void*>(a.addr), a.owner,
+                      at[0], at[1], at[2], at[3]);
+        }
+    }
+
+    WIIXL_LOG("Patch: %s - %u restored, %u failed. A host shipping real patch mods "
+              "must not call RestoreAll; a patch is meant to persist.",
+              failed == 0 ? "RESTORE PASS" : "RESTORE FAIL", done, failed);
+    return failed == 0;
+}
+
 // Everything patched, and by whom. Printed at the load point beside the hook
 // summary, because "which mods touched this address" is one question with two
 // mechanisms behind it.
@@ -384,8 +444,9 @@ inline void LogState() {
               impl::g_ExaminedCount, impl::g_AppliedCount, impl::g_RefusedCount);
     for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
         const Applied& a = impl::g_Applied[i];
-        WIIXL_LOG("Patch:   %p %u B by %s",
-                  reinterpret_cast<void*>(a.addr), a.size, a.owner);
+        WIIXL_LOG("Patch:   %p %u B by %s%s",
+                  reinterpret_cast<void*>(a.addr), a.size, a.owner,
+                  a.restored ? " (restored - no longer in force)" : "");
     }
     if (impl::g_AppliedCount == 0) {
         WIIXL_LOG("Patch:   no module declared a patch");

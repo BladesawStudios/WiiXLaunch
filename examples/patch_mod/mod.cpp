@@ -13,20 +13,41 @@
 // this collision exists on every boot.
 //
 // ---------------------------------------------------------------------------
-// WHY PATCH 1 IS SAFE, which is worth spelling out because "an inert patch to
-// live game code" sounds like a contradiction.
+// WHY PATCH 1 IS SAFE. The address was chosen deliberately and the reasoning is
+// recorded here so nobody later assumes it was picked carelessly.
 //
-// 0x02000030 holds 7C 9E 23 78, which is `or r30,r4,r4` - the PowerPC idiom for
-// `mr r30,r4`, "copy r4 into r30". It is replaced with 60 9E 00 00, which is
-// `ori r30,r4,0`, "r30 = r4 | 0". Both compute r30 = r4. Neither has an Rc bit
-// set, so neither touches the condition register. They are the same operation
-// in two encodings, so the instruction can be executed before, during or after
-// the patch with identical results.
+// TWO INDEPENDENT PROPERTIES, either of which would do on its own.
 //
-// The encoding was verified rather than calculated: the `or` field layout was
-// checked against a second instance in the same binary (7C 7F 1B 78 =
-// `or r31,r3,r3`), and the `ori` layout against the fact that 60 00 00 00 - the
-// canonical nop - IS `ori r0,r0,0` with every field zero.
+// FIRST, the change is inert. 0x02000030 holds 7C 9E 23 78, which is
+// `or r30,r4,r4` - the PowerPC idiom for `mr r30,r4`, "copy r4 into r30". It is
+// replaced with 60 9E 00 00, which is `ori r30,r4,0`, "r30 = r4 | 0". Both
+// compute r30 = r4, and neither has an Rc bit, so neither touches the condition
+// register. Same operation, two encodings; the instruction can be executed
+// before, during or after the patch with identical results.
+//
+// The encodings were verified rather than calculated - the first calculation
+// was wrong. The `or` field layout was checked against a second instance in the
+// same binary (7C 7F 1B 78 = `or r31,r3,r3`), and `ori` against the fact that
+// 60 00 00 00, the canonical nop, IS `ori r0,r0,0` with every field zero. The
+// bytes came from Ghidra on the actual v208 program, whose GX2::Init prologue
+// matches what the host reports hooking - a program-identity check worth doing
+// whenever an address comes out of a disassembler.
+//
+// SECOND, and this is what makes it safe even if the first is wrong, THE PATCH
+// IS PUT BACK. Patches::RestoreAll rewrites the original bytes and reads them
+// back before any module entry runs, so the game executes modified for the few
+// microseconds between the applier writing and the host restoring. "Provably
+// inert forever" is a hard claim to support; "does not outlive the load
+// sequence" is not, and the assertion is exactly as strong either way - the
+// host still read the target back and saw the write.
+//
+// WHAT WAS CONSIDERED AND REJECTED. The gap at 0x02000008..0x0200001F between
+// .syscall and .text looked like dead alignment padding, but it is not in the
+// program image at all - Ghidra cannot read it - so its contents and even
+// whether it is mapped could not be verified. An unreferenced word in .rodata
+// was the other candidate; Ghidra does resolve lis/displacement pairs into real
+// xrefs, so "no xrefs" there is decent evidence, but it would still miss data
+// reached by a computed index, which makes it evidence rather than proof.
 //
 // A NOTE ON CEMU. Patches are applied at the load point, by which time Cemu's
 // recompiler may already have translated this block; a write to already-compiled
@@ -54,12 +75,17 @@ WIIXL_DECLARE_PATCH(inert_reencode, 0x02000030,
     WIIXL_PATCH_BYTES(0x60, 0x9E, 0x00, 0x00));
 
 // --- 2. refused: ORIGIN-MISMATCH -------------------------------------------
-// 0x02000034 really holds 7C 7F 1B 79 (`or. r31,r3,r3`). This claims otherwise,
-// which is what a patch built against a different build of the game looks like:
-// the address is valid, the bytes are not what the mod was compiled against,
-// and writing anyway would corrupt a function it has never seen.
+// A REAL address with a REALISTIC wrong origin. 0x02000034 holds 7C 7F 1B 79,
+// which is `or. r31,r3,r3`; this claims 7C 7F 1B 78, which is `or r31,r3,r3` -
+// the same instruction without the Rc bit, a ONE-BIT difference.
+//
+// That is what a recompiled game version actually looks like, and it is a far
+// better test than an obviously bogus value: it exercises the byte-by-byte
+// read-back rather than anything that could be short-circuited by a sanity
+// check on the shape of the origin. The mismatch is still guaranteed, because
+// the real byte is 0x79 and the declared one is 0x78.
 WIIXL_DECLARE_PATCH(wrong_build, 0x02000034,
-    WIIXL_PATCH_BYTES(0xDE, 0xAD, 0xBE, 0xEF),
+    WIIXL_PATCH_BYTES(0x7C, 0x7F, 0x1B, 0x78),
     WIIXL_PATCH_BYTES(0x60, 0x00, 0x00, 0x00));
 
 // --- 3. refused: HOOKED-WINDOW ---------------------------------------------
