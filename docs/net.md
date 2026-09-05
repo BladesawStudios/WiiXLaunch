@@ -165,6 +165,38 @@ Wii U hardware is unaffected either way: the Aroma plugin is a real module with
 its own import table, so ordinary linking applies and none of this is needed
 there.
 
+## Every socket is non-blocking, and a mod cannot choose otherwise
+
+There is **one thread**. Mods run inside a tick, on the thread drawing the game,
+so a blocking socket call is not slow — it is a **frozen game**, on whatever
+schedule a remote client feels like.
+
+Leaving this to the mod does not work, and that is not a guess. `d_net` set
+`SO_NONBLOCK` on its **listener** and nothing on the sockets `accept` handed
+back — **accepted sockets do not inherit it**. The first `recv` on one stopped
+the game dead the moment anything connected. The mod's own comment said
+*"non-blocking, so nothing pending is the ordinary answer every frame"* while
+the code did the opposite on the socket that mattered.
+
+So the **host** sets it, on every socket it hands out, in both `Open` and
+`Accept`. A socket that will not go non-blocking is **closed rather than
+returned**: no networking at all is a better outcome than a game that freezes
+when someone connects. `SetNonBlocking` stays in the surface and is a no-op
+asking for what is already true; there is deliberately no way to ask for a
+blocking socket.
+
+### And the flag is read back
+
+`setsockopt` returning 0 is the *report*; the socket still being blocking is the
+*damage*. A platform that accepted the option and ignored it would pass every
+check that watched the return value, and freeze the game on the first
+connection.
+
+So the host reads the option back — **best-effort on purpose**. A platform that
+cannot answer *"is this socket non-blocking"* has told us nothing, and turning
+"cannot tell" into "refuse" would disable networking on a host where it works
+fine. Only a readback that **succeeds and says blocking** is a failure.
+
 ## Closing a connection without losing the reply
 
 A server that accepts, sends and closes in one go looks correct and is not.

@@ -30,6 +30,24 @@
 // argument as generation-counted actor handles, for the same reason.
 //
 // ---------------------------------------------------------------------------
+// EVERY SOCKET IS NON-BLOCKING, AND A MOD CANNOT CHOOSE OTHERWISE.
+//
+// There is one thread here. Mods run inside a tick, on the thread drawing the
+// game, so a blocking socket call is not slow - it is a frozen game, and the
+// freeze happens on whatever schedule a remote client feels like.
+//
+// Leaving this to the mod does not work, and this is not a guess. d_net set
+// SO_NONBLOCK on its LISTENER and not on the sockets accept() handed back,
+// because accepted sockets do not inherit it - the very next recv() blocked the
+// game thread and the game hung the moment anything connected. The mod's own
+// comment said "non-blocking, so nothing pending is the ordinary answer every
+// frame" while the code did the opposite on the socket that mattered.
+//
+// So the HOST sets it, on every socket it hands out, and a socket that refuses
+// to go non-blocking is closed rather than returned: no networking at all is a
+// better outcome than a game that freezes when someone connects.
+
+// ---------------------------------------------------------------------------
 // WHY PER-MODULE QUOTAS. This is fault isolation, not accounting.
 //
 // Without per-module attribution the only cap that can exist is a global one,
@@ -166,6 +184,33 @@ inline bool SameOwner(const char* a, const char* b) {
     return true;
 }
 
+// Sets non-blocking AND CHECKS IT TOOK.
+//
+// setsockopt returning 0 is the report; the socket still being blocking is the
+// damage, and those are not the same thing. If a platform ever accepted the
+// option and ignored it, every check that watched the return value would pass
+// and the game would freeze on the first connection - which is exactly the
+// shape of the bug this whole function exists because of.
+//
+// The readback is best-effort on purpose: a platform that cannot ANSWER
+// "is this socket non-blocking" tells us nothing, and turning "cannot tell"
+// into "refuse" would disable networking on a host where it works fine. Only a
+// readback that succeeds AND says blocking is treated as a failure.
+inline bool ForceNonBlocking(int fd) {
+    if (!Transport::SetNonBlocking(fd)) return false;
+
+    int32_t value = 0;
+    if (Transport::GetOptInt(fd, Transport::kSolSocket, Transport::kSoNonBlock, &value)) {
+        if (value == 0) {
+            WIIXL_LOG("Net: the platform accepted SO_NONBLOCK and did not apply it - "
+                      "refusing this socket rather than handing over one that can "
+                      "freeze the game");
+            return false;
+        }
+    }
+    return true;
+}
+
 inline Handle MakeHandle(uint32_t index, uint16_t generation) {
     return (static_cast<uint32_t>(generation) << 16) | (index + 1u);
 }
@@ -280,6 +325,17 @@ inline Result Open(Handle* outHandle) {
         return Result::PlatformError;
     }
 
+    // Before the mod ever sees it. See the banner: a blocking socket on the
+    // game thread is a frozen game, so one that will not go non-blocking is
+    // closed rather than handed over.
+    if (!impl::ForceNonBlocking(fd)) {
+        Transport::Close(fd);
+        WIIXL_LOG("Net: %s got %s - the socket would not go non-blocking (error %d), "
+                  "so it was closed. A blocking socket on the game thread is a hang.",
+                  owner, ResultName(Result::PlatformError), Transport::LastError());
+        return Result::PlatformError;
+    }
+
     Slot& s = impl::g_Slots[index];
     s.fd = fd;
     s.inUse = true;
@@ -325,6 +381,11 @@ inline Result Adopt(int fd, const char* owner, Handle* outHandle) {
 
 } // namespace impl
 
+// Already true of every socket this surface hands out - Open and Accept both
+// set it before the mod sees the handle. Kept because removing a symbol is a
+// major bump, and harmless: asking for what is already the case.
+//
+// There is deliberately NO way to ask for a blocking socket. See the banner.
 inline Result SetNonBlocking(Handle h) {
     Slot* s = nullptr;
     const Result r = Resolve(h, &s);
@@ -383,6 +444,18 @@ inline Result Accept(Handle listener, Handle* outHandle) {
 
     const int fd = Transport::Accept(s->fd);
     if (fd < 0) return Result::PlatformError;
+
+    // ACCEPTED SOCKETS DO NOT INHERIT SO_NONBLOCK from the listener. That is
+    // the whole bug: a non-blocking listener producing blocking connections,
+    // and the first recv on one freezing the game.
+    if (!impl::ForceNonBlocking(fd)) {
+        Transport::Close(fd);
+        WIIXL_LOG("Net: %s accepted a connection that would not go non-blocking "
+                  "(error %d) - closed rather than handed over, since a blocking "
+                  "socket on the game thread is a hang.",
+                  s->owner, Transport::LastError());
+        return Result::PlatformError;
+    }
 
     const Result adopted = impl::Adopt(fd, s->owner, outHandle);
     if (adopted != Result::Ok) {

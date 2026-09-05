@@ -124,6 +124,7 @@ struct HostOps {
     bool     (*available)();
     int32_t  (*lastError)();
     bool     (*shutdown)(int fd, int32_t how);
+    bool     (*getOptInt)(int fd, int32_t level, int32_t option, int32_t* out);
 };
 
 namespace impl { inline const HostOps* g_HostOps = nullptr; }
@@ -322,6 +323,26 @@ inline bool SetOptInt(int fd, int32_t level, int32_t option, int32_t value) {
            impl::g_HostOps->setOptInt(fd, level, option, value);
 #else
     (void)level; (void)option; (void)value;
+    return false;
+#endif
+}
+
+// Reads an int option back. Returns false when the platform cannot answer -
+// which is NOT the same as "the option is off", and callers must not treat it
+// that way.
+inline bool GetOptInt(int fd, int32_t level, int32_t option, int32_t* out) {
+    if (fd < 0 || !out || !Available()) return false;
+#if WIIXL_CEMU
+    int32_t len = sizeof(int32_t);
+    return impl::Nsysnet()->getsockopt(fd, level, option, out, &len) == 0;
+#elif WIIXL_WIIU
+    socklen_t len = sizeof(int32_t);
+    return ::getsockopt(fd, level, option, out, &len) == 0;
+#elif WIIXL_HOST
+    return impl::g_HostOps->getOptInt &&
+           impl::g_HostOps->getOptInt(fd, level, option, out);
+#else
+    (void)level; (void)option;
     return false;
 #endif
 }

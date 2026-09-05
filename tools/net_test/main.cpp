@@ -88,6 +88,11 @@ static int  g_FakeCloseCount = 0;
 static int  g_FakeLastClosed = -1;
 static int  g_FakeRecvBytes = 0;      // what the next Recv should deliver
 static bool g_FakeBindFails = false;
+static bool g_FakeNonBlockFails = false;
+// A platform that ACCEPTS the option and does not apply it. Every check that
+// watched setsockopt's return value would pass; the game would still freeze.
+static bool g_FakeNonBlockLies = false;
+static bool g_FakeCanReadOpts = true;
 static int  g_FakeLastError = 0;      // what the platform would say went wrong
 
 static void FakeReset() {
@@ -102,6 +107,9 @@ static void FakeReset() {
     g_FakeLastClosed = -1;
     g_FakeRecvBytes = 0;
     g_FakeBindFails = false;
+    g_FakeNonBlockFails = false;
+    g_FakeNonBlockLies = false;
+    g_FakeCanReadOpts = true;
     g_FakeLastError = 0;
 }
 
@@ -125,7 +133,11 @@ static int FakeOpen() {
 static bool FakeSetOptInt(int fd, int32_t level, int32_t option, int32_t value) {
     if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open) return false;
     (void)level;
-    if (option == T::kSoNonBlock) g_Fake[fd].nonBlocking = (value != 0);
+    if (option == T::kSoNonBlock) {
+        if (g_FakeNonBlockFails) { g_FakeLastError = 22; return false; }   // EINVAL
+        if (g_FakeNonBlockLies) return true;      // "sure" - and does nothing
+        g_Fake[fd].nonBlocking = (value != 0);
+    }
     else if (option == T::kSoReuseAddr) g_Fake[fd].reuseAddr = (value != 0);
     return true;
 }
@@ -188,6 +200,15 @@ static void FakeClose(int fd) {
 
 static int32_t FakeLastError() { return g_FakeLastError; }
 
+static bool FakeGetOptInt(int fd, int32_t level, int32_t option, int32_t* out) {
+    (void)level;
+    if (!g_FakeCanReadOpts) return false;         // a platform that cannot answer
+    if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open || !out) return false;
+    if (option == T::kSoNonBlock) { *out = g_Fake[fd].nonBlocking ? 1 : 0; return true; }
+    if (option == T::kSoReuseAddr) { *out = g_Fake[fd].reuseAddr ? 1 : 0; return true; }
+    return false;
+}
+
 static bool FakeShutdown(int fd, int32_t how) {
     if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open) return false;
     g_Fake[fd].shutdownHow = how;
@@ -202,7 +223,7 @@ static uint32_t FakeLocalIp(int fd) {
 static const T::HostOps kFakeOps = {
     &FakeInit, &FakeOpen, &FakeSetOptInt, &FakeBind, &FakeListen,
     &FakeAccept, &FakeRecv, &FakeSend, &FakeClose, &FakeLocalIp, &FakeAvailable,
-    &FakeLastError, &FakeShutdown,
+    &FakeLastError, &FakeShutdown, &FakeGetOptInt,
 };
 
 // Fresh table AND fresh fake, so no case can pass on state another left behind.
@@ -587,6 +608,103 @@ int main() {
     EndSection(5);
 
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE ONE THAT FROZE THE GAME. Mods run on the thread drawing the frame, so
+    // a blocking socket is not slow - it is a hang, triggered by whenever a
+    // remote client feels like connecting. d_net set SO_NONBLOCK on its
+    // listener and accept() handed back sockets that do NOT inherit it; the
+    // first recv on one stopped the game dead.
+    //
+    // So the host does it, and these check the FLAG rather than the return
+    // value - "Accept returned Ok" is exactly what the broken version did.
+    BeginSection("no socket can block the game thread");
+    {
+        FreshWorld();
+        MC::SetCurrent("server");
+
+        N::Handle listener = 0;
+        ok("a socket opens", N::Open(&listener) == N::Result::Ok);
+
+        // The mod asked for nothing. The host did it anyway.
+        ok("the host made it non-blocking without being asked",
+           g_Fake[FdOf(listener)].nonBlocking);
+
+        N::Listen(listener, 4);
+        g_FakePendingAccepts = 1;
+        N::Handle conn = 0;
+        ok("a connection is accepted", N::Accept(listener, &conn) == N::Result::Ok);
+
+        // The actual bug: accepted sockets do not inherit the flag.
+        ok("and the ACCEPTED socket is non-blocking too",
+           g_Fake[FdOf(conn)].nonBlocking);
+
+        // --- and it must be able to fail --------------------------------------
+        //
+        // A socket that will not go non-blocking is closed rather than returned,
+        // because no networking beats a game that freezes when someone connects.
+        FreshWorld();
+        MC::SetCurrent("server");
+        g_FakeNonBlockFails = true;
+
+        N::Handle doomed = 0;
+        const int closesBefore = g_FakeCloseCount;
+        ok("a socket that will not go non-blocking is refused",
+           N::Open(&doomed) == N::Result::PlatformError);
+        ok("no handle is handed out", doomed == N::kInvalidHandle);
+        ok("and the descriptor was closed, not leaked",
+           g_FakeCloseCount == closesBefore + 1);
+        ok("nothing is charged to the module", N::CountFor("server") == 0);
+
+        // The same on the accept path, which is where it actually bit.
+        FreshWorld();
+        MC::SetCurrent("server");
+        N::Handle l2 = 0;
+        N::Open(&l2);
+        N::Listen(l2, 4);
+        g_FakeNonBlockFails = true;      // only AFTER the listener is set up
+        g_FakePendingAccepts = 1;
+        const int closes2 = g_FakeCloseCount;
+        N::Handle c2 = 0;
+        ok("an accepted socket that will not go non-blocking is refused",
+           N::Accept(l2, &c2) == N::Result::PlatformError);
+        ok("and that descriptor was closed too",
+           g_FakeCloseCount == closes2 + 1);
+        ok("the module still holds only its listener", N::CountFor("server") == 1);
+
+        // --- a platform that AGREES and does nothing --------------------------
+        //
+        // The sixth rule at runtime. setsockopt returning 0 is the report; the
+        // socket still being blocking is the damage. A host that watched only
+        // the return value would hand over a socket that freezes the game, and
+        // every test of that host would be green.
+        FreshWorld();
+        MC::SetCurrent("server");
+        g_FakeNonBlockLies = true;
+
+        N::Handle liar = 0;
+        const int closes3 = g_FakeCloseCount;
+        ok("a platform that accepts SO_NONBLOCK and ignores it is caught",
+           N::Open(&liar) == N::Result::PlatformError);
+        ok("and that descriptor was closed as well",
+           g_FakeCloseCount == closes3 + 1);
+
+        // ...but only because the readback WORKED. A platform that cannot
+        // answer must not be treated as one that answered "blocking", or
+        // networking would be refused on hosts where it is perfectly fine.
+        FreshWorld();
+        MC::SetCurrent("server");
+        g_FakeNonBlockLies = true;
+        g_FakeCanReadOpts = false;
+
+        N::Handle unknowable = 0;
+        ok("a platform that cannot answer is given the benefit of the doubt",
+           N::Open(&unknowable) == N::Result::Ok);
+
+        MC::SetCurrent(nullptr);
+    }
+    EndSection(14);
+
+    // -----------------------------------------------------------------------
     // A reply that never arrives. Send-then-Close with the peer's request still
     // unread makes TCP answer with an RST, and the client discards the reply it
     // was about to read - which is exactly what the d_net sample did on its
@@ -690,7 +808,7 @@ int main() {
 
     // A floor, so a build that compiled away half the file cannot report
     // success. Raise it deliberately when checks are added.
-    static const int kExpectedChecks = 93;
+    static const int kExpectedChecks = 107;
     if (g_checks < kExpectedChecks) {
         std::printf("NET TESTS INCOMPLETE: ran %d checks, expected at least %d\n",
                     g_checks, kExpectedChecks);
@@ -699,8 +817,8 @@ int main() {
 
     std::printf("ALL NET TESTS PASS (%d checks: attribution, handle validity, "
                 "use-after-close, quotas, host limit, close-all, accept, "
-                "untracked-accept, availability, platform reasons, half-close, "
-                "accounting, result names)\n",
+                "untracked-accept, availability, platform reasons, non-blocking, "
+                "half-close, accounting, result names)\n",
                 g_checks);
     return 0;
 }
