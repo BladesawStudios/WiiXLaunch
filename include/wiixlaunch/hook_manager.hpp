@@ -422,7 +422,15 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
 inline void Note(uintptr_t target, uintptr_t callback, const char* owner) {
     Site* site = impl::FindSite(target);
     if (!site) {
-        if (impl::g_SiteCount >= kMaxSites) return;
+        if (impl::g_SiteCount >= kMaxSites) {
+            // The conflict report IS the deliverable on these platforms, so a
+            // dropped entry does not cost a feature - it makes the report wrong
+            // while it still looks complete.
+            WIIXL_LOG("Hook: %s noted at %p but all %u site slots are taken - "
+                      "this target is MISSING from the conflict report",
+                      owner ? owner : "?", reinterpret_cast<void*>(target), kMaxSites);
+            return;
+        }
         site = &impl::g_Sites[impl::g_SiteCount++];
         site->target = target;
         site->prologueTramp = nullptr;
@@ -432,7 +440,12 @@ inline void Note(uintptr_t target, uintptr_t callback, const char* owner) {
         site->inUse = true;
         for (uint32_t i = 0; i < kJumpWords; ++i) site->saved[i] = 0;
     }
-    if (impl::g_LinkCount >= kMaxLinks) return;
+    if (impl::g_LinkCount >= kMaxLinks) {
+        WIIXL_LOG("Hook: %s noted at %p but all %u link slots are taken - this "
+                  "owner is MISSING from the conflict report",
+                  owner ? owner : "?", reinterpret_cast<void*>(target), kMaxLinks);
+        return;
+    }
 
     Link* link = &impl::g_Links[impl::g_LinkCount++];
     impl::CopyOwner(link->owner, owner ? owner : "?");
