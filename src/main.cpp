@@ -2,6 +2,7 @@
 #include <wiixlaunch/loader/load_point.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/net_surface.hpp>
+#include <wiixlaunch/loader/base_surfaces.hpp>
 #include <wiixlaunch/botw/botw.hpp>
 
 using namespace WiiXLaunch::BotW;
@@ -78,6 +79,12 @@ extern "C" void WiiXLaunch_Init() {
     // a mod that declared wiixl.net required is then refused by name at load
     // rather than loading and silently failing at its first send.
     WiiXLaunch::NetSurface::Register();
+
+    // The framework services beyond wiixl.core: the clock, the coreinit heaps,
+    // game-function resolution and runtime patching. Each is its own surface so
+    // a mod declares only what it uses and a host missing one refuses it by
+    // name rather than at the first call.
+    WiiXLaunch::BaseSurfaces::RegisterAll();
 
     // Game modules register here. Base must never name one - this line lives in
     // the project's own source, which is where knowledge of what was installed
