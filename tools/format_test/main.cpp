@@ -24,7 +24,7 @@ static int g_checks = 0;
 // #if swallows one - the count drops and this fails, instead of reporting
 // success over a smaller suite. Raise it when cases are added; never lower it
 // to make a build go green. See the fourth rule in docs/modules.md.
-static const int kExpectedChecks = 23;
+static const int kExpectedChecks = 25;
 
 // Per-section floors as well as the total. A floor on an aggregate does not
 // constrain its composition: 23 checks could all be width checks, with the
@@ -40,6 +40,14 @@ static void BeginSection(const char* name) {
 
 static void SectionStart(const char* name);
 static void SectionEnd(int atLeast);
+
+static uint32_t FormatOneArg(char* out, uint32_t cap, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    const uint32_t n = WiiXLaunch::Debug::FormatText(out, cap, fmt, ap);
+    va_end(ap);
+    return n;
+}
 
 static void check(const char* expect, const char* fmt, ...) {
     char out[256];
@@ -129,6 +137,44 @@ int main() {
     check("%q",       "%q", 1);
 
     SectionEnd(1);
+    SectionStart("truncation is visible");
+    std::printf("\ntruncation announces itself rather than ending mid-sentence:\n");
+    {
+        // A message that runs over the cap used to just stop, and read like a
+        // message that ended there. Two patch refusals were cut at
+        // "not the game; the" on a real boot and neither looked truncated.
+        char out[64];
+        char big[200];
+        for (int i = 0; i < 199; ++i) big[i] = 'x';
+        big[199] = 0;
+
+        const uint32_t n = FormatOneArg(out, sizeof(out) - 1, "%s", big);
+        out[n] = 0;
+        ++g_checks;
+        const bool marked = n == sizeof(out) - 1 &&
+                            std::strstr(out, "[..CUT]") != nullptr;
+        if (marked) {
+            std::printf("  ok    over-long output is marked [..CUT]\n");
+        } else {
+            ++g_failures;
+            std::printf("  FAIL  over-long output was not marked: \"%s\"\n", out);
+        }
+
+        // And a message that FITS must not be marked - otherwise the marker
+        // says nothing, since it would always be there.
+        char small[64];
+        const uint32_t m = FormatOneArg(small, sizeof(small) - 1, "%s", "short");
+        small[m] = 0;
+        ++g_checks;
+        if (std::strcmp(small, "short") == 0) {
+            std::printf("  ok    output that fits is left alone\n");
+        } else {
+            ++g_failures;
+            std::printf("  FAIL  short output was altered: \"%s\"\n", small);
+        }
+    }
+    SectionEnd(2);
+
     g_failures += g_SectionFloorFailures;
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
@@ -141,7 +187,7 @@ int main() {
     }
 
     std::printf("%s (%d checks: width, argument alignment, unchanged conversions, "
-                "float precision, unknown specifiers)\n",
+                "float precision, unknown specifiers, truncation marker)\n",
                 g_failures == 0 ? "ALL FORMAT TESTS PASS" : "FORMAT TESTS FAILED",
                 g_checks);
     return g_failures != 0;

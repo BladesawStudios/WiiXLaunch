@@ -50,6 +50,9 @@ python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
 # is the one failure neither side can detect at runtime.
 python3 scripts/test_wxlm.py
 
+# No WIIXL_LOG line may exceed the 200-char cap; truncation used to be silent.
+python3 scripts/test_log_lengths.py
+
 # Are the gates below actually wired in, and is a failure fatal? Every gate
 # self-checks its own liveness, which is the right shape - but no gate can
 # detect that nothing calls it. Runs first, so a missing gate is reported

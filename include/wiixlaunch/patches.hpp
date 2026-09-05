@@ -247,38 +247,40 @@ inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
         impl::g_RefusedCount++;
         switch (r) {
             case Result::HookedWindow:
-                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - those bytes are inside "
-                          "the 16-byte jump the hook manager wrote for %s. The patch "
-                          "would corrupt the branch into the chain, not the game; the "
-                          "original instructions live in a trampoline now.",
-                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - inside the hook %s wrote",
+                          owner, ResultName(r),
+                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
                           p.size, collides ? collides : "a hook");
+                WIIXL_LOG("Patch:   it would corrupt the branch into the chain, not the "
+                          "game - those instructions live in a trampoline now");
                 break;
             case Result::PatchOverlap:
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - %s already patched those "
-                          "bytes. Both mods are trying to write the same address; this "
-                          "is the pair to disable one of.",
-                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                          "bytes", owner, ResultName(r),
+                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
                           p.size, collides ? collides : "another module");
+                WIIXL_LOG("Patch:   both mods write the same address - this is the pair "
+                          "to disable one of");
                 break;
             case Result::OriginMismatch: {
                 const volatile uint8_t* at =
                     reinterpret_cast<const volatile uint8_t*>(impl::Resolve(p.targetAddr));
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - expected %02X %02X %02X "
-                          "%02X, found %02X %02X %02X %02X. This patch was built "
-                          "against a different build of the game; writing it anyway "
-                          "would corrupt a function the mod has never seen.",
-                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
+                          "%02X, found %02X %02X %02X %02X",
+                          owner, ResultName(r),
+                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
                           p.size, p.origin[0], p.origin[1], p.origin[2], p.origin[3],
                           at[0], at[1], at[2], at[3]);
+                WIIXL_LOG("Patch:   built against a different build of the game; "
+                          "writing it would corrupt a function it has never seen");
                 break;
             }
             case Result::IntoArena:
-                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - that is inside the module "
-                          "arena, whose addresses differ on every boot. A patch written "
-                          "by absolute address cannot mean anything there.",
-                          owner, ResultName(r), reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
-                          p.size);
+                WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - inside the module arena",
+                          owner, ResultName(r),
+                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)), p.size);
+                WIIXL_LOG("Patch:   arena addresses differ on every boot, so an absolute "
+                          "patch cannot mean anything there");
                 break;
             default:
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B)", owner, ResultName(r),

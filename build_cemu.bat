@@ -73,6 +73,11 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 python scripts\test_wxlm.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:: No WIIXL_LOG line may exceed the 200-char cap. Truncation used to be
+:: silent, and the half that got cut was the half saying what to do.
+python scripts\test_log_lengths.py
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 :: Are the gates below actually wired in, and is a failure fatal? Every gate
 :: self-checks its own liveness, which is the right shape - but no gate can
 :: detect that nothing calls it. This runs FIRST so a missing gate is reported

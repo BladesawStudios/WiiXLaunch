@@ -311,12 +311,11 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
 
         for (uint32_t i = 0; i < kJumpWords; ++i) {
             if (IsPcRelativeBranch(saved[i])) {
-                WIIXL_LOG("Hook: %s refused at %p - %s: instruction %u (0x%08X) is a "
-                          "PC-relative branch, and moving it to a trampoline would "
-                          "silently send it somewhere else. This target needs branch "
-                          "fixup before it can be hooked.",
-                          owner, reinterpret_cast<void*>(target),
+                WIIXL_LOG("Hook: %s refused at %p - %s: instruction %u (0x%08X) is "
+                          "PC-relative", owner, reinterpret_cast<void*>(target),
                           InstallName(Install::PrologueNotRelocatable), i, saved[i]);
+                WIIXL_LOG("Hook:   moving it to a trampoline would silently send it "
+                          "elsewhere; this target needs branch fixup first");
                 return Install::PrologueNotRelocatable;
             }
         }
@@ -461,10 +460,10 @@ inline void LogState() {
     // which is the property that makes the chain correct by construction - so
     // this counts SITES, not installs, and that is why the two numbers differ.
     WIIXL_LOG("Hook: prologue decoder ran on %u site(s): %u instructions decoded, "
-              "%u PC-relative found and refused. Appends do not re-decode, because "
-              "the prologue is captured once per address before any hook exists.",
-              impl::g_PrologueSitesChecked, impl::g_PrologueWordsDecoded,
-              impl::g_PrologueRelativeFound);
+              "%u PC-relative refused", impl::g_PrologueSitesChecked,
+              impl::g_PrologueWordsDecoded, impl::g_PrologueRelativeFound);
+    WIIXL_LOG("Hook:   appends do not re-decode - a prologue is captured once per "
+              "address, before any hook exists");
 
     char owners[160];
     for (uint32_t i = 0; i < impl::g_SiteCount; ++i) {

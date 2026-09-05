@@ -181,6 +181,24 @@ inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list ar
         }
     }
 
+    // TRUNCATION SAYS SO. Running out of buffer used to end the line
+    // mid-sentence and look like a message that simply ended there - which for
+    // a diagnostic is the worst possible failure, because the half that gets
+    // discarded is the half explaining what to do. A boot cut two patch
+    // refusals off at "not the game; the" and "would corrupt a func", and
+    // neither read as truncated.
+    //
+    // A static check on format strings (scripts/test_log_lengths.py) catches
+    // the literals, but it can only be a lower bound: one %s can be arbitrarily
+    // long. This is the half that catches what the gate cannot, and it catches
+    // it where it happens.
+    if (len >= cap) {
+        const char* mark = "[..CUT]";
+        uint32_t at = (cap > 7u) ? (cap - 7u) : 0u;
+        for (uint32_t i = 0; mark[i] && at < cap; ++i, ++at) text[at] = mark[i];
+        len = cap;
+    }
+
     return len;
 }
 
