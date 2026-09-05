@@ -17,7 +17,7 @@ The framework hides the differences between three very different hooking mechani
 * [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on each platform.
 * [Cemu code cave relocation](cemu-relocation.md) - how the payload finds its own load address, and why it has to.
 * [The module loader](loader.md) - how compiled mods are loaded, the per-platform load point, and what is and is not initialised when your code first runs.
-* [wiixl.net](net.md) - TCP for mods, and why a socket is tracked and owned rather than handed over as a raw descriptor.
+* [wiixl.net](net.md) - TCP for mods: why a socket is tracked and owned rather than handed over as a raw descriptor, and **the static-import rule** - what base may and may not link against, which applies to every surface, not just this one.
 * [Modules](modules.md) - optional, game-specific APIs (e.g. [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)) added as submodules on top of the base framework.
 * [Graphics Injection](graphics-injection.md) - drawing your own textures and meshes into a game's render loop via `BotW::NVN` (Switch) and `BotW::GX2` (Wii U/Cemu).
 

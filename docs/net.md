@@ -81,31 +81,89 @@ collapse into one value:
 - **`UNAVAILABLE` from a call** — this platform has sockets and they could not be
   reached here. On Cemu, a title whose process has no network stack.
 
-## Reaching nsysnet on Cemu
+## The static-import rule
 
-Every other shim table in `src/cemu/` resolves `import.coreinit.<Name>`, which
-works because coreinit is imported by every title that exists. **nsysnet is
-not** — BotW v208's import table has 445 entries and not one is a socket call.
+**Base may only statically import what the host can guarantee is present.
+Anything else is resolved at runtime and degrades to an `UNAVAILABLE` value.**
 
-And Cemu fails the **entire graphic pack** when a patch import cannot be
-resolved. A static `import.nsysnet.socket` in base would therefore mean that on
-any setup where nsysnet is not in the title's process, WiiXLaunch does not load
-*at all* — not the network surface, the whole framework, every mod, with the
-pack simply not applying and nothing in a log to say why. That is the worst
-failure shape available to this project.
+This is a base-framework rule, not a note about sockets. It exists because the
+failure it prevents is the worst shape available to this project, and `wiixl.net`
+is simply where it was first noticed.
 
-So nsysnet is resolved **at runtime** through coreinit's dynamic loader, which
-BotW *does* import (`OSDynLoad_Acquire` / `FindExport` / `Release`,
-EXTERNAL:12a–12c). The three shims in `src/cemu/cemu_dynload.asm` are coreinit
-calls like every other table's, so they always resolve, and "nsysnet is not
-there" becomes a value the log names on a host that otherwise works normally.
+### Why it is a rule and not a preference
 
-All ten exports must resolve or none are used: a partially resolved table would
-open sockets it could not close.
+On Cemu, WiiXLaunch ships as a graphic pack, and **Cemu fails the entire pack
+when any patch import cannot be resolved**. Not the feature that needed it — the
+pack. So a single unresolvable import in base means:
 
-This mechanism is not specific to sockets. It is how base reaches **any** library
-the game does not itself import, and the next surface that needs one should use
-it rather than adding a static import and hoping.
+- WiiXLaunch does not load at all
+- not the surface that wanted it: *every* subsystem, *every* mod
+- silently, because nothing ran, so nothing logged
+- on titles that never used the feature in the first place
+
+A capability most mods never touch takes down the whole framework on games it
+was never used with, and the user's only evidence is that the pack did not
+apply. There is no log line to read and no owner to name — the exact failure
+class the rest of this framework is built to eliminate, arriving through the
+build system instead of through code.
+
+Runtime resolution converts that into: the host boots normally, everything else
+works, one surface reports `UNAVAILABLE`, and the log says which library was
+missing and why.
+
+### Which imports the host can guarantee
+
+`coreinit` — it is imported by every Wii U title that exists, so a
+`import.coreinit.<Name>` shim will resolve wherever WiiXLaunch runs at all.
+That is the whole guaranteed set. `src/cemu/cemu_fs.asm`, `cemu_mem.asm`,
+`cemu_time.asm` and `cemu_logging.asm` are all coreinit and all legitimate.
+
+**Everything else is a guess about a particular game.** nsysnet is the case in
+hand: BotW v208's import table has 445 entries and not one is a socket call —
+checked against the RPX, not assumed. A static `import.nsysnet.socket` in base
+would have been a bet on every title WiiXLaunch is ever pointed at.
+
+A *game module* (`vendor/wiixlaunch-*`) is a different matter and may import what
+its game demonstrably imports: `gx2_imports.asm` lives in the BotW module
+precisely because GX2 is a claim about that game, and `scripts/deploy.py` already
+skips a module's shim table when the module is not compiled in.
+
+### How runtime resolution works
+
+coreinit's dynamic loader is itself a coreinit import, so it is always
+reachable. `src/cemu/cemu_dynload.asm` shims three calls —
+`OSDynLoad_Acquire`, `OSDynLoad_FindExport`, `OSDynLoad_Release` — and every
+non-guaranteed library is looked up through them at first use:
+
+```
+Acquire the RPL by name  ->  null means "this process has no such library"
+FindExport each symbol   ->  null means "the library is there, that entry is not"
+```
+
+Both failures are distinct and both are logged, because *"nsysnet is not
+loadable"* and *"nsysnet is loaded and missing an export"* are different problems
+with the same symptom. Resolution is attempted **once** and the outcome cached
+including failure, so a host without the library does not retry an
+`OSDynLoad_Acquire` every frame.
+
+**All or nothing.** Every export must resolve or none are used: a partially
+resolved table would open sockets it could not close.
+
+### Applying it
+
+When a surface needs a library base cannot guarantee:
+
+1. Do **not** add an `import.<lib>.*` shim table to `src/cemu/`.
+2. Resolve through `cemu/cemu_dynload.hpp` at first use, caching the outcome.
+3. Give the surface an `Available()` that reports the result, and a distinct
+   refusal value for "reachable platform, unreachable library".
+4. Register the surface anyway where the platform *could* support it, so
+   "unsupported platform" (surface absent, mod refused by name at load) stays
+   distinct from "unavailable here" (surface present, call refused at runtime).
+
+Wii U hardware is unaffected either way: the Aroma plugin is a real module with
+its own import table, so ordinary linking applies and none of this is needed
+there.
 
 ## Testing it
 

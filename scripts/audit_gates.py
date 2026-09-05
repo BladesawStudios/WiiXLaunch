@@ -74,7 +74,7 @@ WIRING = [
 # them: deleting a row from WIRING would have dropped the count and still
 # printed success. A gate that checks other gates for liveness and has none of
 # its own is the joke writing itself.
-EXPECTED_MIN_INVOCATIONS = 16
+EXPECTED_MIN_INVOCATIONS = 19
 EXPECTED_MIN_SCRIPTS = 17
 
 MUST_EXIST = [
@@ -184,6 +184,32 @@ def guarded_sh(text, token):
     return False
 
 
+# Scripts that call other scripts, and must do it by a path rather than by bare
+# name.
+#
+# `call build_switch.bat` relies on cmd searching the CURRENT DIRECTORY for the
+# command, and that search is disabled on any machine with
+# NoDefaultCurrentDirectoryInExePath set. On such a machine build_all.bat died
+# on its first line, which means it had never once run to completion there -
+# while all three individual scripts passed. Those are different claims, and the
+# gap between them is the same shape as tools/format_test sitting unwired: a
+# thing that looks like it runs and does not.
+#
+# The failing form and the working form differ by two characters, so this is
+# checked rather than remembered.
+CALLERS = [
+    ("build_all.bat", ["build_switch.bat", "build_wiiu.bat", "build_cemu.bat"]),
+]
+
+BARE_CALL = re.compile(r"^[ \t]*call[ \t]+(?![\"']?%~dp0)(?![\"']?[.\\/])([A-Za-z0-9_.-]+\.bat)",
+                       re.MULTILINE)
+
+
+def bare_invocations(text):
+    """Sub-script calls that go through cmd's current-directory search."""
+    return [m.group(1) for m in BARE_CALL.finditer(text)]
+
+
 def main():
     failures = []
     checked_invocations = 0
@@ -219,6 +245,34 @@ def main():
                     "  %s runs %s but does not check its exit code.\n"
                     "           A gate that cannot fail the build is decoration."
                     % (script, human))
+
+    # A build script that calls other build scripts has to reach them. See
+    # CALLERS: a bare name is resolved through cmd's current-directory search,
+    # which is off on some machines, and the script then fails before running
+    # anything at all.
+    for script, expected in CALLERS:
+        path = os.path.join(ROOT, script)
+        if not os.path.exists(path):
+            failures.append("  %s does not exist" % script)
+            continue
+        text = open(path, encoding="utf-8", errors="replace").read()
+
+        bare = bare_invocations(text)
+        if bare:
+            failures.append(
+                "  %s calls %s by bare name.\n"
+                "           cmd resolves that through the CURRENT DIRECTORY, and that\n"
+                "           search is disabled wherever NoDefaultCurrentDirectoryInExePath\n"
+                "           is set - so the script fails before it builds anything.\n"
+                "           Write it as call \"%%~dp0<name>.bat\"."
+                % (script, ", ".join(bare)))
+
+        for name in expected:
+            checked_invocations += 1
+            if name not in text:
+                failures.append("  %s no longer calls %s at all" % (script, name))
+            else:
+                checked_guards += 1
 
     # The split, not just the sum: every invocation found must also be guarded,
     # and the tables must not have shrunk.
