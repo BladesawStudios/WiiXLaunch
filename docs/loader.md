@@ -349,6 +349,65 @@ A refused patch never fails the module. It is named and skipped, the module
 still loads, and its other patches are still tried — one bad address must not
 cost a user the mod, and must not silently cost them its other patches either.
 
+## Module resources
+
+Every module gets a directory named for its id:
+
+```
+content/WiiXLaunch/mods/
+    a_first.wxlm            the modules themselves
+    b_second.wxlm
+    _host/logo.bin          the host's own resources
+    a_first/greeting.txt    a_first's files
+    b_second/greeting.txt   b_second's files - a DIFFERENT file
+```
+
+Two mods shipping a file of the same name is now a non-event. Before, it was a
+collision resolved by whichever the filesystem answered first: silent and
+order-dependent.
+
+### Two reads, not one with a fallback
+
+`wiixl.core` gives a mod two distinct calls, and the choice is made at the call
+site:
+
+| Call | Reads | Escapes? |
+|---|---|---|
+| `ModReadFile` | `mods/<this mod's id>/…` | **no** |
+| `GameReadFile` | game content, host path candidates | n/a — that is its job |
+
+There is deliberately no single call that tries the mod directory and falls
+back. "Whichever resolves first wins" is the same ambiguity as an FS status of
+`-6` meaning two things, as two path resolvers disagreeing, and as three refusal
+reasons collapsed into one `bool`. Each of those cost a debugging round.
+
+Equally deliberately, there is no full containment. Reading game content is a
+large part of what modding *is*, and a mod that cannot open a game pack is
+crippled. The containment lives on the scoped call, where it is a guarantee
+worth having.
+
+**The scoped call refuses by value**, so a test can assert which rule fired:
+`NO-MODULE`, `EMPTY`, `ABSOLUTE`, `PARENT-ESCAPE`, `BAD-CHAR`, `TOO-LONG`. A
+`..` is refused only as a whole path *component* — `version..txt` and
+`..hidden` are ordinary filenames and stay readable.
+
+The directory comes from **which module the host is running**
+(`WiiXLaunch::ModContext`), never from anything the mod passes — the same
+attribution rule as hook ownership and probe tags. A mod cannot reach another
+mod's files by naming them.
+
+### The reserved id space
+
+**Ids beginning with `_` belong to the host.** The loader refuses a module whose
+id starts with one (`RESERVED-MOD-ID`), and `mods/_host/` holds the host's own
+resources.
+
+The host's `logo.bin` moved there rather than staying at
+`content/WiiXLaunch/logo.bin`. It should not be the one thing exempt from the
+scheme — that is how someone later concludes the scheme is optional. A whole
+prefix is reserved rather than one name, so a future reserved id needs no new
+check and no new refusal path.
+
 ## Verifying the loader
 
 Two properties make the loader the component most worth testing hard: it reads

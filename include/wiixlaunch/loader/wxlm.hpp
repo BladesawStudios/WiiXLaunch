@@ -305,6 +305,7 @@ enum class Reject : uint32_t {
     BadRelocation,       // a reloc site is outside the payload
     NoMemory,            // the host arena could not fit it
     BadEntry,            // entryOffset is outside the payload
+    ReservedModId,       // the id is in the host's reserved namespace
 };
 
 inline const char* RejectName(Reject r) {
@@ -327,6 +328,7 @@ inline const char* RejectName(Reject r) {
         case Reject::BadRelocation:    return "BAD-RELOCATION";
         case Reject::NoMemory:         return "NO-MEMORY";
         case Reject::BadEntry:         return "BAD-ENTRY";
+        case Reject::ReservedModId:    return "RESERVED-MOD-ID";
     }
     return "?";
 }

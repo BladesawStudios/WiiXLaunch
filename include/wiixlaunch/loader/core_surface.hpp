@@ -18,6 +18,7 @@
 #include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/hook_manager.hpp>
 #include <wiixlaunch/hook_probe.hpp>
+#include <wiixlaunch/mod_fs.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -33,9 +34,9 @@ constexpr uint16_t kVersionMajor = 1;
 // 1.1 appends HeapGranted / HeapUsed / HeapRemaining. Appending bumps the
 // MINOR, so every mod built against v1.0 still resolves - which is the whole
 // reason the version is two numbers. This is the rule's first real use.
-// 1.3 appends HookProbeClaimTag and HookProbeMark. Appending bumps the MINOR,
-// so every mod built against v1.0, v1.1 or v1.2 still resolves.
-constexpr uint16_t kVersionMinor = 3;
+// 1.4 appends ModReadFile, ModFileExists and GameReadFile. Appending bumps the
+// MINOR, so every mod built against v1.0 through v1.3 still resolves.
+constexpr uint16_t kVersionMinor = 4;
 
 // The ABI version of the .wxlm format and this whole boundary. Bumped when a
 // mod built against an older host would misbehave rather than merely miss a
@@ -149,8 +150,85 @@ extern "C" inline void CoreHookProbeMark(uint32_t tag) {
     WiiXLaunch::HookProbe::Mark(tag);
 }
 
-// Reads a whole file. Returns bytes read, or a negative value on failure.
-// `outRead` may be null.
+// --- appended in v1.4 ------------------------------------------------------
+//
+// TWO READS, and which one a mod meant is legible at the call site rather than
+// decided by a resolution order. See wiixlaunch/mod_fs.hpp for why there is no
+// single call that tries the mod directory and falls back to game content.
+
+// Negative results, distinct so a mod can tell them apart without a log.
+// Numbered from -10 to leave -1 as the existing generic read failure.
+constexpr int32_t kModReadNoModule     = -10;
+constexpr int32_t kModReadEmpty        = -11;
+constexpr int32_t kModReadAbsolute     = -12;
+constexpr int32_t kModReadParentEscape = -13;
+constexpr int32_t kModReadBadChar      = -14;
+constexpr int32_t kModReadTooLong      = -15;
+
+inline int32_t ModPathError(WiiXLaunch::ModFS::PathResult r) {
+    switch (r) {
+        case WiiXLaunch::ModFS::PathResult::NoModule:     return kModReadNoModule;
+        case WiiXLaunch::ModFS::PathResult::Empty:        return kModReadEmpty;
+        case WiiXLaunch::ModFS::PathResult::Absolute:     return kModReadAbsolute;
+        case WiiXLaunch::ModFS::PathResult::ParentEscape: return kModReadParentEscape;
+        case WiiXLaunch::ModFS::PathResult::BadChar:      return kModReadBadChar;
+        case WiiXLaunch::ModFS::PathResult::TooLong:      return kModReadTooLong;
+        case WiiXLaunch::ModFS::PathResult::Ok:           return 0;
+    }
+    return -1;
+}
+
+// This module's own directory, and nothing outside it. The identity comes from
+// the host - whichever module it is running - so a mod cannot read another
+// mod's files by naming them.
+extern "C" inline int32_t CoreModReadFile(const char* path, void* buffer,
+                                          uint32_t maxSize) {
+    char full[WiiXLaunch::ModFS::kMaxScopedPath];
+    const WiiXLaunch::ModFS::PathResult r = WiiXLaunch::ModFS::Resolve(path, full);
+    if (r != WiiXLaunch::ModFS::PathResult::Ok) {
+        WIIXL_LOG("ModFS: %s refused '%s' - %s",
+                  WiiXLaunch::ModContext::Current()
+                      ? WiiXLaunch::ModContext::Current() : "<host>",
+                  path ? path : "(null)", WiiXLaunch::ModFS::PathResultName(r));
+        return ModPathError(r);
+    }
+
+    size_t read = 0;
+    if (!WiiXLaunch::FS::ReadFile(full, buffer, maxSize, &read)) return -1;
+    return static_cast<int32_t>(read);
+}
+
+extern "C" inline uint32_t CoreModFileExists(const char* path) {
+#if WIIXL_CEMU || WIIXL_WIIU
+    char full[WiiXLaunch::ModFS::kMaxScopedPath];
+    if (WiiXLaunch::ModFS::Resolve(path, full) != WiiXLaunch::ModFS::PathResult::Ok) {
+        return 0;
+    }
+    WiiXLaunch::FS::File f;
+    if (!f.Open(full)) return 0;
+    const uint32_t size = f.Size();
+    f.Close();
+    return size ? size : 1;
+#else
+    (void)path;
+    return 0;
+#endif
+}
+
+// Game content, explicitly. Identical to ReadFile, which is retained only
+// because removing a symbol would be a major bump - this is the name to use,
+// because "GameReadFile" says at the call site what "ReadFile" left implied.
+extern "C" inline int32_t CoreGameReadFile(const char* path, void* buffer,
+                                           uint32_t maxSize) {
+    size_t read = 0;
+    if (!WiiXLaunch::FS::ReadFile(path, buffer, maxSize, &read)) return -1;
+    return static_cast<int32_t>(read);
+}
+
+// Reads a whole file from game content. Returns bytes read, or a negative value
+// on failure. `outRead` may be null.
+//
+// The v1.0 spelling of GameReadFile, kept resolvable for mods built against it.
 extern "C" inline int32_t CoreReadFile(const char* path, void* buffer, uint32_t maxSize) {
     size_t read = 0;
     if (!WiiXLaunch::FS::ReadFile(path, buffer, maxSize, &read)) return -1;
@@ -204,6 +282,10 @@ inline const Surface::Symbol kSymbols[] = {
     // v1.3. Appended, never inserted.
     WIIXL_SURFACE_SYMBOL("HookProbeClaimTag", &CoreHookProbeClaimTag),
     WIIXL_SURFACE_SYMBOL("HookProbeMark",     &CoreHookProbeMark),
+    // v1.4. Appended, never inserted.
+    WIIXL_SURFACE_SYMBOL("ModReadFile",   &CoreModReadFile),
+    WIIXL_SURFACE_SYMBOL("ModFileExists", &CoreModFileExists),
+    WIIXL_SURFACE_SYMBOL("GameReadFile",  &CoreGameReadFile),
 };
 
 } // namespace impl

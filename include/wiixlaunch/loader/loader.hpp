@@ -40,6 +40,7 @@
 #include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/hook_manager.hpp>
 #include <wiixlaunch/patches.hpp>
+#include <wiixlaunch/mod_fs.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -378,6 +379,16 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
                   "something this host does not implement yet. Refusing rather than "
                   "loading it partially.", id, RejectName(Reject::ReservedNotZero));
         return Reject::ReservedNotZero;
+    }
+
+    // The '_' id space belongs to the host - WiiXLaunch/mods/_host/ holds the
+    // host's own resources, and a module claiming an id there could read or
+    // shadow them. Reserving the whole PREFIX rather than one name means a
+    // future reserved id needs no new check here.
+    if (ModFS::IsReservedId(id)) {
+        WIIXL_LOG("[loader:%s] %s: ids beginning with '%c' are reserved for the host",
+                  id, RejectName(Reject::ReservedModId), ModFS::kReservedPrefix);
+        return Reject::ReservedModId;
     }
 
     // Structure. Every section must lie inside the file.
@@ -890,9 +901,9 @@ inline void RunPhase(Wxlm::Phase phase) {
         // its arena, hooks to its mod id. Both are cleared afterwards so the
         // next module cannot inherit either.
         Arena::SetCurrent(m.arena);
-        Hooks::SetCurrentOwner(m.id);
+        ModContext::SetCurrent(m.id);
         entry();
-        Hooks::SetCurrentOwner(nullptr);
+        ModContext::SetCurrent(nullptr);
         Arena::SetCurrent(nullptr);
 
         WIIXL_LOG("[loader:%s] entry returned, %u of %u arena bytes used",

@@ -113,7 +113,11 @@ extern "C" void WiiXLaunch_Init() {
     GX2::Init();
     GX2::RegisterDrawCallback(OnRender);
     GX2::OnInitialized([]() {
-        g_LogoTexture = GX2::LoadTexture("WiiXLaunch/logo.bin");
+        // Under the reserved host id, like every other module's resources. The
+        // host is not an exception to its own namespacing scheme - an exception
+        // is how someone later decides the scheme is optional. See
+        // wiixlaunch/mod_fs.hpp; a mod cannot claim an id starting with '_'.
+        g_LogoTexture = GX2::LoadTexture("WiiXLaunch/mods/_host/logo.bin");
     });
 // Would probably work on WUH, but I really can't be bothered unless someone finds a use for it. All you probably have to do is give it a proper texture path.
 // #elif WIIXL_WIIU

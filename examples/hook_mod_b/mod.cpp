@@ -39,6 +39,13 @@ extern "C" {
     // See wiixlaunch/hook_probe.hpp.
     extern uint32_t  wiixl_import__wiixl_core__HookProbeClaimTag(uint32_t tag);
     extern void      wiixl_import__wiixl_core__HookProbeMark(uint32_t tag);
+    // v1.4. THIS module's directory and nothing outside it. There is a separate
+    // GameReadFile for game content - two calls rather than one that falls back,
+    // so which was meant is legible here rather than decided by resolution
+    // order. See wiixlaunch/mod_fs.hpp.
+    extern int32_t   wiixl_import__wiixl_core__ModReadFile(const char* path,
+                                                           void* buffer,
+                                                           uint32_t maxSize);
 }
 
 using LogFn    = void (*)(const char*);
@@ -47,6 +54,7 @@ using TargetFn = uintptr_t (*)(void);
 using VoidFn   = void (*)(void);
 using ClaimFn  = uint32_t (*)(uint32_t);
 using MarkFn   = void (*)(uint32_t);
+using ReadFn   = int32_t (*)(const char*, void*, uint32_t);
 
 // This module's marker. Self-chosen, but worthless on its own: the host refuses
 // a tag another module already claimed, and records the binding itself, so the
@@ -58,11 +66,19 @@ static HookFn   volatile g_Hook   = &wiixl_import__wiixl_core__InstallHook;
 static TargetFn volatile g_Target = &wiixl_import__wiixl_core__HookProbeTarget;
 static ClaimFn  volatile g_Claim = &wiixl_import__wiixl_core__HookProbeClaimTag;
 static MarkFn   volatile g_Mark  = &wiixl_import__wiixl_core__HookProbeMark;
+static ReadFn   volatile g_Read  = &wiixl_import__wiixl_core__ModReadFile;
 
 // The next link in the chain. Written by the host at install time, so volatile
 // for the same reason the imports are - and read back through the pointer
 // rather than through whatever the compiler thinks it knows.
 static VoidFn volatile g_Original = nullptr;
+
+// wiixl.core's Log is not varargs on purpose, so a module that wants to put a
+// value in a line builds the line itself. No libc here.
+static char* AppendText(char* out, char* end, const char* text) {
+    while (text && *text && out < end - 1) *out++ = *text++;
+    return out;
+}
 
 extern "C" __attribute__((used)) void WiiXLaunch_ModHook() {
     LogFn log = g_Log;
@@ -108,6 +124,39 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
     if (!target) {
         log("b_second: no hook probe target on this host - not hooking");
         return;
+    }
+
+    // --- this module's own directory ---------------------------------------
+    //
+    // Both demonstration mods ship a file called greeting.txt. Before
+    // namespacing that was a collision decided by whichever resolved first;
+    // now they are two different files and neither mod had to know the other
+    // existed. The host decides which directory this reads from, from the
+    // module it is running - so this cannot read a_first's copy by asking nicely.
+    ReadFn read = g_Read;
+    if (read) {
+        char buf[64];
+        const int32_t n = read("greeting.txt", buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = 0;
+            char line[128];
+            char* o = AppendText(line, line + sizeof(line), "b_second: my greeting.txt says: ");
+            o = AppendText(o, line + sizeof(line), buf);
+            *o = 0;
+            log(line);
+        } else {
+            log("b_second: could not read my own greeting.txt");
+        }
+
+        // And the containment, demonstrated rather than asserted in a comment.
+        // A negative result is a NAMED refusal - see the kModRead* constants in
+        // wiixl.core - not a generic failure.
+        const int32_t esc = read("../a_first/greeting.txt", buf, sizeof(buf) - 1);
+        if (esc < 0) {
+            log("b_second: reading ../a_first/greeting.txt was refused, as it should be");
+        } else {
+            log("b_second: ESCAPED ITS OWN DIRECTORY - containment is broken");
+        }
     }
 
     const uintptr_t original =

@@ -36,6 +36,7 @@
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/surface.hpp>
 #include <wiixlaunch/loader/arena.hpp>
+#include <wiixlaunch/mod_fs.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -473,6 +474,109 @@ static void TestPathCandidates() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mod-scoped path resolution.
+//
+// A mod reads its own directory through a call that CANNOT leave it. What
+// "cannot" means is checked here rather than trusted: every refusal is a value,
+// so a test can assert which rule fired, and the positive controls are here
+// too - a scoping check that refuses everything would satisfy every escape
+// assertion and be useless.
+// ---------------------------------------------------------------------------
+static void TestModPaths() {
+    namespace MF = WiiXLaunch::ModFS;
+    std::printf("=== mod-scoped paths ===\n");
+
+    int checks = 0, bad = 0;
+    auto expect = [&](const char* what, bool cond) {
+        ++checks;
+        if (!cond) { ++bad; std::printf("  FAIL  %s\n", what); }
+    };
+    auto reason = [&](const char* path, MF::PathResult want) {
+        ++checks;
+        const MF::PathResult got = MF::CheckScoped(path);
+        if (got != want) {
+            ++bad;
+            std::printf("  FAIL  '%s' gave %s, expected %s\n", path,
+                        MF::PathResultName(got), MF::PathResultName(want));
+        }
+    };
+
+    // Outside a module there is no "own" directory, and that is its own reason
+    // rather than a path problem.
+    WiiXLaunch::ModContext::SetCurrent(nullptr);
+    char out[MF::kMaxScopedPath];
+    expect("outside a module, Resolve says NO-MODULE",
+           MF::Resolve("a.txt", out) == MF::PathResult::NoModule);
+
+    WiiXLaunch::ModContext::SetCurrent("a_first");
+
+    // --- refusals, each by its own name ------------------------------------
+    reason("/vol/content/Pack/Bootup.pack", MF::PathResult::Absolute);
+    reason("/etc/passwd",                   MF::PathResult::Absolute);
+    reason("..",                            MF::PathResult::ParentEscape);
+    reason("../b_second/greeting.txt",      MF::PathResult::ParentEscape);
+    reason("data/../../escape.txt",         MF::PathResult::ParentEscape);
+    reason("data/..",                       MF::PathResult::ParentEscape);
+    reason("a\\b.txt",                      MF::PathResult::BadChar);
+    reason("a\tb.txt",                      MF::PathResult::BadChar);
+    reason("",                              MF::PathResult::Empty);
+
+    // --- and the positive controls -----------------------------------------
+    //
+    // Without these the whole section passes if CheckScoped refuses everything.
+    reason("greeting.txt",                  MF::PathResult::Ok);
+    reason("data/greeting.txt",             MF::PathResult::Ok);
+    reason("deep/nested/path/file.bin",     MF::PathResult::Ok);
+
+    // A ".." that is not a path COMPONENT is an ordinary filename. Refusing
+    // these would make perfectly legal names unreadable and buy nothing.
+    reason("version..txt",                  MF::PathResult::Ok);
+    reason("..hidden",                      MF::PathResult::Ok);
+    reason("a..b/c",                        MF::PathResult::Ok);
+
+    // --- what a resolved path actually is -----------------------------------
+    expect("a legal path resolves",
+           MF::Resolve("greeting.txt", out) == MF::PathResult::Ok);
+    expect("and lands under this module's own directory",
+           std::strcmp(out, "WiiXLaunch/mods/a_first/greeting.txt") == 0);
+    if (std::strcmp(out, "WiiXLaunch/mods/a_first/greeting.txt") != 0) {
+        std::printf("        resolved to '%s'\n", out);
+    }
+
+    // THE POINT OF THE WHOLE SCHEME: the same filename in two mods is two
+    // different files, decided by the host's idea of who is running rather than
+    // by anything either mod said.
+    WiiXLaunch::ModContext::SetCurrent("b_second");
+    char other[MF::kMaxScopedPath];
+    MF::Resolve("greeting.txt", other);
+    expect("the same name under another module resolves elsewhere",
+           std::strcmp(other, "WiiXLaunch/mods/b_second/greeting.txt") == 0);
+    expect("and the two do not collide", std::strcmp(out, other) != 0);
+
+    // A refused path must leave nothing usable behind.
+    WiiXLaunch::ModContext::SetCurrent("a_first");
+    char scratch[MF::kMaxScopedPath];
+    scratch[0] = 'x';
+    MF::Resolve("../escape", scratch);
+    expect("a refused Resolve leaves an empty result", scratch[0] == '\0');
+
+    // --- the reserved namespace ---------------------------------------------
+    expect("_host is reserved", MF::IsReservedId("_host"));
+    expect("any leading underscore is reserved", MF::IsReservedId("_anything"));
+    expect("an ordinary id is not", !MF::IsReservedId("a_first"));
+    expect("an underscore elsewhere is not", !MF::IsReservedId("a_first_x"));
+
+    WiiXLaunch::ModContext::SetCurrent(nullptr);
+
+    g_Failures += bad;
+    std::printf("  %d mod-path checks, %d failures\n", checks, bad);
+    if (checks < 25) {
+        std::printf("  FAIL  mod-path suite shrank to %d checks\n", checks);
+        ++g_Failures;
+    }
+}
+
 int main() {
     // Unbuffered, because this binary can crash. With block-buffered stdout a
     // segfault discards everything printed so far, so a crash looks like a
@@ -487,6 +591,7 @@ int main() {
     const Baseline base = MakeBaseline();
 
     TestPathCandidates();
+    TestModPaths();
 
     std::printf("=== baseline ===\n");
     ExpectAccepted("valid module loads", base.bytes);
@@ -747,7 +852,16 @@ int main() {
     //
     // RequiredSurface is { nameOffset:4, versionMajor:2, versionMinor:2 }, so
     // the version fields sit at +4 and +6.
-    std::printf("=== surface version refusal (host has wiixl.core v1.3) ===\n");
+    // DERIVED FROM THE HOST, not hardcoded. These cases were pinned to v1.3 and
+    // broke the moment wiixl.core went to v1.4 - "requires v1.4" stopped being
+    // too new and started being exactly met. A test that has to be edited every
+    // time the thing it tests is bumped will eventually be edited wrongly, and
+    // in the meantime it fails for a reason that has nothing to do with the
+    // property under test.
+    const uint16_t hostMajor = WiiXLaunch::Core::kVersionMajor;
+    const uint16_t hostMinor = WiiXLaunch::Core::kVersionMinor;
+    std::printf("=== surface version refusal (host has wiixl.core v%u.%u) ===\n",
+                hostMajor, hostMinor);
     {
         const uint32_t majorAt = base.requiredOffset + 4;
         const uint32_t minorAt = base.requiredOffset + 6;
@@ -757,8 +871,8 @@ int main() {
             // minor-at-least rule refuses it: the host cannot supply what it
             // does not have.
             auto v = base.bytes;
-            Put16(v, minorAt, 4);
-            Case("requires v1.4, host has v1.3 - too new", v, Reject::MissingSurface);
+            Put16(v, minorAt, static_cast<uint16_t>(hostMinor + 1));
+            Case("requires one minor past the host - too new", v, Reject::MissingSurface);
         }
         {
             // A major bump means a symbol changed or was removed, so a mod
@@ -766,9 +880,9 @@ int main() {
             // must be refused even though the host's major is LOWER, because
             // incompatible is not the same as older.
             auto v = base.bytes;
-            Put16(v, majorAt, 2);
+            Put16(v, majorAt, static_cast<uint16_t>(hostMajor + 1));
             Put16(v, minorAt, 0);
-            Case("requires v2.0, host has v1.x - incompatible major", v,
+            Case("requires one major above the host - incompatible", v,
                  Reject::MissingSurface);
         }
         {
@@ -795,15 +909,15 @@ int main() {
         // --- and the accept side, so this is not a check that refuses all ---
         {
             auto v = base.bytes;
-            Put16(v, minorAt, 3);
+            Put16(v, minorAt, hostMinor);
             Recrc(v);
-            ExpectAccepted("requires v1.3 exactly - met", v);
+            ExpectAccepted("requires the host's exact minor - met", v);
         }
         {
             auto v = base.bytes;
-            Put16(v, minorAt, 2);
+            Put16(v, minorAt, static_cast<uint16_t>(hostMinor - 1));
             Recrc(v);
-            ExpectAccepted("requires v1.2, host has v1.3 - minor-at-least", v);
+            ExpectAccepted("requires one minor below the host - minor-at-least", v);
         }
 
         // --- and the REASON, not just the refusal ---------------------------
@@ -816,13 +930,20 @@ int main() {
         namespace S = WiiXLaunch::Surface;
         struct { const char* what; const char* name; uint16_t maj, min; S::Compat want; }
         compat[] = {
-            { "v1.3 exactly",              "wiixl.core", 1, 3, S::Compat::Ok            },
-            { "v1.0 - older minor",        "wiixl.core", 1, 0, S::Compat::Ok            },
-            { "v1.4 - host predates it",   "wiixl.core", 1, 4, S::Compat::MinorTooOld   },
-            { "v1.9 - further ahead",      "wiixl.core", 1, 9, S::Compat::MinorTooOld   },
-            { "v2.0 - major above",        "wiixl.core", 2, 0, S::Compat::MajorMismatch },
-            { "v0.9 - major below",        "wiixl.core", 0, 9, S::Compat::MajorMismatch },
-            { "unregistered surface",      "nope.nope",  1, 0, S::Compat::NotPresent    },
+            { "the host's exact version",  "wiixl.core", hostMajor, hostMinor,
+              S::Compat::Ok },
+            { "minor 0 - oldest possible", "wiixl.core", hostMajor, 0,
+              S::Compat::Ok },
+            { "one minor past the host",   "wiixl.core", hostMajor,
+              (uint16_t)(hostMinor + 1), S::Compat::MinorTooOld },
+            { "far past the host",         "wiixl.core", hostMajor,
+              (uint16_t)(hostMinor + 90), S::Compat::MinorTooOld },
+            { "one major above",           "wiixl.core", (uint16_t)(hostMajor + 1), 0,
+              S::Compat::MajorMismatch },
+            { "one major below",           "wiixl.core", (uint16_t)(hostMajor - 1), 9,
+              S::Compat::MajorMismatch },
+            { "unregistered surface",      "nope.nope",  1, 0,
+              S::Compat::NotPresent },
         };
         int compatChecked = 0, compatBad = 0;
         for (const auto& c : compat) {

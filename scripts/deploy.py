@@ -603,16 +603,64 @@ version = 7
             src = os.path.join(build_dir, name)
             shutil.copy2(src, os.path.join(probe_dir, name))
             print(f"[Cemu]   {i}. {name} ({os.path.getsize(src)} bytes)")
+
+        # --- per-module resource directories --------------------------------
+        #
+        # Each module gets mods/<id>/, so two mods shipping a file of the same
+        # name are shipping two different files. Before this it was a collision
+        # resolved by whichever the filesystem answered first - silent and
+        # order-dependent, which is the class of ambiguity this project keeps
+        # removing.
+        #
+        # build_cemu stages each module's data under build/moddata/<id>/,
+        # because the id-to-source-directory mapping already lives there and
+        # duplicating it here would be a second place to get it wrong.
+        moddata = os.path.join(build_dir, "moddata")
+        if os.path.isdir(moddata):
+            for mod_id in sorted(os.listdir(moddata)):
+                src_dir = os.path.join(moddata, mod_id)
+                if not os.path.isdir(src_dir):
+                    continue
+                dst_dir = os.path.join(probe_dir, mod_id)
+                if os.path.isdir(dst_dir):
+                    shutil.rmtree(dst_dir)
+                shutil.copytree(src_dir, dst_dir)
+                files = sum(len(f) for _r, _d, f in os.walk(dst_dir))
+                print(f"[Cemu]   resources -> content/WiiXLaunch/mods/{mod_id}/ "
+                      f"({files} file(s))")
     else:
         print("[Cemu] No .wxlm in build/ - the pack ships no module, and the loader "
               "will log that it found nothing to load")
 
     # Package src/resources into content/WiiXLaunch/ for Cemu graphic pack
     resources_src = os.path.join(root_dir, "src", "resources")
-    resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")
+    # The host's own resources go under the RESERVED id, not beside the mods
+    # directory. WiiXLaunch/logo.bin was the one thing exempt from the scheme,
+    # and an exception is how someone later concludes the scheme is optional.
+    #
+    # "_host" is reserved by prefix: the loader refuses any module id beginning
+    # with '_', so a mod cannot claim this directory or shadow what is in it.
+    # See ModFS::kHostId.
+    resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch",
+                                 "mods", "_host")
     if os.path.exists(resources_src):
         pack_script = os.path.join(root_dir, "scripts", "pack_resources.py")
         subprocess.run([sys.executable, pack_script, resources_src, resources_dst], check=True)
+
+        # Host resources used to be written to content/WiiXLaunch/ directly.
+        # A pack built before they moved still has them there, and a leftover
+        # copy makes the namespacing scheme LOOK like it still has an exception
+        # - which is exactly the conclusion the move was meant to prevent.
+        #
+        # Only files that now exist under _host are removed, so this can never
+        # delete something that merely happens to live in content/WiiXLaunch.
+        legacy_dir = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")
+        for name in sorted(os.listdir(resources_dst)):
+            stale = os.path.join(legacy_dir, name)
+            if os.path.isfile(stale):
+                os.remove(stale)
+                print(f"[Cemu] Removed {name} from the pre-namespacing location; "
+                      f"it lives under mods/_host/ now")
 
     # Enforce the canonical capitalisation on the tree that actually ships.
     #

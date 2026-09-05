@@ -60,6 +60,7 @@
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
+#include <wiixlaunch/mod_context.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -226,9 +227,16 @@ inline Site* FindSite(uintptr_t target) {
 // no place to carry an identity, and a hook that ends up attributed to the
 // wrong mod makes the conflict report worse than useless. Null means "not
 // inside a module", and the caller's own WIIXL_HOOK_OWNER is used.
-namespace impl { inline const char* g_CurrentOwner = nullptr; }
-inline void SetCurrentOwner(const char* id) { impl::g_CurrentOwner = id; }
-inline const char* CurrentOwner() { return impl::g_CurrentOwner; }
+// DELEGATED, not owned. "Which module is the host running" is one question
+// that hooks, patches and the mod-scoped filesystem all ask, so it lives in
+// wiixlaunch/mod_context.hpp rather than here. It used to live here, which was
+// accurate while hooks were the only asker and became a small lie the moment
+// anything else needed it - a file read has no owner, it has a caller.
+//
+// These two keep their names because callers and tests use them, and because
+// "owner" is still the right word for a hook.
+inline void SetCurrentOwner(const char* id) { ModContext::SetCurrent(id); }
+inline const char* CurrentOwner() { return ModContext::Current(); }
 
 // Forgets every site and link. For a host test that runs many scenarios;
 // nothing in a real host calls it, because a hook is never uninstalled.

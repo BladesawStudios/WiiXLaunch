@@ -9,6 +9,10 @@ python scripts\generate_config.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 if not exist build mkdir build
+:: Module resources are staged fresh every build; a directory left from a
+:: module that has been renamed or removed would otherwise be deployed
+:: forever and silently join the mods directory.
+if exist build\moddata rmdir /s /q build\moddata
 
 :: Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
 :: base WiiXLaunch, picked up automatically if this mod added one as a
@@ -208,6 +212,18 @@ exit /b 0
   -o build\%1.elf
 if %ERRORLEVEL% NEQ 0 exit /b 1
 python scripts\wxlm.py build\%1.elf build\%1.wxlm --id %1 --phase load
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: Stage this module's resources under its ID. deploy.py copies
+:: build/moddata/<id>/ into content/WiiXLaunch/mods/<id>/ - the mapping
+:: from id to source directory lives HERE, where the two are already
+:: named together, rather than being duplicated in the deploy script.
+if exist "examples\%2\data" (
+    if not exist build\moddata mkdir build\moddata
+    if exist build\moddata\%1 rmdir /s /q build\moddata\%1
+    xcopy /e /i /q "examples\%2\data" "build\moddata\%1" >nul
+    if %ERRORLEVEL% NEQ 0 exit /b 1
+)
 if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0
 
