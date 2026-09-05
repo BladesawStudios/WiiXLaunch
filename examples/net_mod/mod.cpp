@@ -32,6 +32,11 @@ extern "C" {
     extern uint32_t wiixl_import__wiixl_net__Listen(uint32_t handle, uint32_t backlog);
     extern uint32_t wiixl_import__wiixl_net__Accept(uint32_t listener, uint32_t* outHandle);
     extern int32_t  wiixl_import__wiixl_net__Send(uint32_t handle, const void* buf, uint32_t len);
+    extern int32_t  wiixl_import__wiixl_net__Recv(uint32_t handle, void* buf, uint32_t maxSize);
+    // v1.1. Half-close. Sending a reply and closing while the request is still
+    // unread makes TCP send an RST instead of a FIN, and the client loses the
+    // reply - see the state machine below.
+    extern uint32_t wiixl_import__wiixl_net__Shutdown(uint32_t handle, uint32_t how);
     extern uint32_t wiixl_import__wiixl_net__Close(uint32_t handle);
     extern uint32_t wiixl_import__wiixl_net__LocalIp(uint32_t handle);
     extern uint32_t wiixl_import__wiixl_net__Held(void);
@@ -49,6 +54,7 @@ using HandleFn  = uint32_t (*)(uint32_t);
 using BindFn    = uint32_t (*)(uint32_t, uint32_t);
 using AcceptFn  = uint32_t (*)(uint32_t, uint32_t*);
 using SendFn    = int32_t  (*)(uint32_t, const void*, uint32_t);
+using RecvFn    = int32_t  (*)(uint32_t, void*, uint32_t);
 using NameFn    = const char* (*)(uint32_t);
 
 static LogFn     volatile g_Log       = &wiixl_import__wiixl_core__Log;
@@ -61,6 +67,8 @@ static BindFn    volatile g_Bind      = &wiixl_import__wiixl_net__Bind;
 static BindFn    volatile g_Listen    = &wiixl_import__wiixl_net__Listen;
 static AcceptFn  volatile g_Accept    = &wiixl_import__wiixl_net__Accept;
 static SendFn    volatile g_Send      = &wiixl_import__wiixl_net__Send;
+static RecvFn    volatile g_Recv      = &wiixl_import__wiixl_net__Recv;
+static BindFn    volatile g_Shutdown  = &wiixl_import__wiixl_net__Shutdown;
 static HandleFn  volatile g_Close     = &wiixl_import__wiixl_net__Close;
 static HandleFn  volatile g_LocalIp   = &wiixl_import__wiixl_net__LocalIp;
 static U32Fn     volatile g_Held      = &wiixl_import__wiixl_net__Held;
@@ -84,6 +92,30 @@ static const uint32_t kResultOk = 0;
 // fold state it can see only this file writing.
 static volatile uint32_t g_Listener;
 static volatile uint32_t g_Served;
+
+// --- one connection at a time, carried ACROSS TICKS -------------------------
+//
+// The first working boot of this mod served three requests and curl got
+// "connection reset by peer" every time. Accept, send, close in a single tick
+// looks right and is not:
+//
+//   - the client has usually not even SENT its request when accept() returns,
+//     so closing immediately meets the request with a closed socket, and
+//   - closing a socket with unread bytes still in its receive buffer makes TCP
+//     send an RST rather than a FIN, which tells the client to DISCARD anything
+//     it has not read yet - including the reply.
+//
+// So a connection lives across ticks: read until the request's headers are
+// complete, then reply, then half-close, then close. That is the minimum an
+// HTTP server can do and still be one.
+constexpr uint32_t kNoConn = 0;
+constexpr uint32_t kMaxConnTicks = 600;   // ~10s at 60fps, then give up
+
+static volatile uint32_t g_Conn;          // handle, or kNoConn
+static volatile uint32_t g_ConnTicks;
+static volatile uint32_t g_ConnSent;      // bytes of the reply written so far
+static volatile uint32_t g_ConnGotRequest;
+static volatile uint32_t g_Match;         // how much of "\r\n\r\n" we have seen
 
 // No libc here, so this module builds its own strings.
 static char* AppendText(char* out, char* end, const char* text) {
@@ -132,35 +164,106 @@ static const char kReply[] =
     "\r\n"
     "d_net.wxlm answering from wiixl.net";
 
+// Closes the current connection politely: half-close first so the reply is not
+// discarded, then release the socket back to the host.
+static void FinishConn() {
+    const uint32_t conn = g_Conn;
+    if (conn == kNoConn) return;
+
+    BindFn shutdown = g_Shutdown;
+    HandleFn close = g_Close;
+    if (shutdown) shutdown(conn, 1);   // 1 = stop sending; FIN, not RST
+    if (close) close(conn);
+
+    g_Conn = kNoConn;
+    g_ConnTicks = 0;
+    g_ConnSent = 0;
+    g_ConnGotRequest = 0;
+    g_Match = 0;
+}
+
 extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
     const uint32_t listener = g_Listener;
     if (!listener) return;
 
     AcceptFn accept = g_Accept;
     SendFn send = g_Send;
-    HandleFn close = g_Close;
-    if (!accept || !send || !close) return;
+    RecvFn recv = g_Recv;
+    if (!accept || !send || !recv) return;
 
+    // --- take a connection if we are free ----------------------------------
+    //
     // Non-blocking, so "nothing pending" is the ordinary answer every frame and
-    // costs one syscall. Anything that can block here can freeze the game.
-    uint32_t conn = 0;
-    if (accept(listener, &conn) != kResultOk) return;
+    // costs one call. Anything that can block here can freeze the game.
+    if (g_Conn == kNoConn) {
+        uint32_t conn = 0;
+        if (accept(listener, &conn) != kResultOk) return;
+        g_Conn = conn;
+        g_ConnTicks = 0;
+        g_ConnSent = 0;
+        g_ConnGotRequest = 0;
+        g_Match = 0;
+        return;   // the client has not sent anything yet; read next frame
+    }
 
-    // One request, one canned reply, one close. A real server belongs in a mod
-    // of its own; what this proves is that the surface carries a connection end
-    // to end and that the socket is given back.
-    send(conn, kReply, sizeof(kReply) - 1);
-    close(conn);
+    const uint32_t conn = g_Conn;
 
-    const uint32_t n = g_Served + 1;
-    g_Served = n;
+    // A client that connects and says nothing must not hold the only slot for
+    // the rest of the session.
+    g_ConnTicks = g_ConnTicks + 1;
+    if (g_ConnTicks > kMaxConnTicks) {
+        FinishConn();
+        return;
+    }
+
+    // --- drain the request --------------------------------------------------
+    //
+    // This is the part whose absence caused the reset. The bytes are not needed
+    // - the reply is the same either way - but they have to be TAKEN, or the
+    // close below turns into an RST and the client discards the reply.
+    if (!g_ConnGotRequest) {
+        char in[128];
+        const int32_t n = recv(conn, in, sizeof(in));
+        if (n == 0) { FinishConn(); return; }        // peer went away
+        if (n > 0) {
+            // Look for the blank line ending the headers, across reads.
+            uint32_t m = g_Match;
+            for (int32_t i = 0; i < n; ++i) {
+                const char c = in[i];
+                if ((m == 0 || m == 2) && c == '\r') ++m;
+                else if ((m == 1 || m == 3) && c == '\n') ++m;
+                else m = (c == '\r') ? 1u : 0u;
+                if (m == 4) break;
+            }
+            g_Match = m;
+            if (m == 4) g_ConnGotRequest = 1;
+        }
+        // n < 0 is "nothing yet" - try again next frame.
+        if (!g_ConnGotRequest) return;
+    }
+
+    // --- write the reply, across as many ticks as it takes ------------------
+    const uint32_t total = sizeof(kReply) - 1;
+    uint32_t sent = g_ConnSent;
+    if (sent < total) {
+        const int32_t n = send(conn, kReply + sent, total - sent);
+        if (n < 0) return;                            // would block; next frame
+        sent += static_cast<uint32_t>(n);
+        g_ConnSent = sent;
+        if (sent < total) return;
+    }
+
+    FinishConn();
+
+    const uint32_t served = g_Served + 1;
+    g_Served = served;
 
     LogFn log = g_Log;
-    if (log && n <= 3) {
+    if (log && served <= 3) {
         char line[96];
         char* o = AppendText(line, line + sizeof(line), "d_net: served request ");
-        o = AppendU32(o, line + sizeof(line), n);
-        if (n == 3) o = AppendText(o, line + sizeof(line), " (quiet from here)");
+        o = AppendU32(o, line + sizeof(line), served);
+        if (served == 3) o = AppendText(o, line + sizeof(line), " (quiet from here)");
         *o = 0;
         log(line);
     }
@@ -235,12 +338,26 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
     // The address you actually have to type. The console does not tell you.
     HandleFn localIp = g_LocalIp;
     if (localIp) {
-        char line[96];
-        char* o = AppendText(line, line + sizeof(line), "d_net: listening on http://");
-        o = AppendIp(o, line + sizeof(line), localIp(listener));
-        o = AppendText(o, line + sizeof(line), ":");
-        o = AppendU32(o, line + sizeof(line), port);
-        o = AppendText(o, line + sizeof(line), "/");
+        // A socket bound to INADDR_ANY has no single local address, and under
+        // Cemu SO_MYADDR comes back 0. Printing "http://0.0.0.0:8099/" as if it
+        // were an address to type is a URL that cannot work - so when there is
+        // no address to give, say what is actually true instead.
+        const uint32_t ip = localIp(listener);
+        char line[128];
+        char* o = AppendText(line, line + sizeof(line), "d_net: listening on ");
+        if (ip) {
+            o = AppendText(o, line + sizeof(line), "http://");
+            o = AppendIp(o, line + sizeof(line), ip);
+            o = AppendText(o, line + sizeof(line), ":");
+            o = AppendU32(o, line + sizeof(line), port);
+            o = AppendText(o, line + sizeof(line), "/");
+        } else {
+            o = AppendText(o, line + sizeof(line), "port ");
+            o = AppendU32(o, line + sizeof(line), port);
+            o = AppendText(o, line + sizeof(line),
+                           ", all interfaces (no local address to report - "
+                           "curl localhost on the machine running this)");
+        }
         *o = 0;
         log(line);
     }

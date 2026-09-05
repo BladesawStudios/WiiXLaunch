@@ -165,6 +165,35 @@ Wii U hardware is unaffected either way: the Aroma plugin is a real module with
 its own import table, so ordinary linking applies and none of this is needed
 there.
 
+## Closing a connection without losing the reply
+
+A server that accepts, sends and closes in one go looks correct and is not.
+Two separate things go wrong, and the first working boot of the `d_net` sample
+hit both at once — three requests served, `curl` reporting **connection reset by
+peer** for every one of them.
+
+1. **The client has usually not sent anything yet when `accept` returns.**
+   Closing immediately meets the request with a closed socket.
+2. **Closing a socket with unread bytes in its receive buffer sends an RST, not
+   a FIN.** An RST tells the client to *discard whatever it has not read* —
+   including the reply that was already on the wire.
+
+So the minimum an HTTP server can do and still be one:
+
+```
+accept                    -> keep the connection, return
+recv until CRLF CRLF     -> the bytes are not needed, but they must be TAKEN
+send the reply            -> across as many ticks as it takes; a partial write is normal
+Shutdown(handle, 1)       -> "I am done sending": FIN, not RST
+Close(handle)
+```
+
+`Shutdown` is `wiixl.net` v1.1. Directions are 0 read, 1 write, 2 both.
+
+A connection must also carry a **deadline**: a client that connects and says
+nothing would otherwise hold a slot for the rest of the session, and that is a
+leak with a well-behaved-looking cause.
+
 ## Testing it
 
 `tools/net_test` cannot open a socket, and that is not what needs testing. It

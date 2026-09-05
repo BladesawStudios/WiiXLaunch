@@ -437,6 +437,23 @@ inline int32_t Send(Handle h, const void* buffer, uint32_t size) {
     return static_cast<int32_t>(n);
 }
 
+// Half-close, so a reply is not thrown away by the close that follows it.
+//
+// A server that sends and immediately closes, while the client's request is
+// still sitting unread in the receive buffer, gets an RST rather than a FIN -
+// and the client loses the reply. That is not a hypothetical: it is exactly
+// what the d_net sample did on its first working boot. Requests were served,
+// the log said so, and curl reported "connection reset by peer" every time.
+inline Result Shutdown(Handle h, uint32_t how) {
+    if (how > static_cast<uint32_t>(Transport::kShutReadWrite)) return Result::BadArgument;
+
+    Slot* s = nullptr;
+    const Result r = Resolve(h, &s);
+    if (r != Result::Ok) return r;
+    return Transport::Shutdown(s->fd, static_cast<int32_t>(how))
+               ? Result::Ok : Result::PlatformError;
+}
+
 inline uint32_t LocalIp(Handle h) {
     Slot* s = nullptr;
     if (Resolve(h, &s) != Result::Ok) return 0;

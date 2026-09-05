@@ -77,6 +77,7 @@ struct FakeSocket {
     uint32_t bytesSent;      // what THIS descriptor received from Send
     uint32_t bytesRecvd;
     char     lastSent[64];
+    int32_t  shutdownHow;    // -1 until shutdown() was called on this descriptor
 };
 
 static FakeSocket g_Fake[kFakeFds];
@@ -92,6 +93,7 @@ static int  g_FakeLastError = 0;      // what the platform would say went wrong
 static void FakeReset() {
     for (int i = 0; i < kFakeFds; ++i) {
         g_Fake[i] = FakeSocket{};
+        g_Fake[i].shutdownHow = -1;
     }
     g_FakeAvailable = true;
     g_FakeOpenFails = false;
@@ -112,6 +114,7 @@ static int FakeOpen() {
     for (int i = 3; i < kFakeFds; ++i) {          // 0-2 reserved, like a real OS
         if (!g_Fake[i].open) {
             g_Fake[i] = FakeSocket{};
+            g_Fake[i].shutdownHow = -1;
             g_Fake[i].open = true;
             return i;
         }
@@ -185,6 +188,12 @@ static void FakeClose(int fd) {
 
 static int32_t FakeLastError() { return g_FakeLastError; }
 
+static bool FakeShutdown(int fd, int32_t how) {
+    if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open) return false;
+    g_Fake[fd].shutdownHow = how;
+    return true;
+}
+
 static uint32_t FakeLocalIp(int fd) {
     if (fd < 0 || fd >= kFakeFds || !g_Fake[fd].open) return 0;
     return 0xC0A80164u;   // 192.168.1.100
@@ -193,7 +202,7 @@ static uint32_t FakeLocalIp(int fd) {
 static const T::HostOps kFakeOps = {
     &FakeInit, &FakeOpen, &FakeSetOptInt, &FakeBind, &FakeListen,
     &FakeAccept, &FakeRecv, &FakeSend, &FakeClose, &FakeLocalIp, &FakeAvailable,
-    &FakeLastError,
+    &FakeLastError, &FakeShutdown,
 };
 
 // Fresh table AND fresh fake, so no case can pass on state another left behind.
@@ -578,6 +587,42 @@ int main() {
     EndSection(5);
 
     // -----------------------------------------------------------------------
+    // A reply that never arrives. Send-then-Close with the peer's request still
+    // unread makes TCP answer with an RST, and the client discards the reply it
+    // was about to read - which is exactly what the d_net sample did on its
+    // first working boot: three requests served, and curl reporting
+    // "connection reset by peer" for every one of them.
+    BeginSection("half-close");
+    {
+        FreshWorld();
+        MC::SetCurrent("modA");
+
+        N::Handle h = 0;
+        ok("a socket opens", N::Open(&h) == N::Result::Ok);
+        const int fd = FdOf(h);
+
+        ok("nothing has been shut down yet", g_Fake[fd].shutdownHow == -1);
+        ok("shutting down the write side succeeds",
+           N::Shutdown(h, 1) == N::Result::Ok);
+
+        // The invisible half: the call has to have REACHED the transport with
+        // the direction the caller asked for. "It returned Ok" would pass on an
+        // implementation that did nothing at all.
+        ok("and the transport was told to stop sending", g_Fake[fd].shutdownHow == 1);
+
+        ok("an out-of-range direction is refused",
+           N::Shutdown(h, 7) == N::Result::BadArgument);
+        ok("and did not reach the transport", g_Fake[fd].shutdownHow == 1);
+
+        N::Close(h);
+        ok("a stale handle cannot be shut down",
+           N::Shutdown(h, 1) == N::Result::StaleHandle);
+
+        MC::SetCurrent(nullptr);
+    }
+    EndSection(7);
+
+    // -----------------------------------------------------------------------
     BeginSection("byte accounting");
     {
         FreshWorld();
@@ -645,7 +690,7 @@ int main() {
 
     // A floor, so a build that compiled away half the file cannot report
     // success. Raise it deliberately when checks are added.
-    static const int kExpectedChecks = 86;
+    static const int kExpectedChecks = 93;
     if (g_checks < kExpectedChecks) {
         std::printf("NET TESTS INCOMPLETE: ran %d checks, expected at least %d\n",
                     g_checks, kExpectedChecks);
@@ -654,8 +699,8 @@ int main() {
 
     std::printf("ALL NET TESTS PASS (%d checks: attribution, handle validity, "
                 "use-after-close, quotas, host limit, close-all, accept, "
-                "untracked-accept, availability, platform reasons, accounting, "
-                "result names)\n",
+                "untracked-accept, availability, platform reasons, half-close, "
+                "accounting, result names)\n",
                 g_checks);
     return 0;
 }

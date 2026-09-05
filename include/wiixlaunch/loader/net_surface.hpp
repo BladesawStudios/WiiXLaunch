@@ -35,7 +35,9 @@ namespace WiiXLaunch::NetSurface {
 
 constexpr const char* kSurfaceName = "wiixl.net";
 constexpr uint16_t kVersionMajor = 1;
-constexpr uint16_t kVersionMinor = 0;
+// 1.1 appends Shutdown. Appending bumps the MINOR, so every mod built against
+// v1.0 still resolves.
+constexpr uint16_t kVersionMinor = 1;
 
 namespace impl {
 
@@ -89,6 +91,17 @@ extern "C" inline int32_t NetRecv(uint32_t handle, void* buffer, uint32_t maxSiz
 
 extern "C" inline int32_t NetSend(uint32_t handle, const void* buffer, uint32_t size) {
     return Net::Send(handle, buffer, size);
+}
+
+// --- appended in v1.1 ------------------------------------------------------
+
+// how: 0 read, 1 write, 2 both.
+//
+// A server MUST NOT send a reply and then Close while the client's request is
+// still unread - TCP answers that with an RST and the client loses the reply.
+// Drain what the peer sent, then Shutdown(1), then Close.
+extern "C" inline uint32_t NetShutdown(uint32_t handle, uint32_t how) {
+    return static_cast<uint32_t>(Net::Shutdown(handle, how));
 }
 
 extern "C" inline uint32_t NetClose(uint32_t handle) {
@@ -151,6 +164,8 @@ inline const WiiXLaunch::Surface::Symbol kSymbols[] = {
     WIIXL_SURFACE_SYMBOL("Held",           &NetHeld),
     WIIXL_SURFACE_SYMBOL("Quota",          &NetQuota),
     WIIXL_SURFACE_SYMBOL("ResultName",     &NetResultName),
+    // v1.1. Appended, never inserted.
+    WIIXL_SURFACE_SYMBOL("Shutdown",       &NetShutdown),
 };
 
 } // namespace impl

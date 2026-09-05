@@ -71,6 +71,11 @@ constexpr uint32_t kInAddrAny  = 0x00000000;
 
 constexpr int kInvalidFd = -1;
 
+// shutdown() directions, from wut's <sys/socket.h>.
+constexpr int32_t kShutRead      = 0;
+constexpr int32_t kShutWrite     = 1;
+constexpr int32_t kShutReadWrite = 2;
+
 // The Wii U and Cemu are both big-endian PowerPC, so host order already IS
 // network order and this is the identity. Written out anyway so the intent
 // survives on the little-endian host test, where it is NOT the identity and
@@ -118,6 +123,7 @@ struct HostOps {
     uint32_t (*localIp)(int fd);
     bool     (*available)();
     int32_t  (*lastError)();
+    bool     (*shutdown)(int fd, int32_t how);
 };
 
 namespace impl { inline const HostOps* g_HostOps = nullptr; }
@@ -144,6 +150,7 @@ using FnSetSockOpt    = int32_t (*)(int32_t fd, int32_t level, int32_t opt, cons
 using FnGetSockOpt    = int32_t (*)(int32_t fd, int32_t level, int32_t opt, void* val, int32_t* len);
 using FnSocketClose   = int32_t (*)(int32_t fd);
 using FnSocketLastErr = int32_t (*)();
+using FnShutdown      = int32_t (*)(int32_t fd, int32_t how);
 
 // The whole nsysnet entry table, resolved once through the dynamic loader.
 //
@@ -169,6 +176,11 @@ struct NsysnetTable {
     // of a dozen reasons it was - "the port is in use" and "the address family
     // is wrong" want completely different responses from whoever reads the log.
     FnSocketLastErr socketlasterr;
+    // Half-close. A server that sends a reply and immediately close()s while
+    // unread request bytes are still in the receive buffer gets an RST, not a
+    // FIN - and the client loses the reply it was about to read. shutdown(WRITE)
+    // is how you say "I am done sending" without discarding anything.
+    FnShutdown      shutdown;
 };
 
 inline NsysnetTable g_Nsysnet = {};
@@ -208,11 +220,12 @@ inline const NsysnetTable* Nsysnet() {
         reinterpret_cast<void**>(&g_Nsysnet.getsockopt),
         reinterpret_cast<void**>(&g_Nsysnet.socketclose),
         reinterpret_cast<void**>(&g_Nsysnet.socketlasterr),
+        reinterpret_cast<void**>(&g_Nsysnet.shutdown),
     };
     const char* names[] = {
         "socket_lib_init", "socket", "bind", "listen", "accept",
         "recv", "send", "setsockopt", "getsockopt", "socketclose",
-        "socketlasterr",
+        "socketlasterr", "shutdown",
     };
     constexpr uint32_t kCount = sizeof(names) / sizeof(names[0]);
 
@@ -410,6 +423,22 @@ inline int Send(int fd, const void* buf, uint32_t len) {
     return impl::g_HostOps->send ? impl::g_HostOps->send(fd, buf, len) : -1;
 #else
     return -1;
+#endif
+}
+
+// Half-closes one direction. See the shutdown field above for why a server
+// needs this and cannot substitute Close.
+inline bool Shutdown(int fd, int32_t how) {
+    if (fd < 0 || !Available()) return false;
+#if WIIXL_CEMU
+    return impl::Nsysnet()->shutdown(fd, how) == 0;
+#elif WIIXL_WIIU
+    return RPLWRAP(shutdown)(fd, how) == 0;
+#elif WIIXL_HOST
+    return impl::g_HostOps->shutdown && impl::g_HostOps->shutdown(fd, how);
+#else
+    (void)how;
+    return false;
 #endif
 }
 
