@@ -35,9 +35,9 @@ namespace WiiXLaunch::NetSurface {
 
 constexpr const char* kSurfaceName = "wiixl.net";
 constexpr uint16_t kVersionMajor = 1;
-// 1.1 appends Shutdown. Appending bumps the MINOR, so every mod built against
-// v1.0 still resolves.
-constexpr uint16_t kVersionMinor = 1;
+// 1.1 appends Shutdown, 1.2 appends LastError. Appending bumps the MINOR, so
+// every mod built against v1.0 still resolves.
+constexpr uint16_t kVersionMinor = 2;
 
 namespace impl {
 
@@ -136,6 +136,22 @@ extern "C" inline uint32_t NetQuota() {
     return Net::kMaxPerModule;
 }
 
+// The platform's own error number for the most recent transport call.
+//
+// PLATFORM-ERROR is where every reason the host cannot name ends up, and until
+// now the number behind it went only to the host log. Accept in particular
+// returns it for the ORDINARY case - a non-blocking listener with nothing
+// pending - so a mod polling once a frame sees a failure name on almost every
+// frame and cannot tell it from a listener that has genuinely broken.
+//
+// This is the platform's number, not the host's: it means whatever nsysnet or
+// the Wii U socket library means by it, and a mod should print it rather than
+// branch on it.
+extern "C" inline int32_t NetLastError() {
+    if constexpr (!Net::Transport::Supported) return 0;
+    return static_cast<int32_t>(Net::Transport::LastError());
+}
+
 // The host's own name for a result code, so a mod can log a refusal without
 // keeping its own copy of this enum - a copy that would silently stop matching
 // the day a value is added.
@@ -166,6 +182,8 @@ inline const WiiXLaunch::Surface::Symbol kSymbols[] = {
     WIIXL_SURFACE_SYMBOL("ResultName",     &NetResultName),
     // v1.1. Appended, never inserted.
     WIIXL_SURFACE_SYMBOL("Shutdown",       &NetShutdown),
+    // v1.2.
+    WIIXL_SURFACE_SYMBOL("LastError",      &NetLastError),
 };
 
 } // namespace impl
