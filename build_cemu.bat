@@ -89,6 +89,17 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 python scripts\audit_gates.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:: Surface coverage. "Can a mod do what a source mod could?" used to be answered
+:: by reading nineteen headers and remembering; this makes it a number, and
+:: fails when a public function has neither a surface symbol nor an entry in
+:: EXCLUDED saying why not. A decision and an oversight look identical until one
+:: of them is written down.
+python scripts\surface_coverage.py
+if %ERRORLEVEL% NEQ 0 (
+    echo [surface_coverage] FAILED - see above.
+    exit /b 1
+)
+
 :: WIIXL_LOG's formatter. Every platform's logging goes through it, it cannot
 :: be exercised on a console, and when it gets a conversion wrong it prints the
 :: specifier and silently drops the argument - which reads as "the code under

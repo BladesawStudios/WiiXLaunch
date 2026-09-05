@@ -59,6 +59,10 @@ python3 scripts/test_log_lengths.py
 # before the build spends time on the ones that are present.
 python3 scripts/audit_gates.py
 
+# Surface coverage: every public entry point in the module either has a surface
+# symbol or an entry in EXCLUDED with a reason. See scripts/surface_coverage.py.
+python3 scripts/surface_coverage.py
+
 # WIIXL_LOG's formatter. Every platform's logging goes through it and it cannot
 # be exercised on a console. NOT WIRED IN UNTIL 2026-09-04 - written, passing
 # when run by hand, and never called by a build script, so it could not fail at
