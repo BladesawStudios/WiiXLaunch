@@ -134,7 +134,12 @@ EXCLUDED = {
     "ForEachOfType": "template callback; botw.pouch enumerates by index",
     "OnUpdate": "single callback slot; botw.player's RegisterTick is the fanned-out form",
     "OnTick": "single callback slot; see RegisterTick",
-    "OnFrame": "single callback slot; botw.gui/botw.gfx fan it out, attributed",
+    # Every one of these is a SINGLE callback slot on the module - "call again
+    # to replace it" - so the surface that owns it fans it out to N attributed
+    # slots instead of handing the slot to whichever mod asked last.
+    # botw.input RegisterFrame is the one that was missing: the API server was
+    # pumped from it, and this line claimed it was covered when it was not.
+    "OnFrame": "single slot; botw.input RegisterFrame, botw.gui and botw.gfx fan it out, attributed",
     "OnLoaded": "single callback slot; botw.flyt fans it out",
     "OnKorokGet": "single callback slot; botw.events makes it consumable",
     "OnShrineComplete": "single callback slot; ConsumeShrineComplete instead",
@@ -283,7 +288,6 @@ EXCLUDED = {
     "ReadName": "pouch offset arithmetic",
     "WalkItems": "template callback; the indexed reads replace it",
     "RequestActorForItem": "internal to EquipItem",
-    "TickEquipRefresh": "internal, driven by the module's own tick",
     "ModifierName": "modifier bit naming, host-side",
     "ModifierWantsFloat": "modifier encoding detail",
     "ModifierFloatBits": "modifier encoding detail",
@@ -367,7 +371,6 @@ EXCLUDED = {
     "ExtraAny": "extra-effect bookkeeping",
     "ExtraHookInstalled": "hook bookkeeping",
     "ExtraEffectsActive": "extra-effect bookkeeping",
-    "InitExtraEffects": "installed by botw.armour SetExtraEffect on first use",
     "RecomputeExtraAny": "internal to the extra-effect setters",
 
     "BeastMarkerHookInstalled": "hook bookkeeping",
