@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Assemble the SDK a mod author needs, and nothing else.
+
+WHY THIS EXISTS.
+
+The only real mod written against this framework is a FORK of it. BotW_API_wxlm
+carries vendor/exlaunch, wut, WUPS, libfunctionpatcher and wiixlaunch-botw, its
+own build_all.bat, docs/ and tools/ - the entire framework and four submodules
+it never compiles - to produce one 65 KB file that uses none of it. It forked
+because there was no other way to get at build_mod.py and the linker script.
+
+A .wxlm needs three scripts and a set of headers. That is the whole dependency:
+
+    sdk/
+        scripts/build_mod.py     how a module is compiled and packed
+        scripts/wxlm.py          the packer, and the format's only writer
+        scripts/wxlm_mod.ld      linked at 0, keeps .init_array
+        include/wiixlaunch/imports/*.h   one per surface, generated
+        include/wiixlaunch/mod_runtime.h memcpy and friends
+        sdk.json                 which host this was cut from
+        README.md
+
+build_mod.py derives its root from its own location, so an SDK laid out this way
+needs no flags: `python sdk/scripts/build_mod.py --source mymod` works with the
+framework tree absent entirely.
+
+THE TEST THAT MATTERS is --verify: it builds a module using ONLY the assembled
+SDK, from a working directory outside both trees, and compares the result byte
+for byte against the same module built from the full tree. The three-layer
+design exists so a mod can be built without the framework; until something does
+that, it is a design nobody has run.
+"""
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# ppc_relocs is not on this list because anyone remembered it. --verify built a
+# module from the assembled SDK, wxlm.py failed on "No module named ppc_relocs",
+# and that is the whole argument for the check existing: a dependency you forget
+# is one you cannot notice from inside the tree that has it.
+SCRIPTS = ["build_mod.py", "wxlm.py", "wxlm_mod.ld", "ppc_relocs.py"]
+HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h")]
+IMPORTS = os.path.join("include", "wiixlaunch", "imports")
+
+# A module built with the SDK is refused by a host whose surfaces have moved on
+# in a way that matters, so the SDK records what it was cut from. This is
+# informational - the loader does the actual refusing, by name, at load - but a
+# mod author with a .wxlm that will not load wants to know which SDK made it.
+def host_versions():
+    out = {}
+    for name in sorted(os.listdir(os.path.join(ROOT, IMPORTS))):
+        if not name.endswith(".h"):
+            continue
+        text = io.open(os.path.join(ROOT, IMPORTS, name), encoding="utf-8").read()
+        head = text.split("\n")[3]          # "// <surface> vMAJ.MIN, N symbol(s), ..."
+        parts = head.replace("//", "").strip().split()
+        if len(parts) >= 2 and parts[1].startswith("v"):
+            out[parts[0]] = parts[1].rstrip(",")
+    return out
+
+
+def assemble(dest):
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    os.makedirs(os.path.join(dest, "scripts"))
+    os.makedirs(os.path.join(dest, "include", "wiixlaunch"))
+
+    for name in SCRIPTS:
+        shutil.copy2(os.path.join(ROOT, "scripts", name),
+                     os.path.join(dest, "scripts", name))
+    for rel in HEADERS:
+        shutil.copy2(os.path.join(ROOT, "include", rel),
+                     os.path.join(dest, "include", rel))
+    shutil.copytree(os.path.join(ROOT, IMPORTS),
+                    os.path.join(dest, "include", "wiixlaunch", "imports"))
+
+    versions = host_versions()
+    io.open(os.path.join(dest, "sdk.json"), "w", encoding="utf-8", newline="").write(
+        json.dumps({"surfaces": versions}, indent=2, sort_keys=True) + "\n")
+    io.open(os.path.join(dest, "README.md"), "w", encoding="utf-8", newline="").write(
+        README % (len(versions),
+                  "".join("| `%s` | %s |\n" % (k, v)
+                          for k, v in sorted(versions.items()))))
+    return versions
+
+
+README = """# WiiXLaunch mod SDK
+
+Everything needed to build a `.wxlm`, and nothing else. No framework checkout,
+no submodules, no game headers.
+
+## Build a mod
+
+```
+python scripts/build_mod.py --source path/to/your_mod
+```
+
+Your mod is a directory holding `mod.cpp` and a `mod.json`:
+
+```json
+{ "id": "your_mod" }
+```
+
+## Write a mod
+
+```cpp
+#include <wiixlaunch/imports/wiixl_core.h>
+#include <wiixlaunch/mod_runtime.h>
+
+namespace C { WXL_USE_wiixl_core(Log); }
+
+extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
+    if (C::Log) C::Log("hello from a mod built with no framework in sight");
+}
+```
+
+`include/wiixlaunch/imports/` holds one header per surface. Each DECLARES every
+symbol that surface publishes; `WXL_USE_<surface>(Name)` BINDS one, and only
+what you bind becomes an import. Do not hand-write import declarations - the
+signature is the one thing about a mod that nothing checks, and these are
+generated from the host's own tables so it cannot be wrong.
+
+`mod_runtime.h` defines memcpy, memset, memmove and memcmp. GCC synthesises
+calls to them even under -ffreestanding, nothing else defines them, and the
+link succeeds anyway - so without this a module branches to address 0 the first
+time it copies a struct.
+
+## What this SDK was cut from
+
+%d surfaces:
+
+| surface | version |
+|---|---|
+%s
+A host publishes these or later minors. Your mod names what it needs and the
+loader refuses it by name if the host cannot provide it, which is the point of
+the arrangement.
+"""
+
+
+def verify(sdk):
+    """Build a module using only the SDK, then again from the tree, and diff."""
+    src = os.path.join(tempfile.mkdtemp(prefix="wxl_sdk_"), "probe_mod")
+    os.makedirs(src)
+    io.open(os.path.join(src, "mod.cpp"), "w", encoding="utf-8", newline="").write(
+        '#include <wiixlaunch/imports/wiixl_core.h>\n'
+        '#include <wiixlaunch/mod_runtime.h>\n'
+        '\n'
+        'namespace C { WXL_USE_wiixl_core(Log); }\n'
+        '\n'
+        'struct Blob { char bytes[64]; };\n'
+        '\n'
+        'extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {\n'
+        '    // A struct copy, so the build needs memcpy and would branch to 0\n'
+        '    // without mod_runtime.h - the probe exercises what it ships.\n'
+        '    Blob a{}; Blob b = a; a = b;\n'
+        '    if (C::Log) C::Log(a.bytes[0] ? "probe" : "probe: built from the SDK alone");\n'
+        '}\n')
+    io.open(os.path.join(src, "mod.json"), "w", encoding="utf-8", newline="").write(
+        '{ "id": "sdk_probe" }\n')
+
+    outs = {}
+    for label, root in (("sdk", sdk), ("tree", ROOT)):
+        out = os.path.join(src, "build_" + label)
+        # cwd is somewhere neither tree owns, so a relative path to either one
+        # would fail rather than quietly working.
+        r = subprocess.run(
+            [sys.executable, os.path.join(root, "scripts", "build_mod.py"),
+             "--source", src, "--out", out],
+            cwd=tempfile.gettempdir(),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if r.returncode != 0:
+            sys.stderr.write("[make_sdk] --verify: the %s build failed.\n%s\n"
+                             % (label, r.stdout.decode("utf-8", "replace")))
+            return False
+        outs[label] = io.open(os.path.join(out, "sdk_probe.wxlm"), "rb").read()
+
+    if outs["sdk"] != outs["tree"]:
+        sys.stderr.write(
+            "[make_sdk] --verify: the SDK and the tree produced DIFFERENT modules\n"
+            "  (%d vs %d bytes). The SDK is not a faithful copy of the build.\n"
+            % (len(outs["sdk"]), len(outs["tree"])))
+        return False
+
+    print("[make_sdk] verified: a module built from the SDK alone is byte-identical\n"
+          "           to the same module built from the full tree (%d bytes)"
+          % len(outs["sdk"]))
+    return True
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    dest = os.path.abspath(args[0]) if args else os.path.join(ROOT, "build", "sdk")
+
+    # The generated headers are most of what the SDK IS. Shipping stale ones
+    # would hand a mod author a wrong signature, which is the exact failure the
+    # generator exists to prevent.
+    r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "gen_imports.py"),
+                        "--check"])
+    if r.returncode != 0:
+        sys.stderr.write("[make_sdk] the import headers are out of date; refusing to\n"
+                         "  cut an SDK around them. Run scripts/gen_imports.py.\n")
+        return 1
+
+    versions = assemble(dest)
+    files = sum(len(f) for _r, _d, f in os.walk(dest))
+    print("[make_sdk] %s: %d file(s), %d surface(s)" % (dest, files, len(versions)))
+
+    if "--verify" in sys.argv:
+        if not verify(dest):
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

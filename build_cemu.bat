@@ -110,6 +110,18 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+:: The SDK, and a module built from it alone. --verify compiles a probe using
+:: ONLY the assembled SDK, from a directory neither tree owns, and diffs it
+:: against the same probe built from here - so "a mod can be built without the
+:: framework" is a thing that happened this build rather than a design claim.
+:: It is how ppc_relocs was found missing: forgetting a dependency is not
+:: something you can notice from inside the tree that has it.
+python scripts\make_sdk.py --verify
+if %ERRORLEVEL% NEQ 0 (
+    echo [make_sdk] FAILED - see above.
+    exit /b 1
+)
+
 :: WIIXL_LOG's formatter. Every platform's logging goes through it, it cannot
 :: be exercised on a console, and when it gets a conversion wrong it prints the
 :: specifier and silently drops the argument - which reads as "the code under

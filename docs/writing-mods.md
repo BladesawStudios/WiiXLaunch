@@ -377,7 +377,46 @@ wraps b_second. Rename to reorder.
 
 ---
 
-## 11. The gates
+## 11. Shipping a mod to other people
+
+Everything above assumes you have this repo. A mod author does not need it.
+
+```
+python scripts/make_sdk.py build/sdk
+```
+
+cuts a self-contained SDK - 31 files, no submodules, no game headers, no host
+source:
+
+```
+sdk/
+    scripts/build_mod.py   wxlm.py   ppc_relocs.py   wxlm_mod.ld
+    include/wiixlaunch/imports/*.h        one per surface, generated
+    include/wiixlaunch/mod_runtime.h      memcpy and friends
+    sdk.json  README.md                   which host this was cut from
+```
+
+Hand that to someone with devkitPPC and they build with:
+
+```
+python sdk/scripts/build_mod.py --source their_mod
+```
+
+`build_mod.py` derives its root from its own location, so nothing needs
+configuring and the framework tree can be absent entirely.
+
+`--verify` is the part worth knowing about. It compiles a probe module using
+**only** the assembled SDK, from a working directory neither tree owns, and
+diffs the result against the same probe built from the full checkout. A byte
+difference or a build failure fails the gate, so "a mod can be built without the
+framework" is something that happened during this build rather than something
+the architecture diagram claims. It runs in `build_cemu`, and it is how
+`ppc_relocs.py` was caught missing from the first SDK - a dependency you forgot
+is not one you can notice from inside the tree that has it.
+
+---
+
+## 12. The gates
 
 Run before you trust anything:
 
