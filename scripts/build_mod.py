@@ -28,6 +28,8 @@ is the layout scripts/deploy.py expects.
 """
 
 import argparse
+import io
+import json
 import os
 import shutil
 import subprocess
@@ -55,19 +57,79 @@ def find_gxx():
     return None
 
 
+# --- mod.json ---------------------------------------------------------------
+#
+# What a mod IS belongs in the mod's own directory: its id, which phase it wants,
+# how much arena it needs, which surface minors it depends on. What a particular
+# BUILD is - where the source is, where the output goes, which WiiXLaunch to
+# build against - stays on the command line, because those change per machine
+# and per invocation while the mod does not.
+#
+# The split matters for distribution. A mod repo that carries its own manifest
+# can be built by anyone with one flag; a mod whose identity lives in a command
+# line is a mod whose identity lives in whoever remembers the command line.
+MANIFEST = "mod.json"
+
+# Every key, and what it maps to. An UNKNOWN key is an error rather than
+# something quietly ignored: a typo in a manifest that silently does nothing is
+# the same failure as a gate that cannot fail - it reads as configured and is
+# not.
+MANIFEST_KEYS = {
+    "id":          "module id; also the output filename and resource directory",
+    "entry":       "translation unit to compile (default mod.cpp)",
+    "phase":       "when the loader calls the entry point (default load)",
+    "heapRequest": "bytes of arena this module needs; omit for best effort",
+    "include":     "list of extra include directories, relative to the mod",
+    "require":     "list of surfaces at a minimum version, e.g. botw.map@1.1",
+}
+
+
+def read_manifest(source):
+    """The mod's own description of itself, or {} when it has none."""
+    path = os.path.join(source, MANIFEST)
+    if not os.path.exists(path):
+        return {}
+    try:
+        data = json.loads(io.open(path, encoding="utf-8").read())
+    except ValueError as exc:
+        sys.stderr.write("[build_mod] %s is not valid JSON: %s\n" % (path, exc))
+        return None
+    if not isinstance(data, dict):
+        sys.stderr.write("[build_mod] %s must be a JSON object.\n" % path)
+        return None
+
+    unknown = [k for k in data if k not in MANIFEST_KEYS]
+    if unknown:
+        sys.stderr.write(
+            "[build_mod] %s has %d key(s) this build does not understand: %s\n"
+            "  A key nobody reads looks configured and is not, so this is an\n"
+            "  error rather than a shrug. Known keys:\n%s"
+            % (path, len(unknown), ", ".join(sorted(unknown)),
+               "".join("    %-12s %s\n" % (k, v)
+                       for k, v in sorted(MANIFEST_KEYS.items()))))
+        return None
+
+    for key in ("include", "require"):
+        if key in data and not isinstance(data[key], list):
+            sys.stderr.write("[build_mod] %s: '%s' must be a list.\n" % (path, key))
+            return None
+    return data
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build a .wxlm module")
     ap.add_argument("--source", required=True,
                     help="directory holding mod.cpp, and optionally data/")
-    ap.add_argument("--id", required=True,
-                    help="module id; also the output filename and resource dir")
+    ap.add_argument("--id", default=None,
+                    help="module id; also the output filename and resource dir. "
+                         "Read from mod.json when not given here.")
     ap.add_argument("--out", default=None,
                     help="output directory (default: <wiixlaunch>/build)")
     ap.add_argument("--wiixlaunch", default=DEFAULT_ROOT,
                     help="WiiXLaunch checkout (default: the tree holding this script)")
-    ap.add_argument("--entry-file", default="mod.cpp",
+    ap.add_argument("--entry-file", default=None,
                     help="translation unit to compile (default: mod.cpp)")
-    ap.add_argument("--phase", default="load")
+    ap.add_argument("--phase", default=None)
     ap.add_argument("--heap-request", default=None,
                     help="bytes this module requires; omitted means best effort")
     ap.add_argument("--include", action="append", default=[],
@@ -84,18 +146,51 @@ def main():
     source = os.path.abspath(args.source)
     out = os.path.abspath(args.out) if args.out else os.path.join(root, "build")
 
+    manifest = read_manifest(source)
+    if manifest is None:
+        return 1
+
+    # The command line wins, so a one-off build can override without editing the
+    # mod - but it says which value came from where, because a flag silently
+    # shadowing a manifest is how you debug the wrong file for twenty minutes.
+    def settle(flag_value, key, default):
+        if flag_value is not None:
+            if key in manifest and str(manifest[key]) != str(flag_value):
+                print("[build_mod] --%s overrides %s's %r" % (key, MANIFEST, manifest[key]))
+            return flag_value
+        return manifest.get(key, default)
+
+    mod_id = settle(args.id, "id", None)
+    entry_file = settle(args.entry_file, "entry", "mod.cpp")
+    phase = settle(args.phase, "phase", "load")
+    heap_request = settle(args.heap_request, "heapRequest", None)
+    # Lists ACCUMULATE rather than override: a manifest listing what the mod
+    # needs and a command line adding one more are not in conflict.
+    includes_cfg = list(manifest.get("include", [])) + list(args.include)
+    requires_cfg = list(manifest.get("require", [])) + list(args.requires)
+
+    if not mod_id:
+        sys.stderr.write(
+            "[build_mod] no module id. Pass --id, or give the mod a %s with\n"
+            '  {"id": "yourmod"} in it.\n' % MANIFEST)
+        return 1
+    if manifest:
+        print("[build_mod] %s: id=%s phase=%s%s" %
+              (MANIFEST, mod_id, phase,
+               ", %d required surface(s)" % len(requires_cfg) if requires_cfg else ""))
+
     # A module id is what its resource directory is named, so the loader's rule
     # about the reserved namespace applies here too - and finding out at build
     # time costs a script run rather than a boot that refuses the module.
-    if args.id.startswith("_"):
+    if mod_id.startswith("_"):
         sys.stderr.write(
             "[build_mod] '%s' is in the host's reserved id space.\n"
             "  Ids beginning with '_' belong to WiiXLaunch (mods/_host/ holds the\n"
             "  host's own resources), and the loader refuses them by name at load.\n"
-            % args.id)
+            % mod_id)
         return 1
 
-    mod_cpp = os.path.join(source, args.entry_file)
+    mod_cpp = os.path.join(source, entry_file)
     if not os.path.exists(mod_cpp):
         sys.stderr.write("[build_mod] %s does not exist.\n"
                          "  Pass --entry-file if the module's translation unit is\n"
@@ -121,14 +216,17 @@ def main():
         return 1
 
     os.makedirs(out, exist_ok=True)
-    elf = os.path.join(out, args.id + ".elf")
-    wxlm = os.path.join(out, args.id + ".wxlm")
+    elf = os.path.join(out, mod_id + ".elf")
+    wxlm = os.path.join(out, mod_id + ".wxlm")
 
     includes = [os.path.join(root, "include")]
     # A module may sit next to headers of its own.
     if os.path.isdir(os.path.join(source, "include")):
         includes.append(os.path.join(source, "include"))
-    includes += [os.path.abspath(i) for i in args.include]
+    # A manifest's include path is relative to the MOD, not to the shell's
+    # working directory - the manifest travels with the mod and the cwd does not.
+    includes += [i if os.path.isabs(i) else os.path.join(source, i)
+                 for i in includes_cfg]
 
     cmd = [gxx,
            "-std=gnu++20", "-fno-pie", "-fno-pic", "-msdata=none", "-Os",
@@ -145,12 +243,12 @@ def main():
         sys.stderr.write("[build_mod] %s failed to compile\n" % mod_cpp)
         return 1
 
-    pack = [sys.executable, wxlm_py, elf, wxlm, "--id", args.id,
-            "--phase", args.phase]
-    for spec in args.requires:
+    pack = [sys.executable, wxlm_py, elf, wxlm, "--id", mod_id,
+            "--phase", phase]
+    for spec in requires_cfg:
         pack += ["--require", spec]
-    if args.heap_request:
-        pack += ["--heap-request", str(args.heap_request)]
+    if heap_request:
+        pack += ["--heap-request", str(heap_request)]
     r = subprocess.run(pack)
     if r.returncode != 0:
         return 1
@@ -159,7 +257,7 @@ def main():
     # directory left from a renamed or removed file would otherwise ship
     # forever, which is the same staleness deploy.py guards against for .wxlm.
     data_src = os.path.join(source, "data")
-    staged = os.path.join(out, "moddata", args.id)
+    staged = os.path.join(out, "moddata", mod_id)
     if os.path.isdir(staged):
         shutil.rmtree(staged)
     if os.path.isdir(data_src):

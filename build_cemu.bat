@@ -190,23 +190,19 @@ if errorlevel 2 (
 )
 
 :: --- the sample .wxlm module ---------------------------------------------
-:: Built with its own linker script: linked at 0 like the host payload, but
-:: keeping .init_array, because the loader is the only thing that will ever
-:: run a module's static constructors.
-:: -lgcc is needed even under -nostdlib: GCC emits calls to libgcc's PowerPC
-:: register save/restore helpers (_restgpr_*), and without it they stay
-:: undefined and wxlm.py rejects the module.
-"%DKP_PPC_GXX%" ^
-  -std=gnu++20 -fno-pie -fno-pic -msdata=none -Os ^
-  -ffreestanding -fno-exceptions -fno-rtti ^
-  -D__CEMU__=1 -DWIIXL_CEMU=1 ^
-  -nostartfiles -nostdlib -T scripts\wxlm_mod.ld -Wl,-q ^
-  -Wl,--unresolved-symbols=ignore-all ^
-  examples\sample_mod\mod.cpp -lgcc ^
-  -o build\sample_mod.elf
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-python scripts\wxlm.py build\sample_mod.elf build\sample.wxlm --id sample --phase load
+:: This used to spell out the compile and pack by hand, which made two
+:: definitions of how a module is built - and the subroutine below claimed to
+:: be the only one. Both were true separately and the pair could drift: a flag
+:: added to build_mod.py would simply not apply here, silently, and only to
+:: this one sample.
+::
+:: The flags that were spelled out are the same ones build_mod.py uses, and its
+:: header explains each. The two worth knowing: the module's own linker script
+:: keeps .init_array, because the loader is the only thing that will ever run a
+:: module's static constructors; and -lgcc is needed even under -nostdlib,
+:: because GCC emits calls to libgcc's PowerPC register save/restore helpers
+:: (_restgpr_*) that would otherwise stay undefined and get the module rejected.
+call :build_mod sample_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: --- the two colliding modules ------------------------------------------
@@ -221,18 +217,18 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 :: %ERRORLEVEL% expands when the block is PARSED, which is before the
 :: command in it has run - so the check would test a stale value. Delayed
 :: expansion fixes that, but not needing it at all is better.
-call :build_mod a_first hook_mod_a
+call :build_mod hook_mod_a
 if %ERRORLEVEL% NEQ 0 exit /b 1
-call :build_mod b_second hook_mod_b
+call :build_mod hook_mod_b
 if %ERRORLEVEL% NEQ 0 exit /b 1
-call :build_mod c_patch patch_mod
+call :build_mod patch_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: The wiixl.net demonstration. Opens a real listener and answers a real
 :: request, so a boot proves the surface rather than the build proving it
 :: compiles - and closes a handle and reuses it on purpose, so the boot log
 :: shows STALE-HANDLE happening instead of a comment claiming it would.
-call :build_mod d_net net_mod
+call :build_mod net_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: The botw.player v1.1 demonstration. Reads Link's real life through the
@@ -240,7 +236,7 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 :: the accessors rather than the build proving they compile - and takes the raw
 :: pointer once on purpose, so the "opted out of versioning" line lands in the
 :: log with a module name on it.
-call :build_mod e_player player_mod
+call :build_mod player_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\deploy.py
@@ -249,15 +245,20 @@ echo Cemu build complete!
 exit /b 0
 
 :: --- one module, built and packed ---------------------------------------
-:: %1 = mod id and output name, %2 = directory under examples/
+:: %1 = directory under examples/. The id comes from that mod's mod.json.
 ::
 :: Delegated to scripts/build_mod.py, which is the ONLY definition of how a
 :: module is compiled and packed. An external mod project calls the same
 :: script, so the flags cannot drift between the in-tree samples and a real
-:: third-party mod - and these flags are not obvious enough to keep two
-:: copies of. See the header comment there for what each one is for.
+:: third-party mod.
+::
+:: The id used to be passed here, which meant every sample's identity lived in
+:: this file rather than with the sample. It lives in examples/<mod>/mod.json
+:: now - and because this build reads it from there, a manifest that stops
+:: being right stops the build, rather than sitting unread beside a mod that
+:: is really configured somewhere else.
 :build_mod
-python scripts\build_mod.py --source examples\%2 --id %1
+python scripts\build_mod.py --source examples\%1
 if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0
 

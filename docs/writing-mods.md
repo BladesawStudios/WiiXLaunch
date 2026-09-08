@@ -35,11 +35,13 @@ around the boundary.
 
 ## 2. Your first mod
 
-A mod is a directory with a `mod.cpp` in it. Nothing else is required.
+A mod is a directory with a `mod.cpp` in it. Nothing else is required, though
+one more file is worth having from the start:
 
 ```
 E:\...\My Mods\hello_mod\
     mod.cpp
+    mod.json      what the mod IS - see section 3
 ```
 
 ```cpp
@@ -52,7 +54,7 @@ E:\...\My Mods\hello_mod\
 
 // Declaring is free; BINDING is what makes something an import. Name only what
 // you use, and only that is imported. The macro applies the volatile the
-// relocation requires - see section 3.
+// relocation requires - see section 4.
 namespace C { WXL_USE_wiixl_core(Log); }
 
 // The loader calls this once, at load. `used` because nothing in this
@@ -62,13 +64,13 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
 }
 ```
 
-Build it:
+With `{"id": "hello"}` in `mod.json`, build it:
 
 ```
-python scripts\build_mod.py --source "E:\...\My Mods\hello_mod" --id hello
+python scripts\build_mod.py --source "E:\...\My Mods\hello_mod"
 ```
 
-`--id` is the module's name everywhere: the output `hello.wxlm`, its resource
+The id is the module's name everywhere: the output `hello.wxlm`, its resource
 directory, and the name in every log line it causes. It may not start with `_`
 (that namespace is the host's).
 
@@ -92,11 +94,60 @@ hello: I am a compiled mod and I resolved wiixl.core
 ```
 
 If any of those lines is missing, the one that *is* missing tells you where it
-stopped. That is the whole debugging method and it is covered in section 9.
+stopped. That is the whole debugging method and it is covered in section 10.
 
 ---
 
-## 3. Imports
+## 3. mod.json
+
+**What a mod IS belongs in the mod's directory. What a BUILD is stays on the
+command line.** Source location, output directory and which WiiXLaunch to build
+against change per machine and per invocation; the mod's identity does not.
+
+```json
+{
+  "id": "botw_api",
+  "entry": "src/mod.cpp",
+  "include": ["include"],
+  "phase": "load",
+  "heapRequest": 262144,
+  "require": ["botw.map@1.1"]
+}
+```
+
+| key | means |
+|---|---|
+| `id` | module id; the output filename and the resource directory |
+| `entry` | the translation unit, relative to `--source` (default `mod.cpp`) |
+| `include` | extra include directories, **relative to the mod** |
+| `phase` | when the loader calls the entry point (default `load`) |
+| `heapRequest` | bytes of arena needed; omit for best effort |
+| `require` | surfaces at a minimum version, for a symbol from a later minor |
+
+`entry` is what lets `--source` point at a repo root rather than at the
+directory holding the `.cpp`, so the manifest sits next to your `README` where
+you would look for it.
+
+Three rules worth knowing:
+
+- **An unknown key is an error**, not something ignored. A typo in a manifest
+  that silently does nothing reads as configured and is not - the same failure
+  as a gate that cannot fail. `heapRequst` stops the build and lists the keys
+  that exist.
+- **A flag beats the manifest, and says so**: `--id overrides mod.json's
+  'from_manifest'`. A one-off build should not need you to edit the mod, and a
+  flag quietly shadowing a file is how you debug the wrong thing for twenty
+  minutes.
+- **Lists accumulate.** A manifest naming what the mod needs and a command line
+  adding one more are not in conflict, so `include` and `require` concatenate
+  rather than replace.
+
+Everything still works with no manifest at all - pass `--id` and the rest as
+flags, exactly as before.
+
+---
+
+## 4. Imports
 
 ### Use the generated headers
 
@@ -166,7 +217,7 @@ written out.
 
 ---
 
-## 4. What is available
+## 5. What is available
 
 Ask the host. Every boot logs the full registry at the load point:
 
@@ -201,7 +252,7 @@ above each function are the contract.
 
 ---
 
-## 5. Picking a tick
+## 6. Picking a tick
 
 There are **three** per-frame sources and they do not have the same lifetime.
 Choosing wrong is the difference between a mod that works and one that is dead
@@ -233,7 +284,7 @@ rather than being an anonymous freeze.
 
 ---
 
-## 6. Arming: the trap
+## 7. Arming: the trap
 
 **Several game subsystems answer "no" when the honest answer is "not armed
 yet."** They are inert until something installs their hook, and until then the
@@ -267,7 +318,7 @@ happens, check this list first.
 
 ---
 
-## 7. The freestanding rules
+## 8. The freestanding rules
 
 A `.wxlm` is compiled `-nostdlib -nostartfiles` and linked with
 `--unresolved-symbols=ignore-all`. That last flag is what lets imports be
@@ -290,7 +341,7 @@ branches to address zero.**
 
 ---
 
-## 8. Versioning
+## 9. Versioning
 
 `(major, minor)` per surface. **Major must match exactly; minor must be at least
 what you asked for.**
@@ -306,7 +357,7 @@ the minor - never insert, never reorder.
 
 ---
 
-## 9. When it doesn't work
+## 10. When it doesn't work
 
 The boot log is the instrument. Read it top-down and find the first line that is
 missing or wrong.
@@ -316,8 +367,8 @@ missing or wrong.
 | mod not in the list at all | `[loader] N module(s) found` - is the filename `.wxlm` and in `mods/`? |
 | `MISSING-SURFACE` | you called a symbol from a surface this host does not publish |
 | loads, entry never runs | the `phase 0 reached` line for your id |
-| entry runs, nothing happens | section 6 - is the subsystem armed? |
-| a write "succeeds" and does nothing | section 6 - is something pumping the tick? |
+| entry runs, nothing happens | section 7 - is the subsystem armed? |
+| a write "succeeds" and does nothing | section 7 - is something pumping the tick? |
 | game freezes | the in-flight record names the module it was inside, with a sequence number. **A frozen sequence means a hang inside a callback; an advancing one means the game stopped calling us.** Those look identical from outside. |
 
 Load order is **lexical by filename**, and load order is hook install order,
@@ -326,7 +377,7 @@ wraps b_second. Rename to reorder.
 
 ---
 
-## 10. The gates
+## 11. The gates
 
 Run before you trust anything:
 
