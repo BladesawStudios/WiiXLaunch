@@ -29,6 +29,21 @@ SDK, from a working directory outside both trees, and compares the result byte
 for byte against the same module built from the full tree. The three-layer
 design exists so a mod can be built without the framework; until something does
 that, it is a design nobody has run.
+
+--host cuts the other half. An SDK builds a .wxlm and a .wxlm does nothing on
+its own: it needs the host that loads it. That host is a Cemu graphic pack, and
+the one this repo deploys has the six sample modules inside it - fine for
+testing here, wrong to hand to someone else, who would get five mods they did
+not ask for and a demonstration of hook collision in their game. --host copies
+the pack with mods/ holding only what the HOST owns: its own resources under
+_host/, and probe.bin.
+
+Together they are the whole distribution:
+
+    python scripts/make_sdk.py --host
+
+    build/sdk/     -> the mod author builds against this
+    build/host/    -> the player drops this into Cemu's graphicPacks
 """
 import io
 import json
@@ -144,6 +159,84 @@ the arrangement.
 """
 
 
+# What belongs to the HOST rather than to any mod. Everything else under mods/
+# is somebody's module and does not travel with the host.
+HOST_KEEP = ("_host", "probe.bin")
+
+
+def cut_host(dest):
+    """The deployed graphic pack, with other people's mods taken out."""
+    packs = os.path.join(ROOT, "deploy", "cemu", "graphicPacks")
+    if not os.path.isdir(packs):
+        sys.stderr.write("[make_sdk] --host: nothing at %s. Run build_cemu first;\n"
+                         "  the host is what that produces.\n" % packs)
+        return None
+    names = sorted(n for n in os.listdir(packs) if os.path.isdir(os.path.join(packs, n)))
+    if len(names) != 1:
+        sys.stderr.write("[make_sdk] --host: expected exactly one graphic pack in %s, "
+                         "found %d: %s\n" % (packs, len(names), ", ".join(names) or "none"))
+        return None
+    src = os.path.join(packs, names[0])
+
+    if os.path.isdir(dest):
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+
+    mods = os.path.join(dest, "content", "WiiXLaunch", "mods")
+    removed = []
+    if os.path.isdir(mods):
+        for entry in sorted(os.listdir(mods)):
+            if entry in HOST_KEEP:
+                continue
+            path = os.path.join(mods, entry)
+            removed.append(entry)
+            shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+
+    # An empty mods/ has to SURVIVE the copy to the player's machine, and an
+    # empty directory does not survive a zip. A README in it is also the only
+    # instruction a player needs.
+    io.open(os.path.join(mods, "README.txt"), "w", encoding="utf-8", newline="").write(
+        "Put .wxlm files in this directory.\n"
+        "\n"
+        "They load in filename order, which is also hook order, so a mod that\n"
+        "must wrap another sorts before it. The game's log names every module\n"
+        "as it loads, and names any it refuses and why.\n"
+        "\n"
+        "_host/ and probe.bin belong to WiiXLaunch. Leave them alone.\n")
+
+    left = sorted(os.listdir(mods))
+    print("[make_sdk] host: %s -> %s" % (names[0], dest))
+    print("[make_sdk]   removed %d module file(s)/dir(s): %s"
+          % (len(removed), ", ".join(removed) or "none"))
+    print("[make_sdk]   mods/ now holds: %s" % ", ".join(left))
+    return dest
+
+
+def verify_host(host):
+    """A host install must contain no modules and still be a loadable pack."""
+    mods = os.path.join(host, "content", "WiiXLaunch", "mods")
+    leftover = [n for n in sorted(os.listdir(mods)) if n.endswith(".wxlm")]
+    if leftover:
+        sys.stderr.write("[make_sdk] --host: %d module(s) still in the pack: %s\n"
+                         % (len(leftover), ", ".join(leftover)))
+        return False
+    for required in ("rules.txt",):
+        if not os.path.exists(os.path.join(host, required)):
+            sys.stderr.write("[make_sdk] --host: the pack has no %s, so Cemu would "
+                             "not load it.\n" % required)
+            return False
+    if not any(n.endswith(".asm") for n in os.listdir(host)):
+        sys.stderr.write("[make_sdk] --host: the pack has no patch .asm, so there is "
+                         "no host in it.\n")
+        return False
+    if not os.path.isdir(os.path.join(mods, "_host")):
+        sys.stderr.write("[make_sdk] --host: _host/ is missing - the host's own "
+                         "resources were taken out with the mods.\n")
+        return False
+    print("[make_sdk] host verified: rules.txt, a patch, _host/, and no modules")
+    return True
+
+
 def verify(sdk):
     """Build a module using only the SDK, then again from the tree, and diff."""
     src = os.path.join(tempfile.mkdtemp(prefix="wxl_sdk_"), "probe_mod")
@@ -214,6 +307,13 @@ def main():
 
     if "--verify" in sys.argv:
         if not verify(dest):
+            return 1
+
+    if "--host" in sys.argv:
+        host_dest = os.path.join(os.path.dirname(dest), "host")
+        if cut_host(host_dest) is None:
+            return 1
+        if not verify_host(host_dest):
             return 1
     return 0
 

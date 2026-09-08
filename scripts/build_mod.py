@@ -144,7 +144,24 @@ def main():
 
     root = os.path.abspath(args.wiixlaunch)
     source = os.path.abspath(args.source)
-    out = os.path.abspath(args.out) if args.out else os.path.join(root, "build")
+
+    # Where output goes when nobody says.
+    #
+    # In the framework tree that is <root>/build, because deploy.py collects
+    # from there and the in-tree samples are part of the host's own build.
+    #
+    # From an SDK it is <mod>/build instead. An SDK is somebody's installed
+    # toolchain, not their workspace: writing their module into it would put
+    # build artifacts inside the thing they downloaded, and leave the answer to
+    # "where did my .wxlm go" somewhere they have no reason to look. sdk.json is
+    # only ever written by make_sdk.py, so its presence is what distinguishes
+    # the two.
+    if args.out:
+        out = os.path.abspath(args.out)
+    elif os.path.exists(os.path.join(root, "sdk.json")):
+        out = os.path.join(source, "build")
+    else:
+        out = os.path.join(root, "build")
 
     manifest = read_manifest(source)
     if manifest is None:

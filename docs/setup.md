@@ -2,80 +2,95 @@
 
 [« Back to overview](overview.md)
 
-**Which setup do you want?** There are two, and they are very different sizes.
+Two different jobs, two different setups. Pick the one you are doing.
 
-* **Writing a mod** - a `.wxlm` that drops into an installed host. Python,
-  devkitPPC, an SDK folder. No repo, no submodules, no game headers, one
-  toolchain. Start at [Setting up to write mods](#setting-up-to-write-mods)
-  below; the rest of this page is not for you.
-* **Working on the framework or a game module** - the host itself, the surfaces,
-  the loader. Everything from [Prerequisites](#prerequisites) onward.
+| I want to… | go to | how long |
+|---|---|---|
+| **write a mod** that drops into an installed WiiXLaunch | [Writing mods](#writing-mods) | ~15 min |
+| **work on the framework**, the loader, or a game module | [Working on the framework](#working-on-the-framework) | ~1 hour |
 
 ---
 
-## Setting up to write mods
+# Writing mods
 
-### 1. Python 3
+You need two tools, two folders, and about fifteen minutes.
 
-Runs the build script. Nothing else.
+## 1. Install Python 3
 
-### 2. devkitPPC
-
-**Only devkitPPC.** Not devkitA64, not WUPS, not libfunctionpatcher - those are
-for building the host on other platforms, and a mod is built once for the
-PowerPC target. Install from [devkitpro.org](https://devkitpro.org/wiki/Getting_Started)
-and take the `devkitPPC` package.
-
-`build_mod.py` finds it via `$DEVKITPPC`, then `C:\devkitPro\devkitPPC` and
-`/opt/devkitpro/devkitPPC`. If it cannot, it says so and stops rather than
-building something wrong:
+Any version from the last few years. Check it:
 
 ```
-[build_mod] SETUP PROBLEM - not a broken source tree.
-  powerpc-eabi-g++ was not found. Set DEVKITPPC, or install devkitPPC.
+python --version
 ```
 
-### 3. An SDK
+## 2. Install devkitPPC
 
-31 files: the build scripts, one generated header per surface, and the
-freestanding runtime. Cut one with:
+Get the installer from [devkitpro.org](https://devkitpro.org/wiki/Getting_Started)
+and select the **devkitPPC** package. That is the only one you need — devkitA64,
+WUPS and libfunctionpatcher are for building WiiXLaunch itself, not for building
+a mod.
 
-```
-python scripts/make_sdk.py build/sdk
-```
-
-**You need a framework checkout once to cut it, or someone who has one to hand
-you the folder.** There is no published SDK release yet - see
-[What is still manual](#what-is-still-manual).
-
-### 4. A host to run against
-
-A mod is inert on its own; it needs the host that loads it. On Cemu that is a
-graphic pack folder, about 4.5 MB:
+Check it, using your install path:
 
 ```
-WiiXLaunch_BotW_SampleMod/
+C:\devkitPro\devkitPPC\bin\powerpc-eabi-g++ --version
+```
+
+If you installed somewhere else, set `DEVKITPPC` to that directory. The build
+looks at `$DEVKITPPC` first, then `C:\devkitPro\devkitPPC` and
+`/opt/devkitpro/devkitPPC`, and tells you plainly if it finds nothing.
+
+## 3. Get the SDK and a host
+
+Two folders. If someone handed you a `wiixlaunch-sdk` and a
+`WiiXLaunch_BotW` folder, skip to step 4.
+
+To make them yourself, you need a WiiXLaunch checkout once:
+
+```
+git clone --recurse-submodules <repo>
+cd WiiXLaunch
+build_cemu.bat
+python scripts\make_sdk.py --host
+```
+
+That produces both:
+
+```
+build\sdk\      the SDK — you build mods against this
+build\host\     the host — this goes into Cemu
+```
+
+Copy them somewhere you will keep them. Nothing else from the checkout is
+needed, and you never have to build WiiXLaunch again unless you want a newer
+host.
+
+## 4. Install the host in Cemu
+
+Copy `build\host\` into Cemu's graphic pack folder, naming it whatever you like:
+
+```
+Cemu\graphicPacks\WiiXLaunch_BotW\
     rules.txt
     patch_BotW_SampleMod.asm
-    content/WiiXLaunch/mods/        <- your .wxlm goes here
+    content\WiiXLaunch\mods\        ← your mods go here
 ```
 
-Drop it in Cemu's `graphicPacks/` and enable it. **Same caveat: today the pack
-comes from building this repo.**
+In Cemu: **Options → Graphic Packs**, find it under Breath of the Wild, tick it.
 
-### 5. Write and build
+You need **BotW v208** — it is the only version the patches target.
 
-```
-mkdir my_mod
-```
+## 5. Write a mod
 
-`my_mod/mod.json`:
+Make a folder with two files in it.
+
+`hello_mod\mod.json`
 
 ```json
-{ "id": "my_mod" }
+{ "id": "hello" }
 ```
 
-`my_mod/mod.cpp`:
+`hello_mod\mod.cpp`
 
 ```cpp
 #include <wiixlaunch/imports/wiixl_core.h>
@@ -84,50 +99,71 @@ mkdir my_mod
 namespace C { WXL_USE_wiixl_core(Log); }
 
 extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
-    if (C::Log) C::Log("my_mod: loaded");
+    if (C::Log) C::Log("hello: my first mod");
 }
 ```
 
+## 6. Build it
+
 ```
-python sdk/scripts/build_mod.py --source my_mod
+python <sdk>\scripts\build_mod.py --source hello_mod
 ```
 
-Copy `my_mod.wxlm` into the pack's `content/WiiXLaunch/mods/`, launch the game,
-and read the log. [Writing a mod](writing-mods.md) is the rest of it.
+You get `hello_moduild\hello.wxlm`. It is one file, and it is the only
+thing you ship.
 
-### What is still manual
+## 7. Run it
 
-Being straight about where the seams are:
+Copy `hello.wxlm` into the pack's `content\WiiXLaunch\mods\`, start the game,
+and open Cemu's log window. You are looking for:
 
-* **No published SDK or host.** Both are produced by building this repo. Nothing
-  packages them for release, so a mod author needs a checkout once or a friend
-  with one. The pieces are self-contained and could be published; nobody has.
-* **The host pack ships with the sample mods inside it.** A host install for
-  someone else wants `content/WiiXLaunch/mods/` empty apart from `_host/` and
-  `probe.bin`. Clearing it by hand works.
-* **Cemu only, in practice.** Switch and Wii U hosts build but have never been
-  run. A mod targets the surfaces rather than a platform, so it should follow -
-  "should" being exactly the word that has cost time before.
+```
+[loader] 1 module(s) found
+[loader:hello] requires wiixl.core v1.0 - present
+[loader:hello] LOADED, entry at 0x...
+hello: my first mod
+```
+
+**The log is the tool.** Every module is named as it loads, and anything
+refused is named with the reason. If a line is missing, the last one present
+tells you how far it got.
+
+## Next
+
+[Writing a mod](writing-mods.md) is the real guide: what the surfaces offer,
+how to pick a per-frame tick, which subsystems need arming, and what the
+freestanding build will and will not do for you.
 
 ---
 
+# Working on the framework
+
+For changing WiiXLaunch itself, a game module, or the surfaces. This builds the
+host for all three platforms.
+
 ## Prerequisites
 
-* **Python 3** - runs `scripts/generate_config.py` (turns `wiixlaunch.json` into the generated headers each target build reads) and `scripts/deploy.py` (packages build output).
-* **devkitPro**, with the `devkitPPC` and `devkitA64` toolchains - required for Wii U, Cemu, and Switch builds. Install from [devkitpro.org](https://devkitpro.org/wiki/Getting_Started).
-  * On Windows, if devkitPro isn't installed at the default `C:\devkitPro`, set `DEVKITPRO_WIN` to your install directory before building.
-* **Some form of Visual Studio (20XX)** (Windows only) - only needed if you're also building host-side tools like `tools/ring_log_reader` (see [Debugging](debugging.md)); the console mods themselves don't need it.
-* For Wii U: WUPS, libfunctionpatcher, and libnotifications installed into your devkitPro environment. All three ship as submodules under `vendor/`. On Linux, `scripts/setup_wiiu_deps.sh` builds and installs all three for you; on other platforms see their READMEs for `make install` instructions into `/opt/devkitpro`. libnotifications is what powers the on-screen toasts described in [Debugging](debugging.md).
+* **Python 3** — runs `scripts/generate_config.py` (turns `wiixlaunch.json` into
+  the generated headers each target build reads) and `scripts/deploy.py`.
+* **devkitPro**, with **devkitPPC** and **devkitA64** — for Wii U, Cemu and
+  Switch. From [devkitpro.org](https://devkitpro.org/wiki/Getting_Started). On
+  Windows, if devkitPro is not at `C:\devkitPro`, set `DEVKITPRO_WIN`.
+* **Visual Studio** (Windows only) — only for host-side tools like
+  `tools/ring_log_reader` (see [Debugging](debugging.md)). The console builds do
+  not need it.
+* **For Wii U**: WUPS, libfunctionpatcher and libnotifications installed into
+  devkitPro. All three are submodules under `vendor/`. On Linux,
+  `scripts/setup_wiiu_deps.sh` builds and installs them; elsewhere see their
+  READMEs for `make install` into `/opt/devkitpro`. libnotifications powers the
+  on-screen toasts in [Debugging](debugging.md).
 
 ## Getting the source
-
-The vendored dependencies (exlaunch, wut, WUPS, libfunctionpatcher) are git submodules:
 
 ```bash
 git clone --recurse-submodules <your-fork-url>
 ```
 
-If you already cloned without `--recurse-submodules`:
+Already cloned without it:
 
 ```bash
 git submodule update --init --recursive
@@ -135,33 +171,44 @@ git submodule update --init --recursive
 
 ## Configuring the host
 
-Everything project-specific lives in [`wiixlaunch.json`](../wiixlaunch.json) at the repo root. This describes the HOST build - a `.wxlm` needs none of it and carries its own `mod.json` instead:
+Everything project-specific lives in [`wiixlaunch.json`](../wiixlaunch.json).
+This describes the **host** build — a `.wxlm` needs none of it and carries its
+own `mod.json` instead.
 
-* `project` - name, version, author, description, and `debug` (controls `EXL_DEBUG` on the Switch build).
-* `memory` - heap/JIT/inline-pool sizes and the Cemu debug log buffer size.
-* `switch` - title ID, subsdk name, thread stack size/priority.
-* `wiiu` - the plugin's `.wps` filename and the target title IDs it patches.
-* `cemu` - the entry hook address, graphic pack path/version for your target game build, and `module_matches` (the `moduleMatches` field written into the generated `.asm` patch). usually doesn't require changing, V208 is the only launchable version from my understanding.
+* `project` — name, version, author, description, and `debug` (controls
+  `EXL_DEBUG` on the Switch build).
+* `memory` — heap/JIT/inline-pool sizes and the Cemu debug log buffer size.
+* `switch` — title ID, subsdk name, thread stack size/priority.
+* `wiiu` — the plugin's `.wps` filename and the target title IDs it patches.
+* `cemu` — the entry hook address, graphic pack path/version for your target
+  game build, and `module_matches`. Usually needs no change; v208 is the only
+  launchable version.
 
-Running `python scripts/generate_config.py` (the build scripts do this for you) turns this into generated headers under `build/generated/include/` and platform config files under `build/generated/switch/` - these are regenerated on every build, so edit `wiixlaunch.json`, not the generated files.
+`python scripts/generate_config.py` (the build scripts run it for you) turns
+this into headers under `build/generated/include/` and platform config under
+`build/generated/switch/`. These are regenerated every build — edit
+`wiixlaunch.json`, not the generated files.
 
 ## Building
 
-Convenience scripts (Windows, there are Linux equivalents available as well):
-
 ```bash
-build_switch.bat (builds switch, deploys all)
-build_wiiu.bat (builds wiiu, deploys all)
-build_cemu.bat (builds cemu, deploys all)
-build_all.bat (builds all, deploys all)
+build_cemu.bat      # Cemu, plus every gate
+build_wiiu.bat      # Wii U
+build_switch.bat    # Switch
+build_all.bat       # all three
 ```
 
-Or via CMake directly (Switch only builds this way; Wii U and Cemu use devkitPPC/the WUPS Makefile flow directly, since their output isn't a normal CMake executable target (see `build_wiiu.bat` and `build_cemu.bat`):
+Or CMake directly, Switch only — Wii U and Cemu use devkitPPC and the WUPS
+Makefile flow, since their output is not a normal CMake executable target:
 
 ```bash
 cmake -B build/switch -DPLATFORM=SWITCH
 cmake --build build/switch
 ```
+
+`build_cemu` runs the gates: the loader fuzzer, the host and format tests,
+surface coverage, the import-header freshness check, and an SDK cut and
+verified by building a module from it. A gate failing fails the build.
 
 ## Deploying
 
@@ -169,10 +216,25 @@ cmake --build build/switch
 python scripts/deploy.py
 ```
 
-Packages whatever you've built into `deploy/`:
+Packages what you have built into `deploy/`:
 
-* **Switch**: `deploy/switch/atmosphere/contents/<title_id>/exefs/`
-* **Wii U**: `deploy/wiiu/wiiu/environments/aroma/plugins/<mod_name>.wps`
-* **Cemu**: `deploy/cemu/graphicPacks/<graphic_pack_name>/`
+* **Switch** — `deploy/switch/atmosphere/contents/<title_id>/exefs/`
+* **Wii U** — `deploy/wiiu/wiiu/environments/aroma/plugins/<mod_name>.wps`
+* **Cemu** — `deploy/cemu/graphicPacks/<graphic_pack_name>/`
 
-Copy the relevant folder onto your SD card, place it in your emulator as a regular exefs mod, or place the mod in Cemus graphic pack folder.
+Copy onto your SD card, or into Cemu's graphic pack folder.
+
+To cut the two things a mod author needs from a built tree:
+
+```bash
+python scripts/make_sdk.py --host
+```
+
+## Known gaps
+
+* **Nothing publishes releases.** The SDK and host are produced by building this
+  repo. They are self-contained folders and could be published; nobody has, so
+  today a mod author needs a checkout once or a friend with one.
+* **Cemu is the only platform that has run.** The Switch and Wii U hosts build
+  every time and have never been executed. A mod targets surfaces rather than a
+  platform, so it should follow — but nothing has demonstrated that.
