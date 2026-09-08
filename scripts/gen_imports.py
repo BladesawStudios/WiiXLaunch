@@ -71,8 +71,36 @@ SYMBOL = re.compile(r'WIIXL_SURFACE_SYMBOL\(\s*"(\w+)"\s*,\s*&(\w+)\s*\)')
 FUNC_HEAD = re.compile(r'extern "C" inline\s+([\w:*&<> ]+?)\s*\b(\w+)\s*\(')
 
 
+# A section banner, not documentation: `// --- injection ------------`.
+BANNER = re.compile(r'^//\s*-{2,}')
+
+
+def doc_above(body, index):
+    """The comment block immediately above a definition, if there is one.
+
+    The surface explains WHY a symbol behaves as it does - "a frame count rather
+    than an open-ended hold, because a mod that sets a button and crashes should
+    not leave the game holding it forever" - and a mod author holding only the
+    SDK could not read any of it. Throwing that away and keeping the signature
+    left the generated headers technically complete and useless for deciding
+    what to call.
+    """
+    lines = body[:index].split("\n")
+    out = []
+    for line in reversed(lines[:-1]):
+        stripped = line.strip()
+        if not stripped:
+            break
+        if not stripped.startswith("//"):
+            break
+        if BANNER.match(stripped):
+            break
+        out.append(stripped[2:].strip())
+    return list(reversed(out))
+
+
 def scan_functions(body):
-    """name -> (return type, raw parameter text), parens balanced."""
+    """name -> (return type, raw parameter text, doc lines), parens balanced."""
     out = {}
     for m in FUNC_HEAD.finditer(body):
         depth, start = 0, m.end() - 1
@@ -83,7 +111,8 @@ def scan_functions(body):
                 depth -= 1
                 if depth == 0:
                     out[m.group(2)] = (" ".join(m.group(1).split()),
-                                       body[start + 1:i])
+                                       body[start + 1:i],
+                                       doc_above(body, m.start()))
                     break
     return out
 
@@ -237,8 +266,8 @@ def surfaces_in(path, aliases, callbacks):
         if not (name and major and minor):
             continue
         # Signatures come from the whole block, symbols from its table.
-        sigs = {name: (ret, normalise_params(params))
-                for name, (ret, params) in scan_functions(body).items()}
+        sigs = {name: (ret, normalise_params(params), doc)
+                for name, (ret, params, doc) in scan_functions(body).items()}
         symbols = []
         for exported, cpp in SYMBOL.findall(body):
             if cpp not in sigs:
@@ -247,7 +276,7 @@ def surfaces_in(path, aliases, callbacks):
                     "scan could not find. The header would be missing a symbol "
                     "the host publishes.\n" % (os.path.basename(path), exported, cpp))
                 return None
-            ret, params = sigs[cpp]
+            ret, params, doc = sigs[cpp]
             spelled = ret
             ret_resolved = resolve_type(ret, aliases)
             params_resolved = resolve_params(params, aliases, callbacks, needed)
@@ -259,7 +288,7 @@ def surfaces_in(path, aliases, callbacks):
                     % (os.path.basename(path), exported, ret, params))
                 return None
             note = "" if ret_resolved == spelled else "   // surface spells this %s" % spelled
-            symbols.append((exported, ret_resolved, params_resolved, note))
+            symbols.append((exported, ret_resolved, params_resolved, note, doc))
         if symbols:
             found.append((name.group(1), int(major.group(1)), int(minor.group(1)),
                           symbols, sorted(needed)))
@@ -281,6 +310,9 @@ def render(surface, major, minor, symbols, callback_types):
                   "//     S::%s(...);\n"
                   "//\n"
                   "// so a mod that uses two symbols imports two, not all %d.\n"
+                  "//\n"
+                  "// The comments are the SURFACE's own, carried across - they say why a\n"
+                  "// symbol behaves as it does, which is the half a signature cannot.\n"
                   % (surface, major, minor, len(symbols), flat,
                      symbols[0][0], symbols[0][0], len(symbols)))
 
@@ -293,7 +325,13 @@ def render(surface, major, minor, symbols, callback_types):
             lines.append("using %s = %s;\n" % (name, target))
         lines.append("\n")
     lines.append('extern "C" {\n')
-    for exported, ret, params, note in symbols:
+    documented = 0
+    for exported, ret, params, note, doc in symbols:
+        if doc:
+            documented += 1
+            lines.append("\n")
+            for line in doc:
+                lines.append(("// %s\n" % line) if line else "//\n")
         lines.append("extern %s wiixl_import__%s__%s(%s);%s\n"
                      % (ret, flat, exported, params, note))
     lines.append('}\n\n')

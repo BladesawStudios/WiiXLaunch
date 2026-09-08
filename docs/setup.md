@@ -40,34 +40,31 @@ If you installed somewhere else, set `DEVKITPPC` to that directory. The build
 looks at `$DEVKITPPC` first, then `C:\devkitPro\devkitPPC` and
 `/opt/devkitpro/devkitPPC`, and tells you plainly if it finds nothing.
 
-## 3. Get the SDK and a host
+## 3. Get the SDK
 
-Two folders. If someone handed you a `wiixlaunch-sdk` and a
-`WiiXLaunch_BotW` folder, skip to step 4.
-
-To make them yourself, you need a WiiXLaunch checkout once:
+The SDK is `sdk/` in the WiiXLaunch repository. It is 31 text files. Download
+that folder — from a release, from the repo's web interface, or by cloning:
 
 ```
-git clone --recurse-submodules <repo>
-cd WiiXLaunch
+git clone <repo>
+```
+
+You do not need the submodules, a toolchain, or to build anything. Copy `sdk/`
+somewhere you will keep it. That is the whole step.
+
+## 4. Install the host in Cemu
+
+The host is the WiiXLaunch graphic pack. If you were given one, use it. To cut
+one from a checkout:
+
+```
 build_cemu.bat
 python scripts\make_sdk.py --host
 ```
 
-That produces both:
+which writes `build\host\` — the pack with no modules in it, ready for yours.
 
-```
-build\sdk\      the SDK — you build mods against this
-build\host\     the host — this goes into Cemu
-```
-
-Copy them somewhere you will keep them. Nothing else from the checkout is
-needed, and you never have to build WiiXLaunch again unless you want a newer
-host.
-
-## 4. Install the host in Cemu
-
-Copy `build\host\` into Cemu's graphic pack folder, naming it whatever you like:
+Copy it into Cemu's graphic pack folder, naming it whatever you like:
 
 ```
 Cemu\graphicPacks\WiiXLaunch_BotW\
@@ -232,9 +229,9 @@ python scripts/make_sdk.py --host
 
 ## Known gaps
 
-* **Nothing publishes releases.** The SDK and host are produced by building this
-  repo. They are self-contained folders and could be published; nobody has, so
-  today a mod author needs a checkout once or a friend with one.
+* **The host is not published.** `sdk/` is committed and can be downloaded
+  directly, but the host graphic pack is still cut by building this repo. It is
+  a self-contained folder and could be attached to a release; nobody has.
 * **Cemu is the only platform that has run.** The Switch and Wii U hosts build
   every time and have never been executed. A mod targets surfaces rather than a
   platform, so it should follow — but nothing has demonstrated that.

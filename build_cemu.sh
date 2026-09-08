@@ -66,8 +66,9 @@ python3 scripts/surface_coverage.py
 # The generated import headers must match the surfaces they came from.
 python3 scripts/gen_imports.py --check
 
-# The SDK still assembles, and a module built from it alone is byte-identical.
-python3 scripts/make_sdk.py --verify
+# The committed SDK matches the surfaces, and a module built from it alone is
+# byte-identical to one built from the tree.
+python3 scripts/make_sdk.py --check --verify
 
 # WIIXL_LOG's formatter. Every platform's logging goes through it and it cannot
 # be exercised on a console. NOT WIRED IN UNTIL 2026-09-04 - written, passing

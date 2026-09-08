@@ -38,12 +38,20 @@ not ask for and a demonstration of hook collision in their game. --host copies
 the pack with mods/ holding only what the HOST owns: its own resources under
 _host/, and probe.bin.
 
-Together they are the whole distribution:
+THE SDK IS COMMITTED, at sdk/ in this repo. It was a build artifact first, which
+meant the answer to "how do I get an SDK" was "build the framework" - a Python
+install, a toolchain, three submodules and a clone, to obtain 31 files that are
+just text. Anyone can now take the folder straight out of the repository, or off
+a release, and never see this script.
 
-    python scripts/make_sdk.py --host
+    python scripts/make_sdk.py            # refresh sdk/ after changing a surface
+    python scripts/make_sdk.py --check    # fail if sdk/ is out of date
+    python scripts/make_sdk.py --host     # cut a player-ready pack too
 
-    build/sdk/     -> the mod author builds against this
-    build/host/    -> the player drops this into Cemu's graphicPacks
+--check is the gate that keeps the committed copy honest, the same way
+gen_imports --check keeps the generated headers honest. A checked-in artifact
+that has drifted from its source is worse than no artifact: it looks
+authoritative and is stale.
 """
 import io
 import json
@@ -237,6 +245,27 @@ def verify_host(host):
     return True
 
 
+def compare_trees(built, committed):
+    """Every path that differs between a fresh assembly and what is on disk."""
+    out = []
+    if not os.path.isdir(committed):
+        return ["sdk/ does not exist"]
+    for root, _dirs, files in os.walk(built):
+        for name in files:
+            rel = os.path.relpath(os.path.join(root, name), built)
+            other = os.path.join(committed, rel)
+            if not os.path.exists(other):
+                out.append(rel + " (missing)")
+            elif io.open(os.path.join(root, name), "rb").read() != io.open(other, "rb").read():
+                out.append(rel + " (differs)")
+    for root, _dirs, files in os.walk(committed):
+        for name in files:
+            rel = os.path.relpath(os.path.join(root, name), committed)
+            if not os.path.exists(os.path.join(built, rel)):
+                out.append(rel + " (should not be there)")
+    return sorted(out)
+
+
 def verify(sdk):
     """Build a module using only the SDK, then again from the tree, and diff."""
     src = os.path.join(tempfile.mkdtemp(prefix="wxl_sdk_"), "probe_mod")
@@ -289,7 +318,7 @@ def verify(sdk):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    dest = os.path.abspath(args[0]) if args else os.path.join(ROOT, "build", "sdk")
+    dest = os.path.abspath(args[0]) if args else os.path.join(ROOT, "sdk")
 
     # The generated headers are most of what the SDK IS. Shipping stale ones
     # would hand a mod author a wrong signature, which is the exact failure the
@@ -301,9 +330,26 @@ def main():
                          "  cut an SDK around them. Run scripts/gen_imports.py.\n")
         return 1
 
-    versions = assemble(dest)
-    files = sum(len(f) for _r, _d, f in os.walk(dest))
-    print("[make_sdk] %s: %d file(s), %d surface(s)" % (dest, files, len(versions)))
+    if "--check" in sys.argv:
+        import filecmp
+        staging = os.path.join(tempfile.mkdtemp(prefix="wxl_sdkchk_"), "sdk")
+        assemble(staging)
+        diff = compare_trees(staging, dest)
+        if diff:
+            sys.stderr.write(
+                "\n[make_sdk] sdk/ is out of date - %d file(s) differ or are missing:\n"
+                "%s"
+                "  Run: python scripts/make_sdk.py\n"
+                "  A checked-in artifact that has drifted from its source looks\n"
+                "  authoritative and is stale.\n"
+                % (len(diff), "".join("    %s\n" % d for d in diff)))
+            return 1
+        files = sum(len(f) for _r, _d, f in os.walk(dest))
+        print("[make_sdk] sdk/ up to date: %d file(s)" % files)
+    else:
+        versions = assemble(dest)
+        files = sum(len(f) for _r, _d, f in os.walk(dest))
+        print("[make_sdk] %s: %d file(s), %d surface(s)" % (dest, files, len(versions)))
 
     if "--verify" in sys.argv:
         if not verify(dest):

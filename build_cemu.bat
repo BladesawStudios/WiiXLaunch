@@ -116,7 +116,7 @@ if %ERRORLEVEL% NEQ 0 (
 :: framework" is a thing that happened this build rather than a design claim.
 :: It is how ppc_relocs was found missing: forgetting a dependency is not
 :: something you can notice from inside the tree that has it.
-python scripts\make_sdk.py --verify
+python scripts\make_sdk.py --check --verify
 if %ERRORLEVEL% NEQ 0 (
     echo [make_sdk] FAILED - see above.
     exit /b 1

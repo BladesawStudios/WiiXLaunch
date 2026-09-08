@@ -1,0 +1,28 @@
+{
+  "surfaces": {
+    "botw.actor": "v1.0",
+    "botw.armour": "v1.1",
+    "botw.camera": "v1.0",
+    "botw.display": "v1.0",
+    "botw.events": "v1.0",
+    "botw.flyt": "v1.0",
+    "botw.gamedata": "v1.2",
+    "botw.gfx": "v1.0",
+    "botw.gui": "v1.0",
+    "botw.input": "v1.1",
+    "botw.map": "v1.1",
+    "botw.memory": "v1.0",
+    "botw.player": "v1.1",
+    "botw.pouch": "v1.1",
+    "botw.region": "v1.0",
+    "botw.sound": "v1.0",
+    "botw.vfx": "v1.0",
+    "botw.world": "v1.0",
+    "wiixl.call": "v1.0",
+    "wiixl.core": "v1.5",
+    "wiixl.mem": "v1.0",
+    "wiixl.net": "v1.2",
+    "wiixl.patch": "v1.0",
+    "wiixl.time": "v1.0"
+  }
+}
