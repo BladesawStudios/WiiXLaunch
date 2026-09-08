@@ -55,6 +55,7 @@ WIRING = [
         ("net_test\\build.bat",     "net_test"),
         ("loader_fuzz\\build.bat",  "loader_fuzz"),
         ("surface_coverage.py",     "surface_coverage"),
+        ("gen_imports.py",          "gen_imports --check"),
         ("audit_gates.py",          "audit_gates (this file)"),
     ]),
     ("build_cemu.sh", [
@@ -66,6 +67,7 @@ WIRING = [
         ("net_test/build.sh",      "net_test"),
         ("loader_fuzz/build.sh",   "loader_fuzz"),
         ("surface_coverage.py",    "surface_coverage"),
+        ("gen_imports.py",         "gen_imports --check"),
         ("audit_gates.py",         "audit_gates (this file)"),
     ]),
 ]
@@ -76,14 +78,15 @@ WIRING = [
 # them: deleting a row from WIRING would have dropped the count and still
 # printed success. A gate that checks other gates for liveness and has none of
 # its own is the joke writing itself.
-EXPECTED_MIN_INVOCATIONS = 21
-EXPECTED_MIN_SCRIPTS = 18
+EXPECTED_MIN_INVOCATIONS = 23
+EXPECTED_MIN_SCRIPTS = 19
 
 MUST_EXIST = [
     "scripts/test_host.py",
     "scripts/test_wxlm.py",
     "scripts/test_log_lengths.py",
     "scripts/surface_coverage.py",
+    "scripts/gen_imports.py",
     "scripts/wxlm.py",
     "tools/format_test/build.bat",
     "tools/format_test/build.sh",

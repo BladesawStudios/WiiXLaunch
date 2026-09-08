@@ -100,6 +100,16 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+:: The import headers a .wxlm includes are GENERATED from the surface tables.
+:: A generated file that has drifted from its source reads as authoritative and
+:: is not - and this one would hand a mod a wrong signature, which compiles,
+:: links, packs and loads before corrupting the stack at run time.
+python scripts\gen_imports.py --check
+if %ERRORLEVEL% NEQ 0 (
+    echo [gen_imports] FAILED - see above.
+    exit /b 1
+)
+
 :: WIIXL_LOG's formatter. Every platform's logging goes through it, it cannot
 :: be exercised on a console, and when it gets a conversion wrong it prints the
 :: specifier and silently drops the argument - which reads as "the code under
