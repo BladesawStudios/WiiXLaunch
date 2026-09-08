@@ -44,25 +44,21 @@ E:\...\My Mods\hello_mod\
 
 ```cpp
 // hello.wxlm - the smallest complete module.
-#include <cstdint>
 
-// Every host call is an import. The symbol NAME is the declaration: the loader
-// reads these out of the ELF and resolves them through the surface registry.
-extern "C" {
-    extern void wiixl_import__wiixl_core__Log(const char* text);
-}
+// One generated header per surface. It DECLARES every symbol the surface
+// publishes, with the signature taken from the surface's own table - so a
+// signature cannot drift, because nobody typed it twice.
+#include <wiixlaunch/imports/wiixl_core.h>
 
-// VOLATILE, ALWAYS. Without it the compiler folds the indirect call into a
-// direct branch and emits a relocation kind that cannot reach a host address.
-// This is not style - the mod will fail to relocate. See docs/modules.md.
-using LogFn = void (*)(const char*);
-static LogFn volatile g_Log = &wiixl_import__wiixl_core__Log;
+// Declaring is free; BINDING is what makes something an import. Name only what
+// you use, and only that is imported. The macro applies the volatile the
+// relocation requires - see section 3.
+namespace C { WXL_USE_wiixl_core(Log); }
 
 // The loader calls this once, at load. `used` because nothing in this
 // translation unit references it and the optimizer would otherwise drop it.
 extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
-    LogFn log = g_Log;
-    if (log) log("hello: I am a compiled mod and I resolved wiixl.core");
+    if (C::Log) C::Log("hello: I am a compiled mod and I resolved wiixl.core");
 }
 ```
 
@@ -86,10 +82,10 @@ Boot, and the log should read (these are the real numbers - this example was
 built to get them):
 
 ```
-[loader:hello] v1.0.0  payload 92 B, bss 0 B, 5 relocs, 1 imports, phase 0
+[loader:hello] v1.0.0  payload 96 B, bss 0 B, 6 relocs, 1 imports, phase 0
 [loader:hello] integrity OK (crc32 ... )
 [loader:hello] requires wiixl.core v1.0 - present
-[loader:hello] relocated 5 entries (1 resolved through the registry)
+[loader:hello] relocated 6 entries (1 resolved through the registry)
 [loader:hello] LOADED, entry at 0x..., waiting for phase 0
 [loader:hello] phase 0 reached, calling entry at 0x...
 hello: I am a compiled mod and I resolved wiixl.core
@@ -102,7 +98,37 @@ stopped. That is the whole debugging method and it is covered in section 9.
 
 ## 3. Imports
 
-### The naming convention IS the declaration
+### Use the generated headers
+
+`include/wiixlaunch/imports/` holds one header per surface -
+`wiixl_core.h`, `botw_player.h`, `botw_map.h` - emitted from the surface tables
+by `scripts/gen_imports.py`. **Do not hand-write import declarations.** The
+signature of an import is the one thing about a mod that nothing else checks:
+get it wrong and it compiles, links, packs, loads, and corrupts the stack at run
+time. The generator exists so that cannot happen, and `--check` runs in the
+build so a header cannot drift from its surface.
+
+Binding is per symbol:
+
+```cpp
+namespace P {
+WXL_USE_botw_player(Init);
+WXL_USE_botw_player(ActorGetLife);
+}
+...
+P::Init();
+const int32_t life = P::ActorGetLife(handle);
+```
+
+**Declaring is not importing.** A header declares everything on its surface, and
+a declaration nothing references costs nothing. Only what you bind becomes an
+undefined reference, which is what `wxlm.py` turns into an import. A mod that
+includes `wiixl_core.h`, `botw_player.h` and `botw_actor.h` - 66 declared
+symbols - and binds three, packs as **3 imports and 2 required surfaces**;
+`botw.actor` is not even required, because nothing bound from it. That is
+measured, not asserted: see the commit that added the generator.
+
+### The naming convention underneath
 
 ```
 wiixl_import__<surface with dots as underscores>__<Symbol>
@@ -112,7 +138,8 @@ wiixl_import__<surface with dots as underscores>__<Symbol>
 
 `scripts/wxlm.py` walks the ELF's undefined symbols, decodes each one, and
 writes them into the `.wxlm` header. **You never repeat the list on a command
-line**, which means the list and the code cannot disagree.
+line**, which means the list and the code cannot disagree. The generated headers
+are just this convention, written for you with the right types.
 
 ### Required surfaces are derived, not declared
 
@@ -129,17 +156,13 @@ instead:
 --require botw.map@1.1
 ```
 
-### The volatile rule, again
+### The volatile rule
 
-Every import pointer a mod holds must be `volatile`. Both `docs/modules.md` and
-several hours of this project's history say so. The pattern that scales is a
-macro, the way the API mod does it:
-
-```cpp
-#define WXL_IMPORT(name, sym) inline decltype(&sym) volatile name = &sym
-WXL_IMPORT(Log,  wiixl_import__wiixl_core__Log);
-WXL_IMPORT(Life, wiixl_import__botw_player__ActorGetLife);
-```
+Every import pointer a mod holds must be `volatile`. Without it the compiler
+folds the indirect call into a direct branch and emits a relocation kind that
+cannot reach a host address - the module fails to relocate. `WXL_USE_*` applies
+it for you, which is most of why binding goes through a macro rather than being
+written out.
 
 ---
 
@@ -170,9 +193,11 @@ The BotW module publishes eighteen - `botw.player`, `botw.actor`, `botw.gfx`,
 `botw.display`, `botw.events`, `botw.sound`, `botw.memory`, `botw.gamedata`,
 `botw.world`, `botw.input`, `botw.map`, `botw.pouch`, `botw.armour`.
 
-For what is in each, read the surface header - the symbol table at the bottom of
-`vendor/wiixlaunch-botw/include/wiixlaunch/botw/surfaces/*.hpp` is the list, and
-the comments above each function are the contract.
+For what is in each, read the **generated header** - `include/wiixlaunch/imports/`
+has one per surface, listing every symbol with its real signature and the version
+it came from. For *why* a symbol behaves as it does, read the surface itself in
+`vendor/wiixlaunch-botw/include/wiixlaunch/botw/surfaces/*.hpp`; the comments
+above each function are the contract.
 
 ---
 
