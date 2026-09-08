@@ -72,6 +72,12 @@ def main():
                     help="bytes this module requires; omitted means best effort")
     ap.add_argument("--include", action="append", default=[],
                     help="extra include directory; repeatable")
+    # Required surfaces are DERIVED from the imports at v1.0, which is right
+    # almost always. This is for the case it is not: a symbol that only exists
+    # from a later minor, where resolving against an older host would leave the
+    # mod running with a call it cannot make. Repeatable, <surface>@<major>.<minor>.
+    ap.add_argument("--require", dest="requires", action="append", default=[],
+                    help="require a surface at a minimum version, e.g. botw.map@1.1")
     args = ap.parse_args()
 
     root = os.path.abspath(args.wiixlaunch)
@@ -141,6 +147,8 @@ def main():
 
     pack = [sys.executable, wxlm_py, elf, wxlm, "--id", args.id,
             "--phase", args.phase]
+    for spec in args.requires:
+        pack += ["--require", spec]
     if args.heap_request:
         pack += ["--heap-request", str(args.heap_request)]
     r = subprocess.run(pack)

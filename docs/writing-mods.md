@@ -1,0 +1,329 @@
+# Writing a mod
+
+This is the guide for the thing WiiXLaunch became. It used to be a template you
+copied and built on; now it is a host with a versioned ABI, and a mod is a
+separate compiled binary that asks the host for what it needs by name.
+
+If you have read `docs/loader.md` this repeats a little of it on purpose - that
+document explains how the loader works, this one explains how to use it.
+
+---
+
+## 1. The three layers, and why you care
+
+```
+  WiiXLaunch (base)         game-agnostic. Loader, hooks, patches, arena,
+                            sockets, filesystem. Publishes wiixl.* surfaces.
+        |
+  vendor/wiixlaunch-botw    the game module. Knows BotW's offsets, structures
+                            and hooks. Publishes botw.* surfaces.
+        |
+  your mod (.wxlm)          a relocatable blob. Knows NEITHER. It names the
+                            surfaces it needs and the host resolves them.
+```
+
+The rule that makes this worth the trouble: **your mod never includes a game
+header and never contains an offset.** When BotW's structures move, the game
+module changes, and your compiled `.wxlm` keeps working because it only ever
+asked for `botw.player:Life`, not for `*(int*)(link + 0x13C)`.
+
+That is also the constraint. Anything you want to do has to exist as a surface
+symbol. If it doesn't, the answer is to add it to the surface - not to reach
+around the boundary.
+
+---
+
+## 2. Your first mod
+
+A mod is a directory with a `mod.cpp` in it. Nothing else is required.
+
+```
+E:\...\My Mods\hello_mod\
+    mod.cpp
+```
+
+```cpp
+// hello.wxlm - the smallest complete module.
+#include <cstdint>
+
+// Every host call is an import. The symbol NAME is the declaration: the loader
+// reads these out of the ELF and resolves them through the surface registry.
+extern "C" {
+    extern void wiixl_import__wiixl_core__Log(const char* text);
+}
+
+// VOLATILE, ALWAYS. Without it the compiler folds the indirect call into a
+// direct branch and emits a relocation kind that cannot reach a host address.
+// This is not style - the mod will fail to relocate. See docs/modules.md.
+using LogFn = void (*)(const char*);
+static LogFn volatile g_Log = &wiixl_import__wiixl_core__Log;
+
+// The loader calls this once, at load. `used` because nothing in this
+// translation unit references it and the optimizer would otherwise drop it.
+extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
+    LogFn log = g_Log;
+    if (log) log("hello: I am a compiled mod and I resolved wiixl.core");
+}
+```
+
+Build it:
+
+```
+python scripts\build_mod.py --source "E:\...\My Mods\hello_mod" --id hello
+```
+
+`--id` is the module's name everywhere: the output `hello.wxlm`, its resource
+directory, and the name in every log line it causes. It may not start with `_`
+(that namespace is the host's).
+
+Deploy it by dropping `hello.wxlm` next to the others:
+
+```
+<graphic pack>\content\WiiXLaunch\mods\hello.wxlm
+```
+
+Boot, and the log should read (these are the real numbers - this example was
+built to get them):
+
+```
+[loader:hello] v1.0.0  payload 92 B, bss 0 B, 5 relocs, 1 imports, phase 0
+[loader:hello] integrity OK (crc32 ... )
+[loader:hello] requires wiixl.core v1.0 - present
+[loader:hello] relocated 5 entries (1 resolved through the registry)
+[loader:hello] LOADED, entry at 0x..., waiting for phase 0
+[loader:hello] phase 0 reached, calling entry at 0x...
+hello: I am a compiled mod and I resolved wiixl.core
+```
+
+If any of those lines is missing, the one that *is* missing tells you where it
+stopped. That is the whole debugging method and it is covered in section 9.
+
+---
+
+## 3. Imports
+
+### The naming convention IS the declaration
+
+```
+wiixl_import__<surface with dots as underscores>__<Symbol>
+   |                    |                            |
+   prefix          wiixl.core                       Log
+```
+
+`scripts/wxlm.py` walks the ELF's undefined symbols, decodes each one, and
+writes them into the `.wxlm` header. **You never repeat the list on a command
+line**, which means the list and the code cannot disagree.
+
+### Required surfaces are derived, not declared
+
+Every surface an import names is automatically added to the module's required
+list at v1.0. You do not have to declare anything. The consequence is worth
+knowing: `[loader:yourmod] requires botw.map v1.0 - present` appears because you
+called a `botw.map` symbol somewhere, not because you asked for it.
+
+If you need a *newer* minor - a symbol that only exists from v1.1 - say so when
+packing, so a mod that would silently miss the symbol is refused by name
+instead:
+
+```
+--require botw.map@1.1
+```
+
+### The volatile rule, again
+
+Every import pointer a mod holds must be `volatile`. Both `docs/modules.md` and
+several hours of this project's history say so. The pattern that scales is a
+macro, the way the API mod does it:
+
+```cpp
+#define WXL_IMPORT(name, sym) inline decltype(&sym) volatile name = &sym
+WXL_IMPORT(Log,  wiixl_import__wiixl_core__Log);
+WXL_IMPORT(Life, wiixl_import__botw_player__ActorGetLife);
+```
+
+---
+
+## 4. What is available
+
+Ask the host. Every boot logs the full registry at the load point:
+
+```
+Surface: 24 surface(s) registered on this host:
+Surface:   wiixl.core v1.5 (17 symbols)
+Surface:   botw.player v1.1 (17 symbols)
+...
+```
+
+The base publishes six:
+
+| surface | what it is for |
+|---|---|
+| `wiixl.core` | logging, arena allocation, file reads, hooks, the per-frame tick |
+| `wiixl.net` | TCP sockets, tracked per module, non-blocking enforced |
+| `wiixl.time` | monotonic ticks and the wall clock |
+| `wiixl.mem` | the game's own expanded heap |
+| `wiixl.call` | resolving a target address, the image base |
+| `wiixl.patch` | writing bytes with an origin check |
+
+The BotW module publishes eighteen - `botw.player`, `botw.actor`, `botw.gfx`,
+`botw.gui`, `botw.vfx`, `botw.flyt`, `botw.region`, `botw.camera`,
+`botw.display`, `botw.events`, `botw.sound`, `botw.memory`, `botw.gamedata`,
+`botw.world`, `botw.input`, `botw.map`, `botw.pouch`, `botw.armour`.
+
+For what is in each, read the surface header - the symbol table at the bottom of
+`vendor/wiixlaunch-botw/include/wiixlaunch/botw/surfaces/*.hpp` is the list, and
+the comments above each function are the contract.
+
+---
+
+## 5. Picking a tick
+
+There are **three** per-frame sources and they do not have the same lifetime.
+Choosing wrong is the difference between a mod that works and one that is dead
+exactly when you need it.
+
+| source | fires from | stops when |
+|---|---|---|
+| `wiixl.core:RegisterTick` | the GX2 buffer swap, after host draw callbacks | rendering stops |
+| `botw.player:RegisterTick` | the player's own state refresh | **there is no player actor** - title screen, loads |
+| `botw.input:RegisterFrame` | the game's input read | basically never |
+
+Rules of thumb:
+
+- Touching **player state** (life, position, this frame's attack)? Use
+  `botw.player:RegisterTick`. It runs at the point in the frame where that data
+  is coherent, and it not running means there is no player to touch.
+- **Drawing**? Use `botw.gfx:RegisterDraw` or `botw.gui:RegisterFrame`.
+- Anything that must **survive the title screen and loading** - a server, a menu,
+  an input injector, anything holding state it has to release - use
+  `botw.input:RegisterFrame`.
+
+That last one is not a hypothetical. The API mod was pumped from the player tick
+and was therefore dead on the title screen, which is precisely when you need it
+to undo whatever left you there.
+
+All three are attributed multi-slot registries: several mods can register, the
+host records which is which, and a callback that hangs is named in the log
+rather than being an anonymous freeze.
+
+---
+
+## 6. Arming: the trap
+
+**Several game subsystems answer "no" when the honest answer is "not armed
+yet."** They are inert until something installs their hook, and until then the
+call succeeds and does nothing, or returns false as if you asked for something
+impossible.
+
+If your mod uses any of these, call the initialiser once in `ModEntry`:
+
+```cpp
+P::Init();                 // botw.player - EVERY cached player accessor
+S::InputInit();            // botw.input  - injection lands nowhere without it
+S::InitExtraEffects();     // botw.armour - SetExtraEffect returns false without it
+S::InitCompletion();       // botw.gamedata - the display override has no hook
+S::InitBeastMarkers();     // botw.map - markers are never collected
+```
+
+They are idempotent. Several mods each calling them is fine; the return value
+tells you whether *this* call installed it.
+
+Two more are per-frame rather than per-load. If you equip, repair or hold
+weather, something has to pump them or the write is re-read away a frame later:
+
+```cpp
+S::TickEquipRefresh();     // botw.pouch  - equips and repairs land here
+S::TickWeatherHold();      // botw.world  - a hold decays without this
+```
+
+This is the single most expensive failure mode in the framework's history and it
+is not your fault when you hit it. If a write reports success and nothing
+happens, check this list first.
+
+---
+
+## 7. The freestanding rules
+
+A `.wxlm` is compiled `-nostdlib -nostartfiles` and linked with
+`--unresolved-symbols=ignore-all`. That last flag is what lets imports be
+undefined - and it also means **anything else you forgot links successfully and
+branches to address zero.**
+
+- **No libc.** No `printf`, `strlen`, `malloc`, `memcpy`. Nothing.
+- **GCC synthesises `memcpy`/`memset`/`memmove`/`memcmp` anyway** for struct
+  assignment and array init. You must define them yourself, or you get a jump to
+  0 at runtime with no build error. The API mod keeps them in
+  `include/wiixlaunch/api/mod_log.hpp`; copy that file into a new mod as a
+  starting point.
+- **Static constructors do run.** The loader executes `.init_array`. (The *host
+  payload* has no crt0 and cannot; a mod is different, because the loader does it
+  for you.)
+- **`.bss` is zeroed** over a `0xCD` poison fill, so a zeroed global really is
+  zero and an uninitialised read is visible as `0xCDCDCDCD`.
+- Memory comes from `wiixl.core:Alloc` against your module's arena grant
+  (256 KB by default). There is no `free` - the arena is yours for the session.
+
+---
+
+## 8. Versioning
+
+`(major, minor)` per surface. **Major must match exactly; minor must be at least
+what you asked for.**
+
+- A symbol was **added** -> minor bumps -> your old mod still resolves.
+- A symbol's **meaning or signature changed** -> major bumps -> your mod is
+  refused by name at load, with the reason in the log, rather than calling
+  something that no longer means what it did.
+
+This is why the API mod requires `botw.map v1.0` and happily runs against a host
+publishing v1.1. When you add to a surface, append to the symbol table and bump
+the minor - never insert, never reorder.
+
+---
+
+## 9. When it doesn't work
+
+The boot log is the instrument. Read it top-down and find the first line that is
+missing or wrong.
+
+| symptom | look for |
+|---|---|
+| mod not in the list at all | `[loader] N module(s) found` - is the filename `.wxlm` and in `mods/`? |
+| `MISSING-SURFACE` | you called a symbol from a surface this host does not publish |
+| loads, entry never runs | the `phase 0 reached` line for your id |
+| entry runs, nothing happens | section 6 - is the subsystem armed? |
+| a write "succeeds" and does nothing | section 6 - is something pumping the tick? |
+| game freezes | the in-flight record names the module it was inside, with a sequence number. **A frozen sequence means a hang inside a callback; an advancing one means the game stopped calling us.** Those look identical from outside. |
+
+Load order is **lexical by filename**, and load order is hook install order,
+which is call order. `a_first.wxlm` hooks before `b_second.wxlm`, so a_first
+wraps b_second. Rename to reorder.
+
+---
+
+## 10. The gates
+
+Run before you trust anything:
+
+```
+build_all.bat                 all three targets, plus every gate
+python scripts\surface_coverage.py    every public module function is reachable or excused
+```
+
+What they *don't* measure, so you know what your own testing is for: whether a
+surface's behaviour matches the module's, whether a wrapper drops an argument,
+and whether anything actually happens in the game. Every one of those has bitten
+this project while the gates read green.
+
+---
+
+## Where to go next
+
+- `docs/loader.md` - the `.wxlm` format, load sequence, phases, refusals
+- `docs/modules.md` - the standing rules, and why each one exists
+- `docs/hooks.md` - chaining, trampolines, the conflict report
+- `docs/net.md` - sockets, the static-import rule
+- `examples/` - six working mods, smallest first: `hook_mod_a`, `sample_mod`,
+  `patch_mod`, `player_mod`, `net_mod`
+- The API mod (`BotW_API_wxlm`) - the largest real one: 201 imports, nine
+  surfaces, an HTTP server pumped from the input frame
