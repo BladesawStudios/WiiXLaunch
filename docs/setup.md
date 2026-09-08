@@ -2,6 +2,115 @@
 
 [« Back to overview](overview.md)
 
+**Which setup do you want?** There are two, and they are very different sizes.
+
+* **Writing a mod** - a `.wxlm` that drops into an installed host. Python,
+  devkitPPC, an SDK folder. No repo, no submodules, no game headers, one
+  toolchain. Start at [Setting up to write mods](#setting-up-to-write-mods)
+  below; the rest of this page is not for you.
+* **Working on the framework or a game module** - the host itself, the surfaces,
+  the loader. Everything from [Prerequisites](#prerequisites) onward.
+
+---
+
+## Setting up to write mods
+
+### 1. Python 3
+
+Runs the build script. Nothing else.
+
+### 2. devkitPPC
+
+**Only devkitPPC.** Not devkitA64, not WUPS, not libfunctionpatcher - those are
+for building the host on other platforms, and a mod is built once for the
+PowerPC target. Install from [devkitpro.org](https://devkitpro.org/wiki/Getting_Started)
+and take the `devkitPPC` package.
+
+`build_mod.py` finds it via `$DEVKITPPC`, then `C:\devkitPro\devkitPPC` and
+`/opt/devkitpro/devkitPPC`. If it cannot, it says so and stops rather than
+building something wrong:
+
+```
+[build_mod] SETUP PROBLEM - not a broken source tree.
+  powerpc-eabi-g++ was not found. Set DEVKITPPC, or install devkitPPC.
+```
+
+### 3. An SDK
+
+31 files: the build scripts, one generated header per surface, and the
+freestanding runtime. Cut one with:
+
+```
+python scripts/make_sdk.py build/sdk
+```
+
+**You need a framework checkout once to cut it, or someone who has one to hand
+you the folder.** There is no published SDK release yet - see
+[What is still manual](#what-is-still-manual).
+
+### 4. A host to run against
+
+A mod is inert on its own; it needs the host that loads it. On Cemu that is a
+graphic pack folder, about 4.5 MB:
+
+```
+WiiXLaunch_BotW_SampleMod/
+    rules.txt
+    patch_BotW_SampleMod.asm
+    content/WiiXLaunch/mods/        <- your .wxlm goes here
+```
+
+Drop it in Cemu's `graphicPacks/` and enable it. **Same caveat: today the pack
+comes from building this repo.**
+
+### 5. Write and build
+
+```
+mkdir my_mod
+```
+
+`my_mod/mod.json`:
+
+```json
+{ "id": "my_mod" }
+```
+
+`my_mod/mod.cpp`:
+
+```cpp
+#include <wiixlaunch/imports/wiixl_core.h>
+#include <wiixlaunch/mod_runtime.h>
+
+namespace C { WXL_USE_wiixl_core(Log); }
+
+extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
+    if (C::Log) C::Log("my_mod: loaded");
+}
+```
+
+```
+python sdk/scripts/build_mod.py --source my_mod
+```
+
+Copy `my_mod.wxlm` into the pack's `content/WiiXLaunch/mods/`, launch the game,
+and read the log. [Writing a mod](writing-mods.md) is the rest of it.
+
+### What is still manual
+
+Being straight about where the seams are:
+
+* **No published SDK or host.** Both are produced by building this repo. Nothing
+  packages them for release, so a mod author needs a checkout once or a friend
+  with one. The pieces are self-contained and could be published; nobody has.
+* **The host pack ships with the sample mods inside it.** A host install for
+  someone else wants `content/WiiXLaunch/mods/` empty apart from `_host/` and
+  `probe.bin`. Clearing it by hand works.
+* **Cemu only, in practice.** Switch and Wii U hosts build but have never been
+  run. A mod targets the surfaces rather than a platform, so it should follow -
+  "should" being exactly the word that has cost time before.
+
+---
+
 ## Prerequisites
 
 * **Python 3** - runs `scripts/generate_config.py` (turns `wiixlaunch.json` into the generated headers each target build reads) and `scripts/deploy.py` (packages build output).
@@ -24,9 +133,9 @@ If you already cloned without `--recurse-submodules`:
 git submodule update --init --recursive
 ```
 
-## Configuring your mod
+## Configuring the host
 
-Everything project-specific lives in [`wiixlaunch.json`](../wiixlaunch.json) at the repo root:
+Everything project-specific lives in [`wiixlaunch.json`](../wiixlaunch.json) at the repo root. This describes the HOST build - a `.wxlm` needs none of it and carries its own `mod.json` instead:
 
 * `project` - name, version, author, description, and `debug` (controls `EXL_DEBUG` on the Switch build).
 * `memory` - heap/JIT/inline-pool sizes and the Cemu debug log buffer size.
