@@ -109,7 +109,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
 python <sdk>\scripts\build_mod.py --source hello_mod
 ```
 
-You get `hello_moduild\hello.wxlm`. It is one file, and it is the only
+You get `hello_mod\build\hello.wxlm`. It is one file, and it is the only
 thing you ship.
 
 ## 7. Run it
