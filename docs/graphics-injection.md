@@ -5,7 +5,7 @@
 This is the [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw) module's `NVN` and `GX2` namespaces: drawing your own textures and meshes directly into Breath of the Wild's render loop, on top of the game's own frame. It's the reason this repo exists.
 
 ```cpp
-#include <wiixlaunch/botw/botw.hpp>
+#include <wiixlaunch/botw/botw.hpp>   // host-built only; a .wxlm uses botw.gfx
 
 using namespace WiiXLaunch::BotW;
 ```

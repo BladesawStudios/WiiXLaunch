@@ -222,6 +222,12 @@ Close(handle)
 
 `Shutdown` is `wiixl.net` v1.1. Directions are 0 read, 1 write, 2 both.
 
+`LastError` is v1.2: the platform's own error number behind the most recent
+transport call. It exists because `Accept` answers `PLATFORM-ERROR` for the
+ORDINARY case - a non-blocking listener with nothing pending - so a mod polling
+once a frame sees a failure name on almost every frame and cannot tell a quiet
+listener from a broken one. Print the number; do not branch on it.
+
 A connection must also carry a **deadline**: a client that connects and says
 nothing would otherwise hold a slot for the rest of the session, and that is a
 leak with a well-behaved-looking cause.

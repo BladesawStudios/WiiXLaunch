@@ -10,8 +10,32 @@ The framework hides the differences between three very different hooking mechani
 * **Wii U**: WUPS + libfunctionpatcher, which replaces a function in the running RPX by title ID.
 * **Cemu**: a hand-written PowerPC code cave, injected via a graphic pack patch.
 
+## Two ways to write a mod
+
+This matters before anything else, because most of the pages below describe one
+of them and it is not always the one you want.
+
+**Built into the host.** Your code lives in `src/main.cpp`, starts at
+`WiiXLaunch_Init()`, includes the game module's headers directly, and ships as
+one payload. This is the original model and it is still how the host itself is
+written. Everything is available and nothing is versioned, because there is no
+boundary to version.
+
+**Shipped as a `.wxlm`.** Your code is a separate relocatable binary that
+includes no game header and contains no offset. It names the SURFACES it needs -
+`wiixl.core`, `botw.player` - and the host resolves them at load. Several such
+mods load side by side, each attributed, each refusable by name. This is what
+lets a mod be distributed without source and survive the game module changing
+underneath it.
+
+If you are adding to this repo, you want the first. If you are writing a mod for
+other people to install, you want the second: see
+[Writing a mod](writing-mods.md).
+
 ## Where to go next
 
+* [Writing a mod](writing-mods.md) - the `.wxlm` path end to end: the three
+  layers, imports, picking a tick, arming, and the freestanding rules.
 * [Setting Up](setup.md) - installing the toolchains, configuring `wiixlaunch.json`, building and deploying for each platform.
 * [Hooks](hooks.md) - writing `WIIXL_HOOK_DEFINE_TRAMPOLINE` hooks, finding offsets, raw memory patches.
 * [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on each platform.
@@ -23,12 +47,13 @@ The framework hides the differences between three very different hooking mechani
 
 ## Layout
 
-* `src/` - your mod code. Starts at `WiiXLaunch_Init()` in `main.cpp`.
+* `src/` - the HOST. Starts at `WiiXLaunch_Init()` in `main.cpp`. This is also
+  where a host-built mod lives; a `.wxlm` does not go here.
 * `include/wiixlaunch/` - the framework itself.
 * `vendor/` - exlaunch, wut, WUPS, libfunctionpatcher (git submodules).
 * `scripts/` - config generation and packaging.
 * `tools/` - host-side developer tools (see [Debugging](debugging.md)).
-* `wiixlaunch.json` - the one file that describes your mod: name, target title IDs, memory sizes.
+* `wiixlaunch.json` - the one file that describes the HOST build: name, target title IDs, memory sizes. A `.wxlm` needs none of it - see [Writing a mod](writing-mods.md).
 
 ## Graphics injection R&D
 

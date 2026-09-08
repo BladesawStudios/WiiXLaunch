@@ -507,5 +507,5 @@ flagged were flips producing a different but still valid module. See the rule in
   corrupt file must not cost the user their boot.
 - **ABI mismatch** — the host logs its own version and registered surfaces at
   the load point, and rejects mismatched modules by name.
-- **A missing surface** — a module requiring `botw.gx2 v1` on a host that has no
+- **A missing surface** — a module requiring `botw.gfx v1` on a host that has no
   BotW module must fail cleanly with that message, never jump into nothing.

@@ -26,6 +26,8 @@ That's it, no build script edits, no `wiixlaunch.json` changes. Every build path
 
 Your `main.cpp`'s `#include` lines don't change either way, `#include <wiixlaunch/botw/botw.hpp>` resolves the same whether those headers are a submodule or (during early development) just copied under your own `include/`.
 
+That is the HOST-BUILT path. A `.wxlm` includes none of this: the module's public API is republished as versioned `botw.*` surfaces and a mod imports symbols from them by name. Both paths reach the same code; only one of them survives the module changing underneath it. See [Writing a mod](writing-mods.md).
+
 ## Naming convention
 
 A module must live at `vendor/wiixlaunch-<name>` for the auto-discovery to find it - the `wiixlaunch-` prefix is required. This is deliberately narrow: `vendor/wut`, `vendor/wups`, and `vendor/libfunctionpatcher` also have their own top-level `include/` dirs, but they're Wii U SDK dependencies wired up through their own dedicated Makefile flow, not something you want silently added to every platform's include path.

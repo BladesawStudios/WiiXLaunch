@@ -16,7 +16,7 @@ WIIXL_HOOK_DEFINE_TRAMPOLINE(PlayerStaminaHook) {
     }
 };
 
-extern "C" void WiiXLaunch_Init() {
+extern "C" void WiiXLaunch_Init() {   // the HOST's entry; a .wxlm uses WiiXLaunch_ModEntry
 #if WIIXL_WIIU
     if (!WiiXLaunch::Backend::InitWiiUBackend()) return;
 #elif WIIXL_CEMU
