@@ -355,6 +355,14 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dest = os.path.abspath(args[0]) if args else os.path.join(ROOT, "sdk")
 
+    # sdk/ is committed, so it sits at the root. The host is a BUILD PRODUCT -
+    # cut from whatever build_cemu just produced - so it belongs in build/ with
+    # the rest of them, and this used to drop it at the root next to sdk/ where
+    # it was both surprising and untracked. Given an explicit destination it
+    # still lands beside it, which is what somebody passing one would expect.
+    host_dest = (os.path.join(os.path.dirname(dest), "host") if args
+                 else os.path.join(ROOT, "build", "host"))
+
     # The generated headers are most of what the SDK IS. Shipping stale ones
     # would hand a mod author a wrong signature, which is the exact failure the
     # generator exists to prevent.
@@ -392,7 +400,6 @@ def main():
             return 1
 
     if "--host" in sys.argv:
-        host_dest = os.path.join(os.path.dirname(dest), "host")
         if cut_host(host_dest) is None:
             return 1
         if not verify_host(host_dest):
