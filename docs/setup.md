@@ -269,3 +269,10 @@ python scripts/make_sdk.py --host
 * **Cemu is the only platform that has run.** The Switch and Wii U hosts build
   every time and have never been executed. A mod targets surfaces rather than a
   platform, so it should follow — but nothing has demonstrated that.
+* **Switch cannot load a `.wxlm` at all**, and it is the tooling as much as the
+  host: `Loader::Load` is not compiled there, directory enumeration says so
+  rather than reporting an empty folder, and `scripts/wxlm.py` writes `PPC32`
+  into every header it produces while `build_mod.py` only drives
+  `powerpc-eabi-g++`. The format already distinguishes AArch64 and the loader
+  already checks it; nothing produces one. Wii U has the whole path — the
+  plugin drives the loader from `ON_APPLICATION_START` — and has not been run.

@@ -1003,18 +1003,84 @@ inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t ca
 #elif WIIXL_WIIU
 
 namespace impl {
-inline uint32_t ListWxlm(const char* dir, char[][kMaxNameLen], uint32_t) {
-    // Not the same answer as "the directory is empty", and it must not read as
-    // one.
-    WIIXL_LOG("[loader] directory enumeration is not implemented on Wii U yet (%s)", dir);
-    return 0;
+
+// The Cemu version of this resolves coreinit through the import shims because
+// a graphic-pack payload has no imports. On Wii U the plugin links coreinit for
+// real, so these are the actual functions and the struct is WUT's rather than
+// one pinned by static_assert here.
+//
+// Everything else is deliberately the same as Cemu's, including the parts that
+// look like they could be simplified: the candidate path list (a directory that
+// resolves differently from the files inside it is a bug with no symptom until
+// something enumerates), the 64-byte alignment, the 64-entry sweep bound, and
+// the filter on the name rather than on stat flags.
+alignas(64) inline FSDirectoryEntry g_DirEntry;
+
+// Names of the .wxlm files in `dir`, UNSORTED - FSReadDir's order is not
+// specified by coreinit and is not relied on anywhere. LoadAll sorts.
+inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t cap) {
+    if (!FS::impl::EnsureFSClient()) {
+        WIIXL_LOG("[loader] cannot enumerate %s - no FS client", dir);
+        return 0;
+    }
+
+    auto* client = reinterpret_cast<FSClient*>(FS::impl::g_FSClient);
+    auto* block = reinterpret_cast<FSCmdBlock*>(FS::impl::g_FSCmdBlock);
+
+    char storage[3][256];
+    const char* candidates[4];
+    FS::impl::Candidates(dir, storage, candidates);
+
+    FSDirectoryHandle handle = 0;
+    const char* opened = nullptr;
+    for (uint32_t c = 0; c < 4u && !opened; ++c) {
+        if (!candidates[c] || !candidates[c][0]) continue;
+        if (FSOpenDir(client, block, candidates[c], &handle, FS_ERROR_FLAG_ALL) == FS_STATUS_OK) {
+            opened = candidates[c];
+        }
+    }
+    if (!opened) {
+        WIIXL_LOG("[loader] %s does not exist or could not be opened, through any of "
+                  "the %u candidate paths", dir, 4u);
+        return 0;
+    }
+    WIIXL_LOG("[loader] enumerating %s", opened);
+
+    uint32_t n = 0, seen = 0, skipped = 0;
+    while (seen < 64) {
+        if (FSReadDir(client, block, handle, &g_DirEntry, FS_ERROR_FLAG_ALL) != FS_STATUS_OK) break;
+        ++seen;
+        g_DirEntry.name[sizeof(g_DirEntry.name) - 1] = '\0';
+        if (!EndsWithWxlm(g_DirEntry.name)) { ++skipped; continue; }
+        if (n >= cap) {
+            WIIXL_LOG("[loader] %s holds more than the %u modules this host can load; "
+                      "%s and anything after it are ignored", dir, cap, g_DirEntry.name);
+            break;
+        }
+        CopyName(names[n++], g_DirEntry.name);
+    }
+
+    FSCloseDir(client, block, handle, FS_ERROR_FLAG_ALL);
+    WIIXL_LOG("[loader] %s: %u entries seen, %u are .wxlm, %u skipped",
+              dir, seen, n, skipped);
+    return n;
 }
+
 } // namespace impl
 
 #else
 
 namespace impl {
-inline uint32_t ListWxlm(const char*, char[][kMaxNameLen], uint32_t) { return 0; }
+// Switch, and the host test build. Returning 0 here is indistinguishable from
+// an empty directory, which is the failure shape this codebase keeps hitting:
+// a capability that answers "nothing there" when it means "I cannot look". Say
+// which. The Wii U branch above used to be this and read as an empty mods/ to
+// anyone who did not check the source.
+inline uint32_t ListWxlm(const char* dir, char[][kMaxNameLen], uint32_t) {
+    WIIXL_LOG("[loader] directory enumeration is not implemented on this platform (%s) - "
+              "this is not the same as finding no modules", dir);
+    return 0;
+}
 } // namespace impl
 
 #endif

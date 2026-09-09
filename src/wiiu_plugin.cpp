@@ -13,6 +13,9 @@
 #include <wiixlaunch/generated_wiiu_config.hpp>
 #include <wiixlaunch/wiiu/wiiu_backend.hpp>
 #include <wiixlaunch/time.hpp>
+#include <wiixlaunch/loader/loader.hpp>
+#include <wiixlaunch/loader/core_surface.hpp>
+#include <wiixlaunch/patches.hpp>
 #include <cstdio>
 
 WUPS_PLUGIN_NAME(WUPS_PLUGIN_NAME_STR);
@@ -79,6 +82,17 @@ INITIALIZE_PLUGIN() {
     }
 }
 
+// The Wii U load point.
+//
+// Cemu has to nominate one as an ADDRESS INSIDE THE GAME, which is knowledge
+// only a game module has - so there it is botw/load_point.hpp that calls the
+// loader. Aroma gives us a lifecycle event instead, at a point where the title
+// is up and coreinit FS is usable, so the host can drive the loader itself and
+// module loading on this platform does not depend on any game module.
+//
+// INITIALIZE_PLUGIN is too early for it: that runs at plugin load, before a
+// title, and WiiXLaunch_Init's job there is registering surfaces. Modules are
+// read here, once a title has actually started.
 ON_APPLICATION_START() {
     s_NotifyInitStatus = NotificationModule_InitLibrary();
 
@@ -87,6 +101,40 @@ ON_APPLICATION_START() {
     snprintf(msg, sizeof(msg), "WiiXLaunch: active (%lu hooks, init %s)",
              (unsigned long)B::g_PatchOkCount, B::g_BackendInitOk ? "ok" : "FAILED");
     NotificationModule_AddInfoNotification(msg);
+
+    // What this host is and what it offers, logged before any module is read,
+    // so a rejection further down can be read against it.
+    WIIXL_LOG("[loader] host ABI v%u, format v%u",
+              WiiXLaunch::Core::kAbiVersion, WiiXLaunch::Wxlm::kFormatVersion);
+    WiiXLaunch::Surface::LogRegistered();
+
+    // Lexical filename order, which is also hook priority - a specification
+    // rather than an enumeration artefact. See docs/loader.md.
+    const uint32_t loaded = WiiXLaunch::Loader::LoadAll("WiiXLaunch/mods");
+
+    // Declared patches are applied during the loads above; they are verified
+    // and put back HERE, between LoadAll and RunPhase, so no module code runs
+    // while the game is modified. Same ordering as the Cemu load point, and for
+    // the same reason - it was wrong there once and the boot log said so.
+    //
+    // A host shipping REAL patch mods must delete the RestoreAll call; a patch
+    // is meant to persist.
+    WiiXLaunch::Patches::VerifyApplied();
+    WiiXLaunch::Patches::RestoreAll();
+    WiiXLaunch::Patches::LogState();
+
+    if (loaded != 0) {
+        WiiXLaunch::Loader::RunPhase(WiiXLaunch::Wxlm::Phase::Load);
+        snprintf(msg, sizeof(msg), "WiiXLaunch: %lu module(s) loaded",
+                 (unsigned long)loaded);
+        NotificationModule_AddInfoNotification(msg);
+    } else {
+        // A module that was found and REJECTED must not report as an absent
+        // one. Only the loader knows which happened, and the lines above say.
+        WIIXL_LOG("[loader] no modules loaded. The game boots normally either way; "
+                  "if the directory is simply empty that is the default state of a "
+                  "fresh host, and the lines above say which it was.");
+    }
 }
 
 #endif
