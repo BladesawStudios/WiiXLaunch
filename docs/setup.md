@@ -77,27 +77,20 @@ In Cemu: **Options → Graphic Packs**, find it under Breath of the Wild, tick i
 
 You need **BotW v208** — it is the only version the patches target.
 
-## 5. Write a mod
+## 5. Create the mod
 
-Make a folder with two files in it.
-
-`hello_mod\mod.json`
-
-```json
-{ "id": "hello" }
+```
+python <sdk>\scripts\build_mod.py --init hello_mod
 ```
 
-`hello_mod\mod.cpp`
+You get a folder that opens in an editor and builds:
 
-```cpp
-#include <wiixlaunch/imports/wiixl_core.h>
-#include <wiixlaunch/mod_runtime.h>
-
-namespace C { WXL_USE_wiixl_core(Log); }
-
-extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
-    if (C::Log) C::Log("hello: my first mod");
-}
+```
+hello_mod\
+    mod.cpp        a working module - logs a line at load
+    mod.json       { "id": "hello_mod" }
+    .clangd        editor config for clangd
+    .gitignore     build output, and the generated editor files
 ```
 
 ## 6. Build it
@@ -106,8 +99,24 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
 python <sdk>\scripts\build_mod.py --source hello_mod
 ```
 
-You get `hello_mod\build\hello.wxlm`. It is one file, and it is the only
+You get `hello_mod\build\hello_mod.wxlm`. It is one file, and it is the only
 thing you ship.
+
+**Build once before you start editing.** A mod folder has no build system in
+it, so an editor knows nothing about it until the first build writes:
+
+* `compile_commands.json` — read by clangd, and by anything else that speaks
+  the compilation-database format
+* `.vscode/c_cpp_properties.json` — read by the VS Code C/C++ extension
+
+Both are written from the command that just compiled, so they cannot drift from
+it, and both are rewritten every build. Open the folder in your editor and
+`#include <wiixlaunch/imports/...>` resolves, symbols autocomplete, and jumping
+to a declaration lands in the generated header with the surface's own notes
+above it.
+
+They are written *before* the compile, so the editor is configured even when
+the code does not build yet — which is when you most want it working.
 
 ## 7. Run it
 

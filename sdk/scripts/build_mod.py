@@ -116,9 +116,120 @@ def read_manifest(source):
     return data
 
 
+# --- editor integration -----------------------------------------------------
+#
+# A mod is a folder somewhere with no build system in it, which is fine for the
+# compiler and useless for an editor: nothing tells clangd or the VS Code C/C++
+# extension where <wiixlaunch/imports/...> lives, what the target is, or which
+# macros are set, so every include is red and no symbol resolves.
+#
+# The build already knows all of it - it constructs the exact command. So it
+# writes that command out in the two formats editors read, every time it runs.
+# No configuration to keep in sync, because the thing being written IS the
+# command that just compiled.
+def write_ide_files(source, cmd, mod_cpp, includes, gxx):
+    """compile_commands.json for clangd, c_cpp_properties.json for VS Code."""
+    # compile_commands.json: the compile step only. The link flags in `cmd` are
+    # not something an indexer should see, and -T/-nostdlib confuse some of them.
+    compile_only = [a for a in cmd
+                    if a not in ("-nostartfiles", "-nostdlib", "-Wl,-q",
+                                 "-Wl,--unresolved-symbols=ignore-all", "-lgcc")]
+    if "-T" in compile_only:
+        i = compile_only.index("-T")
+        del compile_only[i:i + 2]
+    if "-o" in compile_only:
+        i = compile_only.index("-o")
+        del compile_only[i:i + 2]
+
+    db = [{"directory": source.replace("\\", "/"),
+           "file": mod_cpp.replace("\\", "/"),
+           "arguments": compile_only}]
+    io.open(os.path.join(source, "compile_commands.json"), "w",
+            encoding="utf-8", newline="").write(json.dumps(db, indent=2) + "\n")
+
+    vscode = os.path.join(source, ".vscode")
+    os.makedirs(vscode, exist_ok=True)
+    io.open(os.path.join(vscode, "c_cpp_properties.json"), "w",
+            encoding="utf-8", newline="").write(json.dumps({
+        "version": 4,
+        "configurations": [{
+            "name": "WiiXLaunch mod",
+            "compilerPath": gxx.replace("\\", "/"),
+            "compilerArgs": ["-ffreestanding", "-fno-exceptions", "-fno-rtti"],
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "intelliSenseMode": "gcc-x64",
+            "includePath": [i.replace("\\", "/") for i in includes] + ["${workspaceFolder}"],
+            "defines": ["__CEMU__=1", "WIIXL_CEMU=1"],
+        }],
+    }, indent=2) + "\n")
+
+
+TEMPLATE_MOD_CPP = """\
+// %(id)s - a WiiXLaunch module.
+//
+// Every host call is an import. Include the header for the surface you want,
+// bind the symbols you use, and call them. Only what you BIND is imported, so
+// including a header costs nothing.
+//
+// The headers are in the SDK under include/wiixlaunch/imports/ - one per
+// surface, each listing what it publishes and, where the surface said so, why.
+
+#include <wiixlaunch/imports/wiixl_core.h>
+#include <wiixlaunch/mod_runtime.h>
+
+namespace Core {
+WXL_USE_wiixl_core(Log);
+}
+
+// The loader calls this once, at load. `used` because nothing here references
+// it and the optimizer would otherwise drop it.
+extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
+    if (Core::Log) Core::Log("%(id)s: loaded");
+}
+"""
+
+TEMPLATE_CLANGD = """\
+# clangd reads compile_commands.json, which build_mod.py writes next to this
+# file every time it runs. Build once and the editor knows everything.
+CompileFlags:
+  Add: [-ffreestanding, -fno-exceptions, -fno-rtti]
+  Remove: [-msdata=none, -T*, -Wl*, -nostdlib, -nostartfiles]
+"""
+
+TEMPLATE_GITIGNORE = """\
+build/
+compile_commands.json
+.vscode/
+"""
+
+
+def scaffold(dest, mod_id):
+    """A new mod folder that opens in an editor and builds."""
+    if os.path.exists(dest) and os.listdir(dest):
+        sys.stderr.write("[build_mod] --init: %s already exists and is not empty.\n"
+                         % dest)
+        return 1
+    os.makedirs(dest, exist_ok=True)
+    io.open(os.path.join(dest, "mod.cpp"), "w", encoding="utf-8", newline="").write(
+        TEMPLATE_MOD_CPP % {"id": mod_id})
+    io.open(os.path.join(dest, "mod.json"), "w", encoding="utf-8", newline="").write(
+        json.dumps({"id": mod_id}, indent=2) + "\n")
+    io.open(os.path.join(dest, ".clangd"), "w", encoding="utf-8", newline="").write(
+        TEMPLATE_CLANGD)
+    io.open(os.path.join(dest, ".gitignore"), "w", encoding="utf-8", newline="").write(
+        TEMPLATE_GITIGNORE)
+    print("[build_mod] created %s" % dest)
+    print("[build_mod]   mod.cpp  mod.json  .clangd  .gitignore")
+    print("[build_mod] build it once and your editor will resolve everything:")
+    print("[build_mod]   python %s --source %s"
+          % (os.path.join("<sdk>", "scripts", "build_mod.py"), dest))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Build a .wxlm module")
-    ap.add_argument("--source", required=True,
+    ap.add_argument("--source", required=False,
                     help="directory holding mod.cpp, and optionally data/")
     ap.add_argument("--id", default=None,
                     help="module id; also the output filename and resource dir. "
@@ -140,7 +251,16 @@ def main():
     # mod running with a call it cannot make. Repeatable, <surface>@<major>.<minor>.
     ap.add_argument("--require", dest="requires", action="append", default=[],
                     help="require a surface at a minimum version, e.g. botw.map@1.1")
+    ap.add_argument("--init", metavar="DIR",
+                    help="create a new mod folder, ready to open in an editor")
     args = ap.parse_args()
+
+    if args.init:
+        dest = os.path.abspath(args.init)
+        return scaffold(dest, args.id or os.path.basename(dest))
+
+    if not args.source:
+        ap.error("--source is required (or use --init to create a new mod)")
 
     root = os.path.abspath(args.wiixlaunch)
     source = os.path.abspath(args.source)
@@ -254,6 +374,10 @@ def main():
     cmd += ["-nostartfiles", "-nostdlib", "-T", linker, "-Wl,-q",
             "-Wl,--unresolved-symbols=ignore-all",
             mod_cpp, "-lgcc", "-o", elf]
+
+    # Before compiling, so the editor is configured even if the code does not
+    # build yet - which is exactly when you most want the editor working.
+    write_ide_files(source, cmd, mod_cpp, includes, gxx)
 
     r = subprocess.run(cmd)
     if r.returncode != 0:

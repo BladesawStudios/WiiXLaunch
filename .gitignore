@@ -17,6 +17,12 @@ tools/symbol_port/*.json
 tools/symbol_port
 scratch
 mystufflol/
+# Bytecode, anywhere. This was scripts/__pycache__/ only, which does not cover
+# sdk/scripts/ - and a .pyc appeared in the committed SDK the first time anyone
+# ran the SDK's own scripts. A distributed folder collects things nobody meant
+# to ship unless the rule is about the pattern rather than one path.
+__pycache__/
+*.pyc
 scripts/__pycache__/
 deploy/
 scripts/__pycache__

@@ -245,6 +245,17 @@ def verify_host(host):
     return True
 
 
+# Running the SDK's own scripts makes Python write bytecode beside them, so the
+# check has to know the difference between the SDK's CONTENT and what using it
+# leaves behind. --verify does exactly that every build, which is how this was
+# found: the next build's --check reported sdk/scripts/__pycache__ as a file
+# that should not be there, and it was right that it existed and wrong that it
+# mattered.
+def is_debris(rel):
+    parts = rel.replace("\\", "/").split("/")
+    return "__pycache__" in parts or rel.endswith(".pyc")
+
+
 def compare_trees(built, committed):
     """Every path that differs between a fresh assembly and what is on disk."""
     out = []
@@ -253,6 +264,8 @@ def compare_trees(built, committed):
     for root, _dirs, files in os.walk(built):
         for name in files:
             rel = os.path.relpath(os.path.join(root, name), built)
+            if is_debris(rel):
+                continue
             other = os.path.join(committed, rel)
             if not os.path.exists(other):
                 out.append(rel + " (missing)")
@@ -261,6 +274,8 @@ def compare_trees(built, committed):
     for root, _dirs, files in os.walk(committed):
         for name in files:
             rel = os.path.relpath(os.path.join(root, name), committed)
+            if is_debris(rel):
+                continue
             if not os.path.exists(os.path.join(built, rel)):
                 out.append(rel + " (should not be there)")
     return sorted(out)
@@ -303,6 +318,25 @@ def verify(sdk):
             return False
         outs[label] = io.open(os.path.join(out, "sdk_probe.wxlm"), "rb").read()
 
+    # The editor half. A mod folder has no build system in it, so an indexer
+    # knows nothing until build_mod.py writes compile_commands.json - and
+    # "your editor will resolve everything" is a claim like any other. Replaying
+    # that file with -fsyntax-only is exactly what an indexer does with it, so
+    # if this resolves, clangd and the VS Code C/C++ extension resolve.
+    db_path = os.path.join(src, "compile_commands.json")
+    if not os.path.exists(db_path):
+        sys.stderr.write("[make_sdk] --verify: the build wrote no compile_commands.json, "
+                         "so an editor would resolve nothing.\n")
+        return False
+    db = json.loads(io.open(db_path, encoding="utf-8").read())
+    replay = subprocess.run(db[0]["arguments"] + ["-fsyntax-only"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if replay.returncode != 0:
+        sys.stderr.write("[make_sdk] --verify: replaying compile_commands.json fails, so "
+                         "an editor reading it would show errors:\n%s\n"
+                         % replay.stdout.decode("utf-8", "replace"))
+        return False
+
     if outs["sdk"] != outs["tree"]:
         sys.stderr.write(
             "[make_sdk] --verify: the SDK and the tree produced DIFFERENT modules\n"
@@ -311,7 +345,8 @@ def verify(sdk):
         return False
 
     print("[make_sdk] verified: a module built from the SDK alone is byte-identical\n"
-          "           to the same module built from the full tree (%d bytes)"
+          "           to the same module built from the full tree (%d bytes),\n"
+          "           and its compile_commands.json resolves every include"
           % len(outs["sdk"]))
     return True
 
@@ -344,7 +379,8 @@ def main():
                 "  authoritative and is stale.\n"
                 % (len(diff), "".join("    %s\n" % d for d in diff)))
             return 1
-        files = sum(len(f) for _r, _d, f in os.walk(dest))
+        files = sum(1 for r, _d, f in os.walk(dest) for n in f
+                     if not is_debris(os.path.relpath(os.path.join(r, n), dest)))
         print("[make_sdk] sdk/ up to date: %d file(s)" % files)
     else:
         versions = assemble(dest)
