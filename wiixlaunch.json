@@ -1,6 +1,6 @@
 {
   "project": {
-    "name": "BotW_SampleMod",
+    "name": "WiiXLaunch_BotW",
     "version": "1.0.0",
     "author": "Modder",
     "description": "Cross-platform Breath of the Wild Mod powered by WiiXLaunch",
@@ -25,7 +25,7 @@
     "mount_path": "/mnt/sdcard"
   },
   "wiiu": {
-    "plugin_name": "BotW_SampleMod.wps",
+    "plugin_name": "WiiXLaunch_BotW.wps",
     "target_title_ids": [
       "00050000101C9400",
       "00050000101C9500",

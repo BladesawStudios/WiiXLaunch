@@ -63,7 +63,10 @@ def main():
     deploy_dir = os.path.join(root_dir, "deploy")
     switch_deploy_dir = os.path.join(deploy_dir, "switch", "atmosphere", "contents", switch_title_id, "exefs")
     wiiu_deploy_dir = os.path.join(deploy_dir, "wiiu", "wiiu", "environments", "aroma", "plugins")
-    cemu_deploy_dir = os.path.join(deploy_dir, "cemu", "graphicPacks", f"WiiXLaunch_{project_name}")
+    # The pack folder is project.name, verbatim. This used to prepend
+    # "WiiXLaunch_", which meant the name in wiixlaunch.json was never the
+    # name on disk and the pack could not be called what you called it.
+    cemu_deploy_dir = os.path.join(deploy_dir, "cemu", "graphicPacks", project_name)
 
     os.makedirs(switch_deploy_dir, exist_ok=True)
     os.makedirs(wiiu_deploy_dir, exist_ok=True)
@@ -107,7 +110,7 @@ def main():
 
     cemu_rules_content = f"""[Definition]
 titleIds = {wiiu_tids}
-name = "{project_name} (WiiXLaunch Cemu Pack)"
+name = "{project_name}"
 path = "{gp_path}"
 version = 7
 """

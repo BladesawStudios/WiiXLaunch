@@ -70,7 +70,7 @@ Copy it into Cemu's graphic pack folder, naming it whatever you like:
 ```
 Cemu\graphicPacks\WiiXLaunch_BotW\
     rules.txt
-    patch_BotW_SampleMod.asm
+    patch_WiiXLaunch_BotW.asm
     content\WiiXLaunch\mods\        ← your mods go here
 ```
 

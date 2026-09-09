@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-#define EXL_MODULE_NAME "BotW_SampleMod"
+#define EXL_MODULE_NAME "WiiXLaunch_BotW"
 #define EXL_DEBUG
 #define EXL_USE_FAKEHEAP
 
