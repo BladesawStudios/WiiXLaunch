@@ -3,14 +3,39 @@
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/net_surface.hpp>
 #include <wiixlaunch/loader/base_surfaces.hpp>
-#include <wiixlaunch/botw/botw.hpp>
 
+// --- the game module, whichever one this project installed --------------------
+//
+// A game module - BotW, or anything else - provides <wiixlaunch/module.hpp>,
+// which declares WiiXLaunch::GameModule::Register(). That is a FIXED PATH and a
+// fixed name, so this file does not have to know which game it was built for,
+// and a tree with no module in vendor/ still compiles.
+//
+// __has_include rather than a weak symbol, for the reason spelled out at the
+// registration call below: deploy.py relocates every ADDR32 site by adding the
+// code-cave base, so an undefined weak symbol would resolve to 0, come out as
+// g_CodeCaveBase, and test as non-null. This is settled by the preprocessor and
+// cannot be fooled that way.
+#if __has_include(<wiixlaunch/module.hpp>)
+#include <wiixlaunch/module.hpp>
+#define WIIXL_HAVE_GAME_MODULE 1
+#endif
+
+// The logo demo below is BotW's, not base's: NVN and GX2 come from that module.
+// It is sample code and the file says so - delete it and everything above still
+// builds. Guarded separately from the module hookup so that a project with a
+// DIFFERENT game module is not asked to provide BotW's graphics namespaces.
+#if __has_include(<wiixlaunch/botw/botw.hpp>)
+#include <wiixlaunch/botw/botw.hpp>
+#define WIIXL_BOTW_DEMO 1
 using namespace WiiXLaunch::BotW;
+#endif
 
 // feel free to remove this, its just proof your toolchain works end-end -
 // the OnRender callbacks here and their registration in WiiXLaunch_Init
 // below can both go. The WIIXL_LOG lines in there are the proof-of-life
 // that works on every platform.
+#if WIIXL_BOTW_DEMO
 #if WIIXL_SWITCH
 // Draws nothing. The logo demo the other targets run needs a texture in the
 // container NVN::CreateTexture expects - a 0x200-byte header with width at
@@ -39,6 +64,7 @@ void OnRender(GX2::CommandBuffer* cmdBuf, void* dstTexture, int width, int heigh
     GX2::DrawSprite(cmdBuf, dstTexture, g_LogoTexture, -0.92f, 0.50f, 0.225f, 0.40f);
 }
 #endif
+#endif // WIIXL_BOTW_DEMO
 
 
 // Entry point called once at plugin/module load. Install your hooks here.
@@ -86,13 +112,19 @@ extern "C" void WiiXLaunch_Init() {
     // name rather than at the first call.
     WiiXLaunch::BaseSurfaces::RegisterAll();
 
-    // Game modules register here. Base must never name one - this line lives in
-    // the project's own source, which is where knowledge of what was installed
-    // belongs. Stage 4 calls this before loading any .wxlm.
-    //
-    // A project with no game module simply does not have this line, registers
-    // only wiixl.core, and LogRegistered says so.
-    WiiXLaunch::BotW::Surfaces::Register();
+    // Game modules register here, through the fixed name declared by whichever
+    // <wiixlaunch/module.hpp> the project installed. Stage 4 calls this before
+    // loading any .wxlm.
+#if WIIXL_HAVE_GAME_MODULE
+    WIIXL_LOG("WiiXLaunch: game module '%s'", WiiXLaunch::GameModule::kName);
+    WiiXLaunch::GameModule::Register();
+#else
+    // Not the same as "this game has no surfaces", and it must not read as one.
+    // A .wxlm needing a game surface is refused BY NAME at load, which is only
+    // legible if the log already said the host has no game module at all.
+    WIIXL_LOG("WiiXLaunch: no game module in this build - base surfaces only. "
+              "A module requiring a game surface will be refused by name.");
+#endif
 
     WiiXLaunch::Surface::LogRegistered();
 
@@ -120,6 +152,7 @@ extern "C" void WiiXLaunch_Init() {
     WiiXLaunch::Time::FormatNow(clock, sizeof(clock));
     WIIXL_LOG("WiiXLaunch: system clock %s", clock);
 
+#if WIIXL_BOTW_DEMO
 #if WIIXL_SWITCH
     NVN::Init();
     NVN::RegisterDrawCallback(OnRender);
@@ -142,6 +175,7 @@ extern "C" void WiiXLaunch_Init() {
 //         WIIXL_LOG("WiiXLaunch: GX2 logo texture initialized: %p", reinterpret_cast<void*>(g_LogoTexture));
 //     });
 #endif
+#endif // WIIXL_BOTW_DEMO
 }
 
 // The Cemu bootstrap - g_CodeCaveBase, WiiXLaunch_Cemu_Relocate and the
