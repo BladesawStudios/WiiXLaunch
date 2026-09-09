@@ -13,7 +13,8 @@ Two different jobs, two different setups. Pick the one you are doing.
 
 # Writing mods
 
-You need two tools, two folders, and about fifteen minutes.
+Two things to install, two folders to download, and one command that writes
+the mod for you. About fifteen minutes.
 
 ## 1. Install Python 3
 
@@ -99,40 +100,64 @@ hello_mod\
 python <sdk>\scripts\build_mod.py --source hello_mod
 ```
 
-You get `hello_mod\build\hello_mod.wxlm`. It is one file, and it is the only
-thing you ship.
+```
+[wxlm] hello_mod.wxlm  id=hello_mod v1.0.0  phase=load
+[wxlm]   import wiixl.core:Log
+[wxlm]   payload 252 B, 6 relocs, 1 imports, 0 exports, 1 required, 16 B strings
+[wxlm]   entry WiiXLaunch_ModEntry @0x0, init_array 0, bss 0 B, heap request 0 B
+[wxlm]   0 declared patch(es)
+[wxlm]   file 484 B, content crc32 0x6BDF5CF6
+[build_mod] mod.json: id=hello_mod phase=load
+```
 
-**Build once before you start editing.** A mod folder has no build system in
-it, so an editor knows nothing about it until the first build writes:
+You get `hello_mod\build\hello_mod.wxlm`. It is one file, and it is the only
+thing you ship. Every import it uses is named in that output — which is also
+the list the host will be asked for at load.
+
+## 7. Open it in your editor
+
+**Do the build first.** A mod folder has no build system in it, so nothing
+tells an editor where the headers are until that first build writes two files
+beside your source:
 
 * `compile_commands.json` — read by clangd, and by anything else that speaks
   the compilation-database format
-* `.vscode/c_cpp_properties.json` — read by the VS Code C/C++ extension
+* `.vscode\c_cpp_properties.json` — read by the VS Code C/C++ extension
 
-Both are written from the command that just compiled, so they cannot drift from
-it, and both are rewritten every build. Open the folder in your editor and
-`#include <wiixlaunch/imports/...>` resolves, symbols autocomplete, and jumping
-to a declaration lands in the generated header with the surface's own notes
-above it.
+Now open the **mod folder** — not the SDK — and `#include
+<wiixlaunch/imports/...>` resolves, symbols autocomplete, and jumping to a
+declaration lands in the generated header for that surface, with the surface's
+own notes sitting above it.
 
-They are written *before* the compile, so the editor is configured even when
-the code does not build yet — which is when you most want it working.
+Both files are written from the exact command that compiles your mod, so they
+cannot drift from it, and both are rewritten every build. They are written
+*before* the compile, so the editor is configured even when the code does not
+build yet — which is when you most want it working.
 
-## 7. Run it
+Still seeing unresolved includes? Your editor is reading neither file. Point
+clangd at the folder, or run **C/C++: Reset IntelliSense Database** in VS Code.
 
-Copy `hello.wxlm` into the pack's `content\WiiXLaunch\mods\`, start the game,
-and open Cemu's log window. You are looking for:
+## 8. Run it
+
+Copy `hello_mod.wxlm` into the pack's `content\WiiXLaunch\mods\`, start the
+game, and open Cemu's log window. You are looking for:
 
 ```
-[loader] 1 module(s) found
-[loader:hello] requires wiixl.core v1.0 - present
-[loader:hello] LOADED, entry at 0x...
-hello: my first mod
+[loader] 1 module(s) found; load order is lexical by filename, ...
+[loader]   1. hello_mod.wxlm
+[loader:hello_mod] v1.0.0  payload 252 B, bss 0 B, 6 relocs, 1 imports, phase 0
+[loader:hello_mod] integrity OK (crc32 0x6BDF5CF6 over 340 bytes)
+[loader:hello_mod] requires wiixl.core v1.0 - present
+[loader:hello_mod] LOADED, entry at 0x..., waiting for phase 0. Arena: ...
+[loader:hello_mod] phase 0 reached, calling entry at 0x... (module 1 of 1 ...)
+hello_mod: loaded
 ```
 
 **The log is the tool.** Every module is named as it loads, and anything
 refused is named with the reason. If a line is missing, the last one present
-tells you how far it got.
+tells you how far it got: no `requires` line means the host has no such
+surface, no `LOADED` means it did not relocate, no `phase 0` means it never
+ran.
 
 ## Next
 
