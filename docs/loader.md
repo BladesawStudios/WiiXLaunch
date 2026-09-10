@@ -225,7 +225,7 @@ Arena: <mod_id> wanted <N> bytes and has <U> of <G> used - refused. It stated a 
 
 ### `heapRequest == 0` — best effort
 
-The module is granted whatever is sensible (`kDefaultGrant`, 256 KB, or less if
+The module is granted whatever is sensible (`kDefaultGrantCap`, 256 KB, or an equal share of the arena if that is smaller, or less still if
 that is all there is) and `Alloc` returns null past it. A mod that cannot
 predict its usage stays loadable and is expected to check for null.
 

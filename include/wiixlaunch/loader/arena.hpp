@@ -72,9 +72,20 @@
 namespace WiiXLaunch::Arena {
 
 // What a module gets when it states no requirement. Not a promise - it is
-// whatever can be spared, capped at this - but it keeps one silent mod from
-// taking everything on a first-come basis.
-constexpr uint32_t kDefaultGrant = 256 * 1024;
+// whatever can be spared, capped - but it keeps one silent mod from taking
+// everything on a first-come basis.
+//
+// THE CAP IS ALSO A FRACTION OF THE ARENA, and that is not belt-and-braces.
+// This was an absolute 256 KB, which says nothing at all when the arena itself
+// is 256 KB: the Switch host's first module was granted the entire reservation
+// and the three behind it were refused NOTHING-LEFT. The comment above claimed
+// the cap prevented exactly that, and on Cemu's ~4 MB cave it did; the value
+// only worked because it happened to be small relative to that one arena.
+//
+// An equal share of the whole means the property holds for any size. On Cemu
+// 3.9 MB over 8 slots is ~490 KB, so the absolute cap still binds there and
+// nothing about that platform changes.
+constexpr uint32_t kDefaultGrantCap = 256 * 1024;
 
 // A module cannot have more slots than the host can load modules.
 constexpr uint32_t kMaxModules = 8;
@@ -87,10 +98,28 @@ constexpr uint32_t kMaxModules = 8;
 // leaves it less. Measured across four boots of the same build: 3959, 3963,
 // 3934 and 3930 KB. A mod that loads on a clean setup and is refused on a
 // loaded one is not a mod bug and not a host bug.
+// Why the arena is the size it is, which is a different answer per platform
+// and is the first thing worth knowing when a module is refused memory.
+//
+// This was Cemu's answer unconditionally, so a Switch host explained its
+// refusal by describing a code cave and graphic packs that do not exist there.
+// A diagnosis that names the wrong machine is worse than none: it sends the
+// reader to check something irrelevant.
+#if WIIXL_CEMU
 constexpr const char* kSharedArenaNote =
     "The arena is the tail of a 4 MB code cave shared with every enabled graphic "
     "pack, so it shrinks as more are enabled (measured 3930-3963 KB across four "
     "boots). The same module may load on a cleaner setup.";
+#elif WIIXL_SWITCH
+constexpr const char* kSharedArenaNote =
+    "The arena is a fixed block reserved in the host's own .text (see "
+    "kSwitchArenaSize in src/switch_entry.cpp). It does not vary between boots, "
+    "so a module refused here will be refused every time until that size is "
+    "raised or another module asks for less.";
+#else
+constexpr const char* kSharedArenaNote =
+    "The arena is whatever this host reserved through Arena::SetReservation.";
+#endif
 
 enum class Grant : uint32_t {
     Ok = 0,
@@ -372,7 +401,12 @@ inline Grant Acquire(const char* owner, uint32_t request, SubArena** out) {
         grant = request;
     } else {
         // Best effort: whatever is sensible, and the module must handle null.
-        grant = free < kDefaultGrant ? free : kDefaultGrant;
+        // A fair share of the arena, never more than the absolute cap, and
+        // never more than is actually free.
+        const uint32_t share = Total() / kMaxModules;
+        uint32_t cap = share < kDefaultGrantCap ? share : kDefaultGrantCap;
+        if (cap == 0) cap = free;          // an arena smaller than kMaxModules
+        grant = free < cap ? free : cap;
         if (grant == 0) {
             WIIXL_LOG("Arena: %s REFUSED granted=0 requested=unspecified - nothing free "
                       "to assign", owner);
