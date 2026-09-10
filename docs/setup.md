@@ -27,9 +27,12 @@ python --version
 ## 2. Install devkitPPC
 
 Get the installer from [devkitpro.org](https://devkitpro.org/wiki/Getting_Started)
-and select the **devkitPPC** package. That is the only one you need — devkitA64,
-WUPS and libfunctionpatcher are for building WiiXLaunch itself, not for building
-a mod.
+and select the **devkitPPC** package. That covers Cemu and Wii U, which are the
+same module. WUPS and libfunctionpatcher are for building WiiXLaunch itself and
+you do not need them.
+
+Building for **Switch** as well? Add **devkitA64** and see step 6 — a mod is
+compiled once per architecture, from the same source.
 
 Check it, using your install path:
 
@@ -43,7 +46,7 @@ looks at `$DEVKITPPC` first, then `C:\devkitPro\devkitPPC` and
 
 ## 3. Get the SDK
 
-The SDK is `sdk/` in the WiiXLaunch repository. It is 31 text files. Download
+The SDK is `sdk/` in the WiiXLaunch repository. It is 33 text files. Download
 that folder — from a release, from the repo's web interface, or by cloning:
 
 ```
@@ -113,6 +116,11 @@ python <sdk>\scripts\build_mod.py --source hello_mod
 You get `hello_mod\build\hello_mod.wxlm`. It is one file, and it is the only
 thing you ship. Every import it uses is named in that output — which is also
 the list the host will be asked for at load.
+
+For Switch, add `--target switch`. The same source, compiled with devkitA64
+into `build\switch\hello_mod.wxlm` — a separate file, because it is a
+different architecture, and the loader refuses the wrong one by name rather
+than running it. Cemu and Wii U share the one module.
 
 ## 7. Open it in your editor
 
@@ -269,10 +277,12 @@ python scripts/make_sdk.py --host
 * **Cemu is the only platform that has run.** The Switch and Wii U hosts build
   every time and have never been executed. A mod targets surfaces rather than a
   platform, so it should follow — but nothing has demonstrated that.
-* **Switch cannot load a `.wxlm` at all**, and it is the tooling as much as the
-  host: `Loader::Load` is not compiled there, directory enumeration says so
-  rather than reporting an empty folder, and `scripts/wxlm.py` writes `PPC32`
-  into every header it produces while `build_mod.py` only drives
-  `powerpc-eabi-g++`. The format already distinguishes AArch64 and the loader
-  already checks it; nothing produces one. Wii U has the whole path — the
-  plugin drives the loader from `ON_APPLICATION_START` — and has not been run.
+* **All three platforms have a complete load path, and only Cemu has run
+  one.** Wii U enumerates and loads from `ON_APPLICATION_START`; Switch mounts
+  the SD card through `nn::fs`, enumerates, and loads from `exl_main` before
+  the game's own main. Both compile, both are gated, neither has been executed
+  on hardware. Treat them as untested rather than as working.
+* **A Switch mod is built separately**: `--target switch` produces an AArch64
+  module in `build/switch/`, and a mod is compiled once per architecture. The
+  Wii U and Cemu module is the same file — a `.wxlm` names surfaces, and
+  neither the code nor the format knows which of those two is running it.

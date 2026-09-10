@@ -25,8 +25,15 @@ silently does nothing.
 | Platform | Load point | Status |
 |---|---|---|
 | Cemu | Entry hook `0x03098928` is already late enough | **Measured** |
-| Wii U (Aroma) | `ON_APPLICATION_START` | **Not yet probed** |
-| Switch | `subsdk9`, before the game | **Not yet probed** |
+| Wii U (Aroma) | `ON_APPLICATION_START` | **Implemented, never run** |
+| Switch | `exl_main`, in the subsdk before the game | **Implemented, never run** |
+
+Only Cemu needs a **game module** to nominate its load point, and only because
+the load point there is an address inside the game — knowledge base cannot
+have. Wii U is handed a lifecycle event and the Switch runs this subsdk before
+the game's own main, so on both the host drives the loader itself
+(`src/wiiu_plugin.cpp`, `src/switch_entry.cpp`) and module loading does not
+depend on a game module being installed.
 
 On Cemu, `WiiXLaunch::LoadPoint::Probe` reported `FS-USABLE` at the entry hook
 itself: `FSAddClient`, `FSOpenFile`, `FSReadFile`, `FSReadFileWithPos` and
