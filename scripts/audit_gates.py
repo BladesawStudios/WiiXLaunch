@@ -40,9 +40,15 @@ ROOT = os.path.dirname(HERE)
 
 # (script, [(gate token that must appear, human name)])
 #
-# Only build_cemu runs the gates: the Switch and Wii U builds do not produce a
-# .wxlm, a Cemu host payload or a relocation table, so test_host/test_wxlm/
-# loader_fuzz have nothing to say about them. format_test is arguably
+# build_cemu runs most of the gates: the Wii U build produces no .wxlm, no Cemu
+# host payload and no relocation table, so test_host/test_wxlm/loader_fuzz have
+# nothing to say about it.
+#
+# build_switch is the exception, and it earned it. A module CAN be built for
+# that platform now, and whether it comes out with the right machine, the right
+# byte order and only relocation kinds that exist on AArch64 is a question only
+# a devkitA64 build can answer - so test_switch_module runs there, where that
+# toolchain is already required, rather than making build_cemu need it. format_test is arguably
 # cross-platform - the formatter ships on all three - but it is run once per
 # full build rather than three times, which build_all covers.
 WIRING = [
@@ -58,6 +64,12 @@ WIRING = [
         ("gen_imports.py",          "gen_imports --check"),
         ("make_sdk.py",             "make_sdk --verify"),
         ("audit_gates.py",          "audit_gates (this file)"),
+    ]),
+    ("build_switch.bat", [
+        ("test_switch_module.py", "test_switch_module"),
+    ]),
+    ("build_switch.sh", [
+        ("test_switch_module.py", "test_switch_module"),
     ]),
     ("build_cemu.sh", [
         ("test_host.py",           "test_host"),
@@ -80,12 +92,14 @@ WIRING = [
 # them: deleting a row from WIRING would have dropped the count and still
 # printed success. A gate that checks other gates for liveness and has none of
 # its own is the joke writing itself.
-EXPECTED_MIN_INVOCATIONS = 25
-EXPECTED_MIN_SCRIPTS = 20
+EXPECTED_MIN_INVOCATIONS = 27
+EXPECTED_MIN_SCRIPTS = 22
 
 MUST_EXIST = [
     "scripts/test_host.py",
     "scripts/test_wxlm.py",
+    "scripts/test_switch_module.py",
+    "scripts/aarch64_relocs.py",
     "scripts/test_log_lengths.py",
     "scripts/surface_coverage.py",
     "scripts/gen_imports.py",

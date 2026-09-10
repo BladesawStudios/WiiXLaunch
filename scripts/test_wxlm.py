@@ -256,6 +256,71 @@ def main():
                             "  %s read back as %d at the offset wxlm.hpp pins (%d), "
                             "expected %d" % (field, got, offsets[field], want))
 
+    # The same round trip for an AArch64 module, which is a DIFFERENT BYTE
+    # ORDER rather than a different field list. Worth its own pass because the
+    # writer packed ">" into eight struct formats for as long as PowerPC was
+    # the only target, and a single one left behind would produce a file whose
+    # header reads correctly and whose relocation table does not.
+    #
+    # No toolchain is needed for this, which is why it lives here rather than
+    # in the Switch build: it is a statement about the format.
+    aarch64_checks = 0
+    try:
+        blob64 = wxlm.pack_header(
+            0, 1, b"audit".ljust(16, b"\0"), 1, 2, 3,
+            wxlm.HEADER_SIZE + 64, 0,
+            wxlm.HEADER_SIZE, 64,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 16, 0,
+            machine=wxlm.MACHINE_AARCH64)
+    except Exception as exc:                        # noqa: BLE001
+        blob64 = None
+        failures.append("  wxlm.pack_header(machine=aarch64) raised %s: %s"
+                        % (type(exc).__name__, exc))
+
+    if blob64 is not None:
+        if len(blob64) != wxlm.HEADER_SIZE:
+            failures.append("  the aarch64 header is %d bytes, HEADER_SIZE is %d - "
+                            "both architectures must pack to one size"
+                            % (len(blob64), wxlm.HEADER_SIZE))
+        else:
+            aarch64_checks += 1
+            magic, = struct.unpack_from("<I", blob64, 0)
+            if magic != wxlm.MAGIC:
+                failures.append("  aarch64 header read little-endian gives magic "
+                                "0x%08X, expected 0x%08X - the writer is still "
+                                "packing big-endian somewhere" % (magic, wxlm.MAGIC))
+            aarch64_checks += 1
+            if "machine" in offsets:
+                mach, = struct.unpack_from("<H", blob64, offsets["machine"])
+                if mach != wxlm.MACHINE_AARCH64:
+                    failures.append("  aarch64 header says machine %d, expected %d"
+                                    % (mach, wxlm.MACHINE_AARCH64))
+                aarch64_checks += 1
+            if "endian" in offsets:
+                en, = struct.unpack_from("<B", blob64, offsets["endian"])
+                if en != wxlm.ENDIAN_LITTLE:
+                    failures.append("  aarch64 header says endian %d, expected %d "
+                                    "(little) - the loader refuses a module whose "
+                                    "endian field disagrees with the host before it "
+                                    "overlays a single structure"
+                                    % (en, wxlm.ENDIAN_LITTLE))
+                aarch64_checks += 1
+            for field, want in (("payloadSize", 64), ("bssSize", 16)):
+                if field in offsets:
+                    got, = struct.unpack_from("<I", blob64, offsets[field])
+                    if got != want:
+                        failures.append(
+                            "  aarch64 %s read back as %d, expected %d"
+                            % (field, got, want))
+                    aarch64_checks += 1
+
+    # Liveness, the fourth rule: this whole block passes trivially if it never
+    # ran, and "never ran" is what a removed keyword argument would look like.
+    if aarch64_checks == 0:
+        failures.append("  no aarch64 header check ran at all - the second byte "
+                        "order is untested and this script would still say PASSED")
+
     if failures:
         sys.stderr.write(
             "\n[test_wxlm] THE .wxlm WRITER AND THE FORMAT HEADER DISAGREE\n\n"
@@ -266,8 +331,9 @@ def main():
         return 1
 
     print("[test_wxlm] writer agrees with wxlm.hpp (%d sizes, %d pinned offsets, "
-          "CRC32 and FNV-1a verified, %d-byte header round-tripped)"
-          % (len(sizes), len(offsets), wxlm.HEADER_SIZE))
+          "CRC32 and FNV-1a verified, %d-byte header round-tripped big-endian "
+          "and little-endian, %d aarch64 field(s) read back)"
+          % (len(sizes), len(offsets), wxlm.HEADER_SIZE, aarch64_checks))
     return 0
 
 

@@ -270,6 +270,12 @@ struct Header {
 static_assert(sizeof(Header) == 144, "Header layout is part of the format");
 static_assert(alignof(Header) == 4, "Header must not gain stricter alignment");
 static_assert(offsetof(Header, magic) == 0, "magic must be first");
+// machine and endian are pinned because the loader reads them BEFORE it
+// overlays this structure - it has to, since overlaying a header of the wrong
+// byte order is what the endian field exists to prevent. Their positions are
+// therefore load-bearing in a way the fields after them are not.
+static_assert(offsetof(Header, machine) == 6, "machine is read before the overlay");
+static_assert(offsetof(Header, endian) == 8, "endian is read before the overlay");
 static_assert(offsetof(Header, modId) == 12, "modId offset is part of the format");
 static_assert(offsetof(Header, fileSize) == 36, "integrity fields are part of the format");
 static_assert(offsetof(Header, contentCrc32) == 40, "integrity fields are part of the format");

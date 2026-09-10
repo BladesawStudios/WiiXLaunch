@@ -41,6 +41,13 @@ if not exist build\switch mkdir build\switch
 copy /y "%STAGE%\deploy\subsdk9" build\switch\subsdk9 > nul
 copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
 
+:: Can a MODULE be built for this platform? The host building says nothing
+:: about that - it was true for months while wxlm.py wrote MACHINE_PPC32 into
+:: every file it produced. Run here rather than in build_cemu because this is
+:: where devkitA64 is already a hard requirement.
+python scripts\test_switch_module.py
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 python scripts\deploy.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 

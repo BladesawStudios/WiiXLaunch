@@ -37,5 +37,11 @@ mkdir -p build/switch
 cp "$STAGE/deploy/subsdk9" build/switch/subsdk9
 cp "$STAGE/deploy/main.npdm" build/switch/main.npdm
 
+# Can a MODULE be built for this platform? The host building says nothing about
+# that - it was true for months while wxlm.py wrote MACHINE_PPC32 into every
+# file it produced. Run here rather than in build_cemu because this is where
+# devkitA64 is already a hard requirement.
+python3 scripts/test_switch_module.py
+
 python3 scripts/deploy.py
 echo "Switch build complete!"
