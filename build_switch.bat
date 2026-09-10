@@ -45,7 +45,7 @@ copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
 :: about that - it was true for months while wxlm.py wrote MACHINE_PPC32 into
 :: every file it produced. Run here rather than in build_cemu because this is
 :: where devkitA64 is already a hard requirement.
-python scripts\test_switch_module.py
+python scripts\test_switch_module.py "%STAGE%\wiixlaunch-switch.elf"
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 python scripts\deploy.py

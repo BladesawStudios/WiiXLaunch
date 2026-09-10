@@ -632,12 +632,27 @@ public:
                                         FS_ERROR_FLAG_ALL);
         return got > 0 ? static_cast<uint32_t>(got) : 0;
 #elif WIIXL_SWITCH
+        // THE FOUR-ARGUMENT OVERLOAD WITH THE SIZE, not the one with a
+        // bytesRead out-parameter.
+        //
+        // exlaunch declares both. The out-parameter one is
+        //   ReadFile(ulong* bytesRead, FileHandle, long position, void* buffer)
+        // which documents a `size` argument in its comment and does not have
+        // one in its signature - and nnSdk does not export it either. Calling
+        // it links, because a module resolves its imports at load; rtld then
+        // reports "Unresolved symbol _ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPv"
+        // and the call branches to address 0. That is what the first Switch
+        // boot that got this far actually did.
+        //
+        // This overload reads EXACTLY `size` bytes or fails - there is no short
+        // read to report, which is why it needs no out-parameter. Tail reads
+        // work because ReadAt has already clamped `size` against m_Size above.
         nn::fs::FileHandle handle{m_Handle};
-        unsigned long got = 0;
-        if (nn::fs::ReadFile(&got, handle, static_cast<long>(offset), buffer) != 0) {
+        if (nn::fs::ReadFile(handle, static_cast<long>(offset), buffer,
+                             static_cast<unsigned long>(size)) != 0) {
             return 0;
         }
-        return (got > size) ? size : static_cast<uint32_t>(got);
+        return size;
 #else
         (void)offset;
         return 0;

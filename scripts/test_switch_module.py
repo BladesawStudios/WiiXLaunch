@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Builds a real AArch64 .wxlm and checks what came out.
+"""What the Switch build produces, and what it depends on.
+
+Two checks, both needing devkitA64 and neither answerable by the code merely
+compiling.
 
 scripts/test_wxlm.py already proves the writer and wxlm.hpp agree about the
 header, in both byte orders, without a toolchain. This is the other half and it
@@ -12,6 +15,22 @@ the failure this whole path invites: the writer would have to have fallen
 through to the wrong reader, and the result is a file that loads, relocates a
 16-bit half of an instruction that is not there, and jumps into it. The header
 would look perfect. So the kinds are asserted, not just the header.
+
+THE SECOND CHECK IS ABOUT nnSdk. A subsdk resolves its imports against the
+game's own nnSdk at load, so a symbol exlaunch declares but nnSdk does not
+export LINKS CLEANLY and branches to address 0 the first time it is called.
+That is not hypothetical: exlaunch's fs_files.hpp declares four ReadFile
+overloads and one of them,
+
+    ReadFile(ulong* bytesRead, FileHandle, long position, void* buffer)
+
+documents a `size` parameter its signature does not have and is not exported.
+Calling it cost a boot: rtld printed "Unresolved symbol
+_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPv" and the process jumped to 0.
+
+So the set of nn:: symbols this host imports is pinned. Adding one becomes a
+deliberate act with a line to edit, rather than something discovered by killing
+a console.
 
 Run from the repo root. build_switch.bat runs it, which is where devkitA64 is
 already a hard requirement.
@@ -37,6 +56,77 @@ import wxlm  # noqa: E402
 ALLOWED = {wxlm.RELOC_IMPORT, wxlm.RELOC_ADDR64}
 KIND_NAMES = {0: "Addr32", 1: "Addr16Ha", 2: "Addr16Hi", 3: "Addr16Lo",
               4: "Import", 5: "Addr64"}
+
+# Every nn:: symbol the Switch host may import from the game's nnSdk.
+#
+# All but CloseFile have been OBSERVED to resolve on a real boot. They are
+# listed rather than counted because the failure is per-symbol: one that does
+# not exist takes the whole process down at its first call, and which one it
+# was is the entire diagnosis.
+ALLOWED_NN_IMPORTS = {
+    "nn::fs::MountSdCardForDebug(char const*)",
+    "nn::fs::OpenFile(nn::fs::FileHandle*, char const*, int)",
+    "nn::fs::GetFileSize(long*, nn::fs::FileHandle)",
+    "nn::fs::ReadFile(nn::fs::FileHandle, long, void*, unsigned long)",
+    "nn::fs::CloseFile(nn::fs::FileHandle)",
+    "nn::fs::OpenDirectory(nn::fs::DirectoryHandle*, char const*, int)",
+    "nn::fs::ReadDirectory(long*, nn::fs::DirectoryEntry*, "
+    "nn::fs::DirectoryHandle, long)",
+    "nn::fs::CloseDirectory(nn::fs::DirectoryHandle)",
+    # exlaunch's own runtime linking, not ours.
+    "nn::ro::detail::g_pAutoLoadList",
+    "nn::ro::detail::g_LookupGlobalManualFunctionPointer",
+}
+
+
+def find_nm():
+    for root in (os.environ.get("DEVKITA64"), r"C:\devkitPro\devkitA64",
+                 "/opt/devkitpro/devkitA64"):
+        if not root:
+            continue
+        for name in ("aarch64-none-elf-nm.exe", "aarch64-none-elf-nm"):
+            p = os.path.join(root, "bin", name)
+            if os.path.exists(p):
+                return p
+    return None
+
+
+def check_nn_imports(elf):
+    """Which nnSdk symbols the host will ask the game for at load."""
+    nm = find_nm()
+    if nm is None:
+        sys.stderr.write("[test_switch_module] aarch64-none-elf-nm not found - "
+                         "cannot read the host's imports.\n")
+        return 1
+    out = subprocess.check_output([nm, "-uC", elf], text=True)
+
+    seen = set()
+    for line in out.splitlines():
+        name = line.replace("U ", "", 1).strip()
+        if name.startswith("nn::"):
+            seen.add(name)
+
+    unexpected = sorted(seen - ALLOWED_NN_IMPORTS)
+    if unexpected:
+        sys.stderr.write(
+            "\n[test_switch_module] THE HOST IMPORTS nnSdk SYMBOLS NOBODY VETTED\n\n"
+            + "".join("    %s\n" % u for u in unexpected)
+            + "\n  A symbol the game's nnSdk does not export links cleanly and calls\n"
+              "  address 0 - the process dies at the first call with no way back.\n"
+              "  Confirm each one is really exported, then add it to\n"
+              "  ALLOWED_NN_IMPORTS in this script.\n\n")
+        return 1
+
+    # Liveness: an ELF whose symbols could not be read at all would produce an
+    # empty set and pass every check above.
+    if not seen:
+        sys.stderr.write("[test_switch_module] the host imports NO nn:: symbols, "
+                         "which cannot be true - it mounts the SD card.\n")
+        return 1
+
+    print("[test_switch_module] host imports %d nn:: symbol(s), all vetted"
+          % len(seen))
+    return 0
 
 
 def main():
@@ -136,6 +226,10 @@ def main():
         print("[test_switch_module] built an aarch64 module and checked it: "
               "%d byte(s), %d relocation(s) (%s), %d check(s), 0 failures"
               % (len(d), reloc_count, summary, checks))
+
+        # The host's own imports, when the build hands us its ELF.
+        if len(sys.argv) > 1:
+            return check_nn_imports(sys.argv[1])
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
