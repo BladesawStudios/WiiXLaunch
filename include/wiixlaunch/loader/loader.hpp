@@ -1109,14 +1109,76 @@ inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t ca
 
 } // namespace impl
 
-#else
+#elif WIIXL_SWITCH
 
 namespace impl {
-// Switch, and the host test build. Returning 0 here is indistinguishable from
-// an empty directory, which is the failure shape this codebase keeps hitting:
-// a capability that answers "nothing there" when it means "I cannot look". Say
-// which. The Wii U branch above used to be this and read as an empty mods/ to
-// anyone who did not check the source.
+// nn::fs hands back a whole DirectoryEntry per call and each one is 0x310
+// bytes, so there is exactly one, reused. Static rather than stack for the same
+// reason as everywhere else here: this runs before anything is allocated.
+inline nn::fs::DirectoryEntry g_DirEntry;
+
+// Names of the .wxlm files in `dir`, UNSORTED - nn::fs does not specify an
+// order and nothing here relies on one. LoadAll sorts.
+//
+// Same shape as the Cemu and Wii U versions on purpose, including the candidate
+// path list: a directory that resolves differently from the files inside it is
+// a bug with no symptom until something enumerates, and that has happened once
+// already on Cemu.
+inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t cap) {
+    if (!FS::impl::EnsureFSClient()) {
+        WIIXL_LOG("[loader] cannot enumerate %s - the SD card is not mounted", dir);
+        return 0;
+    }
+
+    char storage[3][256];
+    const char* candidates[4];
+    FS::impl::Candidates(dir, storage, candidates);
+
+    nn::fs::DirectoryHandle handle{};
+    const char* opened = nullptr;
+    for (uint32_t c = 0; c < 4u && !opened; ++c) {
+        if (!candidates[c] || !candidates[c][0]) continue;
+        if (nn::fs::OpenDirectory(&handle, candidates[c],
+                                  nn::fs::OpenDirectoryMode_File) == 0) {
+            opened = candidates[c];
+        }
+    }
+    if (!opened) {
+        WIIXL_LOG("[loader] %s does not exist or could not be opened, through any of "
+                  "the %u candidate paths", dir, 4u);
+        return 0;
+    }
+    WIIXL_LOG("[loader] enumerating %s", opened);
+
+    uint32_t n = 0, seen = 0, skipped = 0;
+    while (seen < 64) {
+        long got = 0;
+        if (nn::fs::ReadDirectory(&got, &g_DirEntry, handle, 1) != 0) break;
+        if (got <= 0) break;              // end of directory, not a failure
+        ++seen;
+        g_DirEntry.m_Name[sizeof(g_DirEntry.m_Name) - 1] = '\0';
+        if (!EndsWithWxlm(g_DirEntry.m_Name)) { ++skipped; continue; }
+        if (n >= cap) {
+            WIIXL_LOG("[loader] %s holds more than the %u modules this host can load; "
+                      "%s and anything after it are ignored", dir, cap, g_DirEntry.m_Name);
+            break;
+        }
+        CopyName(names[n++], g_DirEntry.m_Name);
+    }
+
+    nn::fs::CloseDirectory(handle);
+    WIIXL_LOG("[loader] %s: %u entries seen, %u are .wxlm, %u skipped",
+              dir, seen, n, skipped);
+    return n;
+}
+} // namespace impl
+
+#else
+
+// The host test build. Returning 0 is indistinguishable from an empty
+// directory, which is the failure shape this codebase keeps hitting: a
+// capability that answers "nothing there" when it means "I cannot look".
+namespace impl {
 inline uint32_t ListWxlm(const char* dir, char[][kMaxNameLen], uint32_t) {
     WIIXL_LOG("[loader] directory enumeration is not implemented on this platform (%s) - "
               "this is not the same as finding no modules", dir);
@@ -1126,7 +1188,7 @@ inline uint32_t ListWxlm(const char* dir, char[][kMaxNameLen], uint32_t) {
 
 #endif
 
-#if WIIXL_CEMU || WIIXL_WIIU
+#if WIIXL_CEMU || WIIXL_WIIU || WIIXL_SWITCH
 
 // Loads one module from the filesystem. The path is tried as given and through
 // WiiXLaunch::FS's usual candidates, so "WiiXLaunch/mods/foo.wxlm" resolves the

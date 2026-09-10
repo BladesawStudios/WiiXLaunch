@@ -33,9 +33,15 @@ extern "C" void WiiXLaunch_Init();
 // umbrella wiixlaunch.hpp), so a multi-file project would otherwise hit
 // "multiple definition of exl_main" at link. All copies are identical;
 // weak linkage lets the linker keep one.
+// Defined in src/switch_entry.cpp: reads and starts the .wxlm modules. Declared
+// rather than inlined here because it needs loader.hpp, and this header rides
+// in through the umbrella on every translation unit.
+extern "C" void WiiXLaunch_SwitchLoadPoint();
+
 extern "C" __attribute__((weak)) void exl_main(void* x0, void* x1) {
     exl::hook::Initialize();
     WiiXLaunch_Init();
+    WiiXLaunch_SwitchLoadPoint();
 }
 
 extern "C" __attribute__((weak)) NORETURN void exl_exception_entry() {

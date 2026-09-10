@@ -28,6 +28,8 @@
 #include <wiixlaunch/cemu/cemu_fs.hpp>
 #elif WIIXL_WIIU
 #include <coreinit/filesystem.h>
+#elif WIIXL_SWITCH
+#include <nn/fs.hpp>
 #endif
 
 namespace WiiXLaunch::FS {
@@ -80,6 +82,13 @@ inline uint32_t g_StagedReads = 0;
 //
 // `storage` supplies the buffers; `out` is filled with up to 4 candidates, the
 // first being the path exactly as given. Entries may be null - skip those.
+#if WIIXL_SWITCH
+// Where a Switch host keeps its files. "sd" rather than something longer
+// because it appears in every path this builds.
+constexpr const char* kSwitchMount = "sd";
+#endif
+
+
 inline void Candidates(const char* path, char storage[3][256], const char* out[4]) {
     auto concat2 = [](char* dst, size_t cap, const char* a, const char* b) {
         size_t la = 0; while (a[la] && la + 1 < cap) { dst[la] = a[la]; ++la; }
@@ -89,6 +98,19 @@ inline void Candidates(const char* path, char storage[3][256], const char* out[4
 
     out[0] = path;
     out[1] = out[2] = out[3] = nullptr;
+#if WIIXL_SWITCH
+    // A Switch has no /vol/content: the game's own files are in romfs and a
+    // host's files are on the SD card. Only the SD forms are offered, because
+    // a candidate that cannot exist is a line of log noise on every miss.
+    //
+    // out[0] stays the path as given so an absolute "sd:/..." still works.
+    if (path && path[0] != '\0') {
+        concat2(storage[0], 256, "sd:/", path);
+        concat2(storage[1], 256, "sd:/atmosphere/contents/WiiXLaunch/", path);
+        out[1] = storage[0];
+        out[2] = storage[1];
+    }
+#else
     if (path && path[0] != '/') {
         concat2(storage[0], 256, "/vol/content/", path);
         concat2(storage[1], 256, "content/", path);
@@ -97,6 +119,7 @@ inline void Candidates(const char* path, char storage[3][256], const char* out[4
         out[2] = storage[1];
         out[3] = storage[2];
     }
+#endif
 }
 
 inline bool EnsureFSClient() {
@@ -122,6 +145,31 @@ inline bool EnsureFSClient() {
     int32_t status = FSAddClient(reinterpret_cast<FSClient*>(g_FSClient), FS_ERROR_FLAG_ALL);
     FSInitCmdBlock(reinterpret_cast<FSCmdBlock*>(g_FSCmdBlock));
     g_FSClientReady = (status == 0);
+    return g_FSClientReady;
+#elif WIIXL_SWITCH
+    // There is no client and no command block here; what has to happen once is
+    // the mount. nn::fs paths are "<mount>:/...", so nothing resolves until
+    // this has succeeded, and every candidate below is written against it.
+    //
+    // MountSdCardForDebug needs the process to have filesystem permission. A
+    // subsdk under Atmosphere normally does; a build that does not gets a
+    // non-zero Result here, and that is a permissions problem rather than a
+    // missing file - so it is logged as itself rather than becoming "not
+    // found" four candidate paths later.
+    if (g_FSClientReady) return true;
+    // nn::Result is a bare u32 in exlaunch's bindings - 0 is success. There is
+    // no IsSuccess() to call, and treating the value as a class compiles
+    // nowhere.
+    // Result is a global typedef in these bindings, not nn::Result - it is
+    // declared in nn_common.hpp outside any namespace. auto sidesteps the
+    // question of which spelling this vendored copy happens to use.
+    const auto r = nn::fs::MountSdCardForDebug(kSwitchMount);
+    g_FSClientReady = (r == 0);
+    if (!g_FSClientReady) {
+        WIIXL_LOG("WiiXLaunch: could not mount the SD card as '%s:' (result 0x%X). "
+                  "Nothing on the card is readable, which is not the same as the "
+                  "files being absent.", kSwitchMount, static_cast<unsigned>(r));
+    }
     return g_FSClientReady;
 #else
     return true;
@@ -475,7 +523,8 @@ public:
         struct FsStatBuf { uint32_t flags, mode, owner, group, size, rest[20]; };
         static_assert(sizeof(FsStatBuf) == 0x64, "must match coreinit FSStat exactly");
         alignas(64) FsStatBuf statBuf{};
-        if (getStat && getStat(impl::g_FSClient, impl::g_FSCmdBlock, m_Handle, &statBuf, 0xFFFFFFFF) == 0) {
+        if (getStat && getStat(impl::g_FSClient, impl::g_FSCmdBlock,
+                       static_cast<uint32_t>(m_Handle), &statBuf, 0xFFFFFFFF) == 0) {
             m_Size = statBuf.size;
         }
         return true;
@@ -495,8 +544,35 @@ public:
         FSStat stat{};
         if (FSGetStatFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
                           reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
-                          m_Handle, &stat, FS_ERROR_FLAG_ALL) == FS_STATUS_OK) {
+                          static_cast<FSFileHandle>(m_Handle), &stat,
+                          FS_ERROR_FLAG_ALL) == FS_STATUS_OK) {
             m_Size = stat.size;
+        }
+        return true;
+#elif WIIXL_SWITCH
+        for (int i = 0; i < 4; ++i) {
+            if (!pathsToTry[i] || !pathsToTry[i][0]) continue;
+            nn::fs::FileHandle handle{};
+            if (nn::fs::OpenFile(&handle, pathsToTry[i],
+                                 nn::fs::OpenMode_Read) == 0) {
+                m_Handle = handle._internal;
+                m_Open = true;
+                break;
+            }
+        }
+        if (!m_Open) {
+            WIIXL_LOG("WiiXLaunch: File::Open failed for '%s'", path);
+            return false;
+        }
+        {
+            nn::fs::FileHandle handle{m_Handle};
+            long size = 0;
+            if (nn::fs::GetFileSize(&size, handle) == 0 && size >= 0) {
+                // A .wxlm is bounded by a 32-bit fileSize field, so anything
+                // that does not fit one is not a module this loader can read.
+                m_Size = (size > 0xFFFFFFFFll) ? 0xFFFFFFFFu
+                                               : static_cast<uint32_t>(size);
+            }
         }
         return true;
 #else
@@ -519,13 +595,23 @@ public:
                                                 uint32_t pos, uint32_t handle, uint32_t flags, uint32_t errorMask);
         auto readAt = Backend::ResolveCemuFs<FnFSReadFileWithPos>(Backend::CemuFsImport::FSReadFileWithPos);
         if (!readAt) return 0;
-        int32_t got = readAt(impl::g_FSClient, impl::g_FSCmdBlock, buffer, 1, size, offset, m_Handle, 0, 0xFFFFFFFF);
+        int32_t got = readAt(impl::g_FSClient, impl::g_FSCmdBlock, buffer, 1, size,
+                             offset, static_cast<uint32_t>(m_Handle), 0, 0xFFFFFFFF);
         return got > 0 ? static_cast<uint32_t>(got) : 0;
 #elif WIIXL_WIIU
         int32_t got = FSReadFileWithPos(reinterpret_cast<FSClient*>(impl::g_FSClient),
                                         reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
-                                        reinterpret_cast<uint8_t*>(buffer), 1, size, offset, m_Handle, 0, FS_ERROR_FLAG_ALL);
+                                        reinterpret_cast<uint8_t*>(buffer), 1, size,
+                                        offset, static_cast<FSFileHandle>(m_Handle), 0,
+                                        FS_ERROR_FLAG_ALL);
         return got > 0 ? static_cast<uint32_t>(got) : 0;
+#elif WIIXL_SWITCH
+        nn::fs::FileHandle handle{m_Handle};
+        unsigned long got = 0;
+        if (nn::fs::ReadFile(&got, handle, static_cast<long>(offset), buffer) != 0) {
+            return 0;
+        }
+        return (got > size) ? size : static_cast<uint32_t>(got);
 #else
         (void)offset;
         return 0;
@@ -537,10 +623,14 @@ public:
 #if WIIXL_CEMU
         using FnFSCloseFile = int32_t (*)(void* client, void* block, uint32_t handle, uint32_t errorMask);
         auto closeFile = Backend::ResolveCemuFs<FnFSCloseFile>(Backend::CemuFsImport::FSCloseFile);
-        if (closeFile) closeFile(impl::g_FSClient, impl::g_FSCmdBlock, m_Handle, 0xFFFFFFFF);
+        if (closeFile) closeFile(impl::g_FSClient, impl::g_FSCmdBlock,
+                                 static_cast<uint32_t>(m_Handle), 0xFFFFFFFF);
 #elif WIIXL_WIIU
         FSCloseFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
-                    reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock), m_Handle, FS_ERROR_FLAG_ALL);
+                    reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
+                    static_cast<FSFileHandle>(m_Handle), FS_ERROR_FLAG_ALL);
+#elif WIIXL_SWITCH
+        nn::fs::CloseFile(nn::fs::FileHandle{m_Handle});
 #endif
         m_Open = false;
         m_Handle = 0;
@@ -548,7 +638,10 @@ public:
     }
 
 private:
-    uint32_t m_Handle = 0;
+    // 64 bits because nn::fs::FileHandle is a u64 and coreinit's FSFileHandle
+    // is a u32. Widening the storage costs four bytes per open file and means
+    // the class does not need a per-platform member.
+    uint64_t m_Handle = 0;
     uint32_t m_Size = 0;
     bool m_Open = false;
 };
