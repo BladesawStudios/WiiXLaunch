@@ -25,6 +25,7 @@ import sys
 import zlib
 
 import ppc_relocs
+import aarch64_relocs
 
 # --- must match include/wiixlaunch/loader/wxlm.hpp -------------------------
 MAGIC = 0x57584C4D
@@ -37,15 +38,22 @@ PHASE_LOAD, PHASE_POST_GX2, PHASE_APP_START = 0, 1, 2
 PHASES = {"load": PHASE_LOAD, "post_gx2": PHASE_POST_GX2, "app_start": PHASE_APP_START}
 
 RELOC_ADDR32, RELOC_HA, RELOC_HI, RELOC_LO, RELOC_IMPORT = 0, 1, 2, 3, 4
+RELOC_ADDR64 = 5
 
 HEADER_SIZE = 144
 IMPORT_ENTRY_SIZE = 16
 EXPORT_ENTRY_SIZE = 12
 REQUIRED_ENTRY_SIZE = 8
 
-# Header field order, packed big-endian for PPC32. Keep in step with the struct.
-HEADER_FORMAT = (
-    ">"      # big-endian
+# Header field order. Keep in step with the struct.
+#
+# The BYTE ORDER is a parameter now, not a property of the format: a PPC32
+# module is big-endian and an AArch64 one is little-endian, and the loader
+# checks the header's endian field against its own before it overlays a single
+# structure. Everything the writer packs - header, relocations, imports,
+# exports, required surfaces - uses the same order, because a file with two
+# orders in it is unreadable by anything.
+HEADER_BODY = (
     "I"      # magic
     "H"      # formatVersion
     "H"      # machine
@@ -82,9 +90,29 @@ HEADER_FORMAT = (
     "I"      # declaredPatchCount
     "4I"     # reserved1
 )
-assert struct.calcsize(HEADER_FORMAT) == HEADER_SIZE, (
-    "HEADER_FORMAT packs to %d bytes, the format says %d"
-    % (struct.calcsize(HEADER_FORMAT), HEADER_SIZE))
+def header_format(byte_order):
+    return byte_order + HEADER_BODY
+
+
+def byte_order_for(machine):
+    """The struct prefix a module of this machine is written with."""
+    if machine == MACHINE_PPC32:
+        return ">"
+    if machine == MACHINE_AARCH64:
+        return "<"
+    raise SystemExit("[wxlm] no byte order defined for machine %r" % machine)
+
+
+def endian_for(machine):
+    return ENDIAN_BIG if machine == MACHINE_PPC32 else ENDIAN_LITTLE
+
+
+# Both orders pack to the same size or the format is not a format. Asserted for
+# each rather than for the one that happens to be the default.
+for _bo in (">", "<"):
+    assert struct.calcsize(header_format(_bo)) == HEADER_SIZE, (
+        "HEADER_FORMAT packs to %d bytes, the format says %d"
+        % (struct.calcsize(header_format(_bo)), HEADER_SIZE))
 
 
 def fnv1a32(text):
@@ -115,13 +143,26 @@ class StringBlob:
         return bytes(self._data)
 
 
-def find_tool(name):
-    for root in (os.environ.get("DEVKITPPC"), r"C:\devkitPro\devkitPPC",
-                 "/opt/devkitpro/devkitPPC"):
+# Where each toolchain's binutils live, and what its tools are called. Two
+# entries rather than a general search: naming the two supported architectures
+# means an unsupported one fails with "no toolchain for X" instead of quietly
+# finding whichever cross-readelf happens to be on PATH and producing a module
+# for the wrong machine.
+_TOOLCHAINS = {
+    MACHINE_PPC32: ("DEVKITPPC", r"C:\devkitPro\devkitPPC",
+                    "/opt/devkitpro/devkitPPC", "powerpc-eabi-"),
+    MACHINE_AARCH64: ("DEVKITA64", r"C:\devkitPro\devkitA64",
+                      "/opt/devkitpro/devkitA64", "aarch64-none-elf-"),
+}
+
+
+def find_tool(name, machine=MACHINE_PPC32):
+    env, win, nix, prefix = _TOOLCHAINS[machine]
+    for root in (os.environ.get(env), win, nix):
         if not root:
             continue
         for suffix in (".exe", ""):
-            p = os.path.join(root, "bin", "powerpc-eabi-" + name + suffix)
+            p = os.path.join(root, "bin", prefix + name + suffix)
             if os.path.exists(p):
                 return p
     return None
@@ -162,6 +203,81 @@ def decode_import_symbol(name):
             "in the surface written as underscores." % name)
     surface_part, symbol = rest.rsplit("__", 1)
     return surface_part.replace("_", "."), symbol
+
+
+def read_relocations_aarch64(readelf, elf, payload, payload_size, undefined):
+    """The AArch64 half of read_relocations. See scripts/aarch64_relocs.py for
+    why there is only one fixup kind.
+
+    The import policy is identical to PowerPC's - an undefined wiixl_import__*
+    symbol becomes a kind-4 entry carrying an import index - because that part
+    is about the format rather than about the architecture.
+    """
+    relocs = []
+    import_specs = []
+    import_index = {}
+
+    for r in aarch64_relocs.read(readelf, elf):
+        if not aarch64_relocs.is_known(r.type):
+            raise SystemExit(
+                "[wxlm] %s emits %s, which this writer does not understand.\n"
+                "  It is NOT being ignored: a relocation dropped silently is a wrong\n"
+                "  pointer at runtime with nothing to trace it back to. Add it to\n"
+                "  scripts/aarch64_relocs.py - as a fixup if it is absolute, or to the\n"
+                "  no-fixup list if it is PC-relative and survives a page-aligned move."
+                % (os.path.basename(elf), r.type))
+
+        decoded = (decode_import_symbol(r.sym_name)
+                   if r.sym_name in undefined else None)
+
+        if decoded is not None:
+            if r.type != aarch64_relocs.ABS64:
+                raise SystemExit(
+                    "[wxlm] %s is imported by %s, which the loader cannot fix up.\n"
+                    "  An import's ADDRESS must be taken into a variable, never called\n"
+                    "  directly - calling one emits a branch relocation that reaches at\n"
+                    "  most 128 MB and cannot name an arbitrary host address."
+                    % (r.sym_name, r.type))
+            if r.offset + 8 > payload_size:
+                raise SystemExit(
+                    "[wxlm] import relocation for %s is at 0x%X, past the %d-byte payload"
+                    % (r.sym_name, r.offset, payload_size))
+            surface, symbol = decoded
+            key = (surface, symbol)
+            if key not in import_index:
+                import_index[key] = len(import_specs)
+                import_specs.append(key)
+            relocs.append((RELOC_IMPORT, r.offset, import_index[key]))
+            continue
+
+        if r.sym_name and r.sym_name in undefined:
+            raise SystemExit(
+                "[wxlm] %s references undefined symbol %r, which is not an import.\n"
+                "  A module cannot link against the host. Reach host functions through\n"
+                "  wiixl_import__<surface>__<Symbol>; anything else has to be defined\n"
+                "  inside the module." % (os.path.basename(elf), r.sym_name))
+
+        if not aarch64_relocs.needs_fixup(r.type):
+            continue
+
+        if r.offset + 8 > payload_size:
+            continue
+        # The site already holds its own base-0 target, same as PowerPC's
+        # ADDR32, so it is read back rather than recovered from the entry.
+        value = struct.unpack_from("<Q", payload, r.offset)[0]
+        if value > 0xFFFFFFFF:
+            raise SystemExit(
+                "[wxlm] %s at 0x%X resolves to 0x%X, which does not fit the 32-bit\n"
+                "  value field in a relocation record. A module image cannot span 4 GB;\n"
+                "  this means the link was not based at 0." % (r.type, r.offset, value))
+        relocs.append((RELOC_ADDR64, r.offset, value))
+
+    for _kind, offset, _value in relocs:
+        if offset > 0x00FFFFFF:
+            raise SystemExit(
+                "[wxlm] relocation offset 0x%X does not fit the 24-bit field in the "
+                "table header - the payload has outgrown 16 MB" % offset)
+    return relocs, import_specs
 
 
 def read_relocations(readelf, elf, payload, payload_size, undefined):
@@ -236,7 +352,7 @@ def read_relocations(readelf, elf, payload, payload_size, undefined):
 PATCH_ENTRY_SIZE = 40
 
 
-def read_patch_table(readelf, elf):
+def read_patch_table(readelf, elf, byte_order=">"):
     """The .wxlm.patches section, verbatim.
 
     The mod declares patches with WIIXL_DECLARE_PATCH, which emits records
@@ -279,7 +395,7 @@ def read_patch_table(readelf, elf):
     count = size // PATCH_ENTRY_SIZE
     for i in range(count):
         rec = blob[i * PATCH_ENTRY_SIZE:(i + 1) * PATCH_ENTRY_SIZE]
-        addr, psize = struct.unpack(">II", rec[:8])
+        addr, psize = struct.unpack(byte_order + "II", rec[:8])
         if psize == 0 or psize > 16:
             raise SystemExit("[wxlm] patch %d has size %d, must be 1..16" % (i, psize))
         if addr == 0:
@@ -340,7 +456,8 @@ def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
                 export_offset, export_count, required_offset, required_count,
                 string_offset, string_size, entry_offset, init_offset,
                 init_count, bss_size, heap_request,
-                declared_patch_offset=0, declared_patch_count=0):
+                declared_patch_offset=0, declared_patch_count=0,
+                machine=MACHINE_PPC32):
     """The single place a .wxlm header is laid out.
 
     Extracted out of build() so scripts/test_wxlm.py can call the real thing.
@@ -350,11 +467,11 @@ def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
     docs/modules.md.
     """
     return struct.pack(
-        HEADER_FORMAT,
+        header_format(byte_order_for(machine)),
         MAGIC,
         FORMAT_VERSION,
-        MACHINE_PPC32,
-        ENDIAN_BIG,
+        machine,
+        endian_for(machine),
         phase,
         abi_version,
         mod_id,
@@ -379,10 +496,15 @@ def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
 
 
 def build(args):
-    readelf = find_tool("readelf")
-    objcopy = find_tool("objcopy")
+    machine = MACHINE_AARCH64 if args.machine == "aarch64" else MACHINE_PPC32
+    en = byte_order_for(machine)
+
+    readelf = find_tool("readelf", machine)
+    objcopy = find_tool("objcopy", machine)
     if not readelf or not objcopy:
-        raise SystemExit("[wxlm] devkitPPC readelf/objcopy not found")
+        raise SystemExit(
+            "[wxlm] %s readelf/objcopy not found"
+            % ("devkitA64" if machine == MACHINE_AARCH64 else "devkitPPC"))
 
     if not os.path.exists(args.elf):
         raise SystemExit("[wxlm] %s does not exist" % args.elf)
@@ -411,8 +533,12 @@ def build(args):
             % (args.entry, entry_offset, payload_size))
 
     undefined = ppc_relocs.read_undefined_symbols(readelf, args.elf)
-    relocs, discovered = read_relocations(readelf, args.elf, payload, payload_size,
-                                          undefined)
+    if machine == MACHINE_AARCH64:
+        relocs, discovered = read_relocations_aarch64(
+            readelf, args.elf, payload, payload_size, undefined)
+    else:
+        relocs, discovered = read_relocations(
+            readelf, args.elf, payload, payload_size, undefined)
     bss_size = args.bss_size if args.bss_size else read_bss_size(readelf, args.elf)
 
     strings = StringBlob()
@@ -475,17 +601,18 @@ def build(args):
 
     # --- lay the sections out ------------------------------------------------
     reloc_bytes = b"".join(
-        struct.pack(">II", (kind << 24) | offset, value) for kind, offset, value in relocs)
+        struct.pack(en + "II", (kind << 24) | offset, value)
+        for kind, offset, value in relocs)
     import_bytes = b"".join(
-        struct.pack(">IIIHH", s, y, h, mj, mn) for s, y, h, mj, mn in imports)
+        struct.pack(en + "IIIHH", s, y, h, mj, mn) for s, y, h, mj, mn in imports)
     export_bytes = b"".join(
-        struct.pack(">IIHH", h, o, mj, mn) for h, o, mj, mn in exports)
+        struct.pack(en + "IIHH", h, o, mj, mn) for h, o, mj, mn in exports)
     required_bytes = b"".join(
-        struct.pack(">IHH", n, mj, mn) for n, mj, mn in required)
+        struct.pack(en + "IHH", n, mj, mn) for n, mj, mn in required)
     string_bytes = strings.bytes()
 
     # Declared patches, lifted from the ELF section WIIXL_DECLARE_PATCH emits.
-    patch_bytes = read_patch_table(readelf, args.elf)
+    patch_bytes = read_patch_table(readelf, args.elf, en)
     patch_count = len(patch_bytes) // PATCH_ENTRY_SIZE
 
     def align4(n):
@@ -530,6 +657,7 @@ def build(args):
         entry_offset, init_offset, init_count,
         bss_size, args.heap_request,
         patch_offset, patch_count,
+        machine,
     )
 
     with open(args.output, "wb") as f:
@@ -549,7 +677,7 @@ def build(args):
     if patch_count:
         for i in range(patch_count):
             rec = patch_bytes[i * PATCH_ENTRY_SIZE:(i + 1) * PATCH_ENTRY_SIZE]
-            addr, psize = struct.unpack(">II", rec[:8])
+            addr, psize = struct.unpack(en + "II", rec[:8])
             org = " ".join("%02X" % b for b in rec[8:8 + psize])
             new = " ".join("%02X" % b for b in rec[24:24 + psize])
             print("[wxlm]   patch 0x%08X %d B: %s -> %s" % (addr, psize, org, new))
@@ -578,6 +706,10 @@ def main():
                     metavar="surface[@maj.min]")
     ap.add_argument("--export", dest="exports", action="append", default=[],
                     metavar="Symbol[@maj.min]")
+    ap.add_argument("--machine", default="ppc32", choices=("ppc32", "aarch64"),
+                    help="target architecture; decides the toolchain, the byte "
+                         "order the file is written in, and which relocations "
+                         "are understood")
     ap.add_argument("--init-array-start", default="__init_array_start")
     ap.add_argument("--init-array-end", default="__init_array_end")
     return build(ap.parse_args())

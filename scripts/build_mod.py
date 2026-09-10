@@ -39,17 +39,54 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.dirname(HERE)
 
 
-def find_gxx():
-    """powerpc-eabi-g++, however devkitPPC is installed on this machine."""
-    root = os.environ.get("DEVKITPPC")
-    candidates = []
-    if root:
-        candidates.append(os.path.join(root, "bin", "powerpc-eabi-g++"))
-    candidates += [
-        r"C:\devkitPro\devkitPPC\bin\powerpc-eabi-g++.exe",
-        "/opt/devkitpro/devkitPPC/bin/powerpc-eabi-g++",
-    ]
-    for c in candidates:
+# Everything that differs between the two architectures a .wxlm can be built
+# for, in one place. A mod's SOURCE does not change between them - it names
+# surfaces, not platforms - so this is the whole of the difference.
+#
+# -msdata=none is PowerPC-only and is not merely unnecessary on aarch64, it is
+# rejected. That is the shape of most of this table: not a preference, a fact
+# about the toolchain.
+TARGETS = {
+    "cemu": {
+        "machine":  "ppc32",
+        "env":      "DEVKITPPC",
+        "roots":    (r"C:\devkitPro\devkitPPC", "/opt/devkitpro/devkitPPC"),
+        "prefix":   "powerpc-eabi-",
+        "linker":   "wxlm_mod.ld",
+        "defines":  ["__CEMU__=1", "WIIXL_CEMU=1"],
+        "arch":     ["-msdata=none"],
+        "toolchain": "devkitPPC",
+        "subdir":   "",
+    },
+    "switch": {
+        "machine":  "aarch64",
+        "env":      "DEVKITA64",
+        "roots":    (r"C:\devkitPro\devkitA64", "/opt/devkitpro/devkitA64"),
+        "prefix":   "aarch64-none-elf-",
+        "linker":   "wxlm_mod_aarch64.ld",
+        "defines":  ["__SWITCH__=1", "WIIXL_SWITCH=1"],
+        # Small code model: adrp+add reaches +/-4 GB, which is more than a
+        # module and its own data will ever span, and it is what keeps the
+        # relocation set down to one absolute kind.
+        "arch":     ["-mcmodel=small"],
+        "toolchain": "devkitA64",
+        "subdir":   "switch",
+    },
+}
+
+# Wii U is absent on purpose rather than by oversight: it is the same PowerPC
+# module the Cemu target produces, byte for byte, because a .wxlm names surfaces
+# and neither the code nor the format knows which of the two is running it.
+
+
+def find_gxx(target):
+    """The cross g++ for this target, however devkitPro is installed here."""
+    t = TARGETS[target]
+    roots = [os.environ.get(t["env"])] + list(t["roots"])
+    for root in roots:
+        if not root:
+            continue
+        c = os.path.join(root, "bin", t["prefix"] + "g++")
         if os.path.exists(c):
             return c
         if os.path.exists(c + ".exe"):
@@ -81,6 +118,7 @@ MANIFEST_KEYS = {
     "heapRequest": "bytes of arena this module needs; omit for best effort",
     "include":     "list of extra include directories, relative to the mod",
     "require":     "list of surfaces at a minimum version, e.g. botw.map@1.1",
+    "target":      "cemu (PowerPC, also Wii U) or switch (AArch64)",
 }
 
 
@@ -240,6 +278,10 @@ def main():
                     help="WiiXLaunch checkout (default: the tree holding this script)")
     ap.add_argument("--entry-file", default=None,
                     help="translation unit to compile (default: mod.cpp)")
+    ap.add_argument("--target", default=None, choices=sorted(TARGETS),
+                    help="which console's toolchain to build for; overrides "
+                         "mod.json's \"target\" (default cemu, which is also "
+                         "the Wii U module)")
     ap.add_argument("--phase", default=None)
     ap.add_argument("--heap-request", default=None,
                     help="bytes this module requires; omitted means best effort")
@@ -301,6 +343,13 @@ def main():
     entry_file = settle(args.entry_file, "entry", "mod.cpp")
     phase = settle(args.phase, "phase", "load")
     heap_request = settle(args.heap_request, "heapRequest", None)
+    target = settle(args.target, "target", "cemu")
+    if target not in TARGETS:
+        sys.stderr.write(
+            "[build_mod] unknown target %r. Known targets:\n%s\n"
+            % (target, "".join("    %-8s %s\n" % (k, v["toolchain"])
+                               for k, v in sorted(TARGETS.items()))))
+        return 1
     # Lists ACCUMULATE rather than override: a manifest listing what the mod
     # needs and a command line adding one more are not in conflict.
     includes_cfg = list(manifest.get("include", [])) + list(args.include)
@@ -334,7 +383,8 @@ def main():
                          "  not called mod.cpp.\n" % mod_cpp)
         return 1
 
-    linker = os.path.join(root, "scripts", "wxlm_mod.ld")
+    tcfg = TARGETS[target]
+    linker = os.path.join(root, "scripts", tcfg["linker"])
     wxlm_py = os.path.join(root, "scripts", "wxlm.py")
     for needed in (linker, wxlm_py):
         if not os.path.exists(needed):
@@ -344,14 +394,20 @@ def main():
                 "  WiiXLaunch checkout.\n" % (needed, root))
             return 1
 
-    gxx = find_gxx()
+    gxx = find_gxx(target)
     if gxx is None:
         # No gate exits 0 on a missing tool - see docs/modules.md.
         sys.stderr.write(
             "\n[build_mod] SETUP PROBLEM - not a broken source tree.\n"
-            "  powerpc-eabi-g++ was not found. Set DEVKITPPC, or install devkitPPC.\n\n")
+            "  %sg++ was not found. Set %s, or install %s.\n\n"
+            % (tcfg["prefix"], tcfg["env"], tcfg["toolchain"]))
         return 1
 
+    # Each target gets its own output directory. The FILENAME stays <id>.wxlm on
+    # both, because that is the name the module is deployed under wherever it
+    # ends up - and because a Switch module and a Cemu one are the same mod.
+    if tcfg["subdir"]:
+        out = os.path.join(out, tcfg["subdir"])
     os.makedirs(out, exist_ok=True)
     elf = os.path.join(out, mod_id + ".elf")
     wxlm = os.path.join(out, mod_id + ".wxlm")
@@ -366,9 +422,10 @@ def main():
                  for i in includes_cfg]
 
     cmd = [gxx,
-           "-std=gnu++20", "-fno-pie", "-fno-pic", "-msdata=none", "-Os",
-           "-ffreestanding", "-fno-exceptions", "-fno-rtti",
-           "-D__CEMU__=1", "-DWIIXL_CEMU=1"]
+           "-std=gnu++20", "-fno-pie", "-fno-pic", "-Os",
+           "-ffreestanding", "-fno-exceptions", "-fno-rtti"]
+    cmd += tcfg["arch"]
+    cmd += ["-D" + d for d in tcfg["defines"]]
     for inc in includes:
         cmd += ["-I", inc]
     cmd += ["-nostartfiles", "-nostdlib", "-T", linker, "-Wl,-q",
@@ -385,7 +442,7 @@ def main():
         return 1
 
     pack = [sys.executable, wxlm_py, elf, wxlm, "--id", mod_id,
-            "--phase", phase]
+            "--phase", phase, "--machine", tcfg["machine"]]
     for spec in requires_cfg:
         pack += ["--require", spec]
     if heap_request:

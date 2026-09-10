@@ -67,7 +67,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # module from the assembled SDK, wxlm.py failed on "No module named ppc_relocs",
 # and that is the whole argument for the check existing: a dependency you forget
 # is one you cannot notice from inside the tree that has it.
-SCRIPTS = ["build_mod.py", "wxlm.py", "wxlm_mod.ld", "ppc_relocs.py"]
+SCRIPTS = ["build_mod.py", "wxlm.py", "ppc_relocs.py", "aarch64_relocs.py",
+           "wxlm_mod.ld", "wxlm_mod_aarch64.ld"]
 HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h")]
 IMPORTS = os.path.join("include", "wiixlaunch", "imports")
 
