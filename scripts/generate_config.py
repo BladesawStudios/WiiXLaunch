@@ -137,13 +137,27 @@ namespace exl::setting {{
 
     module_flags = "".join(f' -I"{inc}"' for inc in module_includes)
 
+    # An escape hatch for bisecting, from the environment rather than from
+    # wiixlaunch.json: a define you are toggling to find a crash is not a
+    # property of the project and should not be committed to find out.
+    #
+    #   set WIIXL_EXTRA_DEFINES=-DWIIXL_NO_DEMO
+    #   build_switch.bat
+    #
+    # Echoed at generation time, because a flag that silently changes what was
+    # built is how you end up debugging a binary you did not think you made.
+    extra = os.environ.get("WIIXL_EXTRA_DEFINES", "").strip()
+    if extra:
+        print(f"[ConfigGen] WIIXL_EXTRA_DEFINES={extra}")
+        extra = " " + extra
+
     config_mk_content = f"""LOAD_KIND := {switch_cfg.get("load_kind", "Module")}
 PROGRAM_ID := {title_id}
 NPDM_JSON := config.json
 PYTHON := python3
 MOUNT_PATH := {switch_cfg.get("mount_path", "/mnt/sdcard")}
-C_FLAGS := -I"{root_dir_unix}/include" -I"{root_dir_unix}/build/generated/include"{module_flags}
-CXX_FLAGS := -I"{root_dir_unix}/include" -I"{root_dir_unix}/build/generated/include"{module_flags}
+C_FLAGS := -I"{root_dir_unix}/include" -I"{root_dir_unix}/build/generated/include"{module_flags}{extra}
+CXX_FLAGS := -I"{root_dir_unix}/include" -I"{root_dir_unix}/build/generated/include"{module_flags}{extra}
 """
     exl_mk_path = os.path.join(gen_switch_dir, "config.mk")
     with open(exl_mk_path, "w", encoding="utf-8") as f:

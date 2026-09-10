@@ -25,7 +25,12 @@
 // It is sample code and the file says so - delete it and everything above still
 // builds. Guarded separately from the module hookup so that a project with a
 // DIFFERENT game module is not asked to provide BotW's graphics namespaces.
-#if __has_include(<wiixlaunch/botw/botw.hpp>)
+//
+// -DWIIXL_NO_DEMO compiles it out without touching this file, which is what
+// you want when bisecting a crash: the demo installs a graphics hook into the
+// game's render path, and "is it the demo" should be answerable by rebuilding
+// rather than by editing and remembering to put it back.
+#if __has_include(<wiixlaunch/botw/botw.hpp>) && !defined(WIIXL_NO_DEMO)
 #include <wiixlaunch/botw/botw.hpp>
 #define WIIXL_BOTW_DEMO 1
 using namespace WiiXLaunch::BotW;
