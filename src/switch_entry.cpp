@@ -20,7 +20,47 @@
 #include <wiixlaunch/loader/loader.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/surface.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/patches.hpp>
+
+#include <lib/util/sys/jit.hpp>
+
+// THE ARENA HAS TO BE EXECUTABLE, and on this platform that is the whole
+// problem.
+//
+// A module image is code. Cemu's arena is the tail of the code cave, which the
+// graphic pack carved out of the game and which is executable; the address a
+// module is written to is the address it runs from. Horizon does not permit
+// that: a subsdk's only executable region is its own .text, and .text is not
+// writable.
+//
+// exl::util::Jit is exlaunch's answer, and it is the same mechanism its own
+// hook trampolines use. JIT_CREATE reserves a page-aligned block inside
+// .text - executable, read-only - and Initialize() maps a SECOND, writable
+// view of those same pages. The loader writes through the writable view and
+// the module executes from the .text one, which is what Arena::SetWriteAlias
+// exists to express.
+//
+// The size is its own number rather than wiixlaunch.json's memory.heap_size,
+// and deliberately: that value describes the Cemu code cave, which is a region
+// carved out of the game. This is .text in our own NSO - it costs exactly this
+// many zero bytes in the file, and nothing else competes for it. 256 KB is
+// generous for the eight modules Arena::kMaxModules allows, which run a couple
+// of kilobytes each; raise it here if a module ever needs more.
+//
+// Page-aligned by JIT_CREATE, which matters: an aarch64 image must be
+// page-aligned or its adrp pairs land one page out, and starting the
+// reservation on a page boundary means the first grant is aligned for free.
+constexpr size_t kSwitchArenaSize = 0x40000;
+JIT_CREATE(g_WiiXLaunchArena, kSwitchArenaSize)
+
+// The pages were just written to through the RW view and are about to be
+// executed through the RX one. On aarch64 those are separate caches and the
+// instruction side has no idea; without this the module runs whatever was
+// there before.
+static void SwitchFlush(uintptr_t, uint32_t) {
+    g_WiiXLaunchArena.Flush();
+}
 
 // Called from the weak exl_main in wiixlaunch/switch/switch_backend.hpp, after
 // exl::hook::Initialize() and WiiXLaunch_Init().
@@ -29,6 +69,18 @@
 // header and switch_backend.hpp rides in through the umbrella on every single
 // translation unit. Same split as the Wii U side, for the same reason.
 extern "C" void WiiXLaunch_SwitchLoadPoint() {
+    // The reservation, before anything can ask for memory. Base is the .text
+    // address a module will RUN from; the alias is where it is written.
+    g_WiiXLaunchArena.Initialize();
+    const uintptr_t rx = g_WiiXLaunchArena.GetRo();
+    const uintptr_t rw = g_WiiXLaunchArena.GetRw();
+    WiiXLaunch::Arena::SetReservation(rx, static_cast<uint32_t>(kSwitchArenaSize));
+    WiiXLaunch::Arena::SetWriteAlias(rw);
+    WiiXLaunch::Loader::SetFlushHook(&SwitchFlush);
+    WIIXL_LOG("[loader] arena %u B at %p, written through %p",
+              static_cast<uint32_t>(kSwitchArenaSize),
+              reinterpret_cast<void*>(rx), reinterpret_cast<void*>(rw));
+
     // What this host is and what it offers, logged before any module is read,
     // so a rejection further down can be read against it.
     WIIXL_LOG("[loader] host ABI v%u, format v%u",

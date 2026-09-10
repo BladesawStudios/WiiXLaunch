@@ -669,22 +669,31 @@ inline Reject LoadFrom(Reader& file) {
     // wrote; if both poisons were the same byte the two would be
     // indistinguishable and its liveness check would be reasoning about the
     // wrong thing.
-    constexpr uint8_t kImagePoison = 0xCD;
-    for (uint32_t i = 0; i < imageSize; ++i) image[i] = kImagePoison;
+    // EVERY WRITE from here on goes through the alias, and every VALUE stored
+    // is still computed from `image`. On Cemu and Wii U the two are the same
+    // pointer; on Switch the image lives in the host's .text, which cannot be
+    // written to, and Arena hands back a writable view of the same pages. Get
+    // this backwards and a module would be relocated to point into a mapping
+    // that is not executable.
+    uint8_t* wimage = static_cast<uint8_t*>(Arena::Writable(image));
 
-    if (!impl::ReadAligned(file, h.payloadOffset, image, h.payloadSize)) {
+    constexpr uint8_t kImagePoison = 0xCD;
+    for (uint32_t i = 0; i < imageSize; ++i) wimage[i] = kImagePoison;
+
+    if (!impl::ReadAligned(file, h.payloadOffset, wimage, h.payloadSize)) {
         WIIXL_LOG("[loader:%s] %s: short read of the %u-byte payload",
                   id, RejectName(Reject::ReadFailed), h.payloadSize);
         Arena::SetCurrent(nullptr);
         return Reject::ReadFailed;
     }
-    for (uint32_t i = 0; i < h.bssSize; ++i) image[h.payloadSize + i] = 0;
+    for (uint32_t i = 0; i < h.bssSize; ++i) wimage[h.payloadSize + i] = 0;
     WIIXL_LOG("[loader:%s] image at %p, %u B (payload %u read, bss %u zeroed over "
               "0x%02X poison)",
               id, image, imageSize, h.payloadSize, h.bssSize, kImagePoison);
 
     // --- relocate ------------------------------------------------------------
     const uintptr_t base = reinterpret_cast<uintptr_t>(image);
+    const uintptr_t wbase = reinterpret_cast<uintptr_t>(wimage);
     uint32_t importCount = 0;
 
     for (uint32_t i = 0; i < h.relocCount; ++i) {
@@ -753,7 +762,7 @@ inline Reject LoadFrom(Reader& file) {
             // Pointer-width, not uint32_t: an aarch64 module's import slot is
             // eight bytes and truncating one to 32 bits would write a plausible
             // half-address that faults somewhere unrelated at first call.
-            *reinterpret_cast<uintptr_t*>(base + offset) =
+            *reinterpret_cast<uintptr_t*>(wbase + offset) =
                 reinterpret_cast<uintptr_t>(fn);
             ++importCount;
             continue;
@@ -762,7 +771,7 @@ inline Reject LoadFrom(Reader& file) {
         // Addr64 adds the FULL base before truncation can happen; the addend
         // itself is a 32-bit offset inside the module, which is all the record
         // has room for and all a module image can span.
-        uint8_t* site = image + offset;
+        uint8_t* site = wimage + offset;
         if (kind == static_cast<uint32_t>(Wxlm::RelocKind::Addr64)) {
             *reinterpret_cast<uint64_t*>(site) =
                 static_cast<uint64_t>(base) + static_cast<uint64_t>(value);

@@ -165,6 +165,21 @@ inline uintptr_t g_ExplicitBase = 0;
 inline uint32_t g_ExplicitTotal = 0;
 inline bool g_HasExplicit = false;
 
+// THE WRITE ALIAS, and it exists because Horizon will not let one address be
+// both writable and executable.
+//
+// On Cemu and Wii U the arena is ordinary memory: the address a module is
+// placed at is the address it is written through and the address it executes
+// from. A module image is CODE, so on Switch it has to live somewhere
+// executable, and the only executable region a subsdk has is its own .text -
+// which is not writable. exl::util::Jit maps a second, writable view of the
+// same pages; the loader writes through that view and the module runs from the
+// first one.
+//
+// A delta rather than a second base, so it is zero - and therefore free and
+// invisible - on every platform that does not need it.
+inline uintptr_t g_WriteDelta = 0;
+
 inline void CopyOwner(char* dst, const char* src) {
     uint32_t i = 0;
     for (; i < 16 && src && src[i]; ++i) dst[i] = src[i];
@@ -212,6 +227,8 @@ inline uintptr_t Base() {
 #if WIIXL_CEMU
     return Backend::CemuHeapBase();
 #else
+    // Switch and Wii U supply theirs through SetReservation - there is no
+    // region to read here the way the Cemu code cave can be read.
     return 0;
 #endif
 }
@@ -242,6 +259,24 @@ inline uint32_t Free() {
 }
 
 inline bool Ready() { return Base() != 0 && Total() != 0; }
+
+// Where to WRITE the reservation, when that is not where it lives.
+//
+// Call after SetReservation - the delta is computed against Base(). Passing the
+// base itself, or never calling this at all, means "written where it lives",
+// which is what Cemu and Wii U do.
+inline void SetWriteAlias(uintptr_t writableBase) {
+    impl::g_WriteDelta = writableBase - Base();
+}
+
+// The address to write `p` through. Identity unless SetWriteAlias said
+// otherwise. A pointer the loader is about to STORE must still be the
+// executable one - only the store itself is redirected.
+inline void* Writable(void* p) {
+    if (!p || impl::g_WriteDelta == 0) return p;
+    return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(p) +
+                                   impl::g_WriteDelta);
+}
 
 // True once anything has been refused, host side. A caller that got null can
 // say why without having to reason about it.
