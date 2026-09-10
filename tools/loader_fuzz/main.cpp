@@ -447,6 +447,33 @@ static void TestPathCandidates() {
     }
 
     {
+        // HasMountName decides whether an nn::fs call is safe or FATAL. On
+        // Switch a path with no mount name does not fail, it aborts the
+        // process - FindFileSystem calls nn::diag Abort and the game dies with
+        // ResultFsInvalidMountName. The first Switch boot ever attempted died
+        // exactly here, on the bare "WiiXLaunch/mods" that has always been
+        // candidate 0.
+        //
+        // Checked on this host because the function is pure string handling and
+        // the alternative is discovering the answer by killing a console.
+        using WiiXLaunch::FS::impl::HasMountName;
+        expect("mount name: 'sd:/WiiXLaunch/mods' is safe",
+               HasMountName("sd:/WiiXLaunch/mods"));
+        expect("mount name: 'sd:' alone is safe",
+               HasMountName("sd:"));
+        expect("mount name: bare relative path is NOT safe",
+               !HasMountName("WiiXLaunch/mods"));
+        expect("mount name: leading slash is NOT safe",
+               !HasMountName("/vol/content/WiiXLaunch/mods"));
+        expect("mount name: a colon after a separator does not count",
+               !HasMountName("WiiXLaunch/mods:x"));
+        expect("mount name: a leading colon is NOT safe",
+               !HasMountName(":sd/mods"));
+        expect("mount name: empty is NOT safe", !HasMountName(""));
+        expect("mount name: null is NOT safe", !HasMountName(nullptr));
+    }
+
+    {
         char storage[3][256];
         const char* out[4];
         WiiXLaunch::FS::impl::Candidates("/vol/content/WiiXLaunch/mods", storage, out);

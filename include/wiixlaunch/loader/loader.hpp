@@ -1138,6 +1138,10 @@ inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t ca
     const char* opened = nullptr;
     for (uint32_t c = 0; c < 4u && !opened; ++c) {
         if (!candidates[c] || !candidates[c][0]) continue;
+        // A path with no mount name does not fail here, it ABORTS - see
+        // FS::impl::HasMountName. This is the line the first Switch boot died
+        // on, trying the bare "WiiXLaunch/mods".
+        if (!FS::impl::HasMountName(candidates[c])) continue;
         if (nn::fs::OpenDirectory(&handle, candidates[c],
                                   nn::fs::OpenDirectoryMode_File) == 0) {
             opened = candidates[c];

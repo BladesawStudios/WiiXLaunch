@@ -82,11 +82,34 @@ inline uint32_t g_StagedReads = 0;
 //
 // `storage` supplies the buffers; `out` is filled with up to 4 candidates, the
 // first being the path exactly as given. Entries may be null - skip those.
-#if WIIXL_SWITCH
 // Where a Switch host keeps its files. "sd" rather than something longer
 // because it appears in every path this builds.
 constexpr const char* kSwitchMount = "sd";
-#endif
+
+// nn::fs ABORTS THE PROCESS for a path with no mount name. It does not return
+// a Result: FindFileSystem calls nn::diag Abort, the game dies, and the log
+// ends with ResultFsInvalidMountName (2002-6065) and a guest stack trace.
+//
+// That breaks the assumption the candidate list is built on. coreinit answers
+// "no" to a path it cannot open, so trying several and keeping the first that
+// works costs nothing. Here the FIRST WRONG TRY IS FATAL - and the first
+// candidate has always been the path exactly as given, which for
+// "WiiXLaunch/mods" has no mount name at all.
+//
+// Measured, on the first Switch boot ever attempted: the loader logged
+// "enumerating WiiXLaunch/mods" and the process aborted inside OpenDirectory
+// before ListWxlm could report anything.
+//
+// So every path handed to nn::fs is checked first. A candidate without a mount
+// name is skipped rather than tried.
+inline bool HasMountName(const char* p) {
+    if (!p || !p[0] || p[0] == '/' || p[0] == ':') return false;
+    for (uint32_t i = 0; p[i] && i < 32; ++i) {
+        if (p[i] == ':') return i > 0;
+        if (p[i] == '/') return false;      // a separator came first
+    }
+    return false;
+}
 
 
 inline void Candidates(const char* path, char storage[3][256], const char* out[4]) {
@@ -552,6 +575,9 @@ public:
 #elif WIIXL_SWITCH
         for (int i = 0; i < 4; ++i) {
             if (!pathsToTry[i] || !pathsToTry[i][0]) continue;
+            // Not a "would probably fail" check - see HasMountName. Handing
+            // this one to nn::fs would end the process, not the loop.
+            if (!impl::HasMountName(pathsToTry[i])) continue;
             nn::fs::FileHandle handle{};
             if (nn::fs::OpenFile(&handle, pathsToTry[i],
                                  nn::fs::OpenMode_Read) == 0) {
