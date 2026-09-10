@@ -26,7 +26,7 @@ silently does nothing.
 |---|---|---|
 | Cemu | Entry hook `0x03098928` is already late enough | **Measured** |
 | Wii U (Aroma) | `ON_APPLICATION_START` | **Implemented, never run** |
-| Switch | `exl_main`, in the subsdk before the game | **Implemented, never run** |
+| Switch | `exl_main`, in the subsdk before the game | **Measured** |
 
 Only Cemu needs a **game module** to nominate its load point, and only because
 the load point there is an address inside the game — knowledge base cannot

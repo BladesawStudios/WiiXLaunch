@@ -277,11 +277,14 @@ python scripts/make_sdk.py --host
 * **Cemu is the only platform that has run.** The Switch and Wii U hosts build
   every time and have never been executed. A mod targets surfaces rather than a
   platform, so it should follow — but nothing has demonstrated that.
-* **All three platforms have a complete load path, and only Cemu has run
-  one.** Wii U enumerates and loads from `ON_APPLICATION_START`; Switch mounts
-  the SD card through `nn::fs`, enumerates, and loads from `exl_main` before
-  the game's own main. Both compile, both are gated, neither has been executed
-  on hardware. Treat them as untested rather than as working.
+* **Wii U has never been run.** It enumerates and loads from
+  `ON_APPLICATION_START`, it compiles, it is gated — and no one has executed
+  it. Treat it as untested rather than as working. Cemu and Switch have both
+  loaded modules for real.
+* **The Switch host has no hook-probe target**, so `wiixl.core:HookProbeTarget`
+  returns null there and the two-module hook-collision demo reports "not
+  hooking" instead of running. Loading, relocation, imports, `.init_array` and
+  arena accounting are all exercised on that platform; hook chaining is not.
 * **A Switch mod is built separately**: `--target switch` produces an AArch64
   module in `build/switch/`, and a mod is compiled once per architecture. The
   Wii U and Cemu module is the same file — a `.wxlm` names surfaces, and
