@@ -59,7 +59,12 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 :: symptoms that were really just "never rebuilt." Copy straight into the
 :: mods folder here so `main.npdm`/`subsdk9` in Ryujinx are always what was
 :: just compiled.
-set RYUJINX_MOD_EXEFS=%APPDATA%\Ryujinx\mods\contents\01007EF00011E000\NVNInjectionTest\exefs
+:: The mod folder name is ours to pick - Ryujinx reads every subfolder of
+:: the title id. This pointed at NVNInjectionTest, a folder from an older
+:: setup that no longer exists, so the guard below was false on every
+:: build and the copy silently never happened. That is precisely the
+:: staleness the comment above was written about, one level up.
+set RYUJINX_MOD_EXEFS=%APPDATA%\Ryujinx\mods\contents\01007EF00011E000\WiiXLaunch\exefs
 if exist "%RYUJINX_MOD_EXEFS%" (
     copy /y "deploy\switch\atmosphere\contents\01007EF00011E000\exefs\subsdk9" "%RYUJINX_MOD_EXEFS%\subsdk9" > nul
     copy /y "deploy\switch\atmosphere\contents\01007EF00011E000\exefs\main.npdm" "%RYUJINX_MOD_EXEFS%\main.npdm" > nul
