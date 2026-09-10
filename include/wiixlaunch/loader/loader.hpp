@@ -626,7 +626,19 @@ inline Reject LoadFrom(Reader& file) {
 
     // Allocations are charged to this module from here until its entry returns.
     Arena::SetCurrent(sub);
-    uint8_t* image = static_cast<uint8_t*>(Arena::AllocIn(*sub, imageSize, 64));
+    // 64 bytes on PowerPC - cache-line, and what every FS destination wants.
+    //
+    // 4096 on AArch64, and it is a CORRECTNESS requirement rather than a
+    // performance one. An aarch64 module addresses its own data with adrp+add,
+    // which the linker has already resolved and which stays correct after the
+    // image moves ONLY if it moves by a whole number of pages: adrp computes
+    // (PC & ~0xFFF) + imm, so a sub-page shift changes the page difference the
+    // linker baked in. There is no relocation on those instructions to fix it
+    // up afterwards, so nothing would report the damage - the module would just
+    // read from one page away.
+    constexpr uint32_t kImageAlign =
+        (Wxlm::kHostMachine == Wxlm::Machine::AArch64) ? 4096u : 64u;
+    uint8_t* image = static_cast<uint8_t*>(Arena::AllocIn(*sub, imageSize, kImageAlign));
     if (!image) {
         WIIXL_LOG("[loader:%s] %s: wanted %u B for the image (payload %u + bss %u) "
                   "inside a %u-byte grant with %u used",
@@ -687,9 +699,20 @@ inline Reject LoadFrom(Reader& file) {
         const uint32_t offset = pair[0] & 0x00FFFFFFu;
         uint32_t value = pair[1];
 
-        if (offset + 4 > h.payloadSize) {
-            WIIXL_LOG("[loader:%s] %s: relocation %u targets +0x%X, payload is %u B",
-                      id, RejectName(Reject::BadRelocation), i, offset, h.payloadSize);
+        // Bound by the width the kind actually writes, not by a flat 4. An
+        // Addr64 site is eight bytes, and checking four would let the last four
+        // land past the payload - inside the module's own bss, which is legal
+        // memory and would therefore corrupt silently rather than be refused.
+        const uint32_t width = Wxlm::RelocWidth(static_cast<Wxlm::RelocKind>(kind));
+        if (width == 0) {
+            WIIXL_LOG("[loader:%s] %s: relocation %u has unknown kind %u",
+                      id, RejectName(Reject::BadRelocation), i, kind);
+            Arena::SetCurrent(nullptr);
+            return Reject::BadRelocation;
+        }
+        if (offset + width > h.payloadSize) {
+            WIIXL_LOG("[loader:%s] %s: relocation %u targets +0x%X (%u B), payload is %u B",
+                      id, RejectName(Reject::BadRelocation), i, offset, width, h.payloadSize);
             Arena::SetCurrent(nullptr);
             return Reject::BadRelocation;
         }
@@ -727,16 +750,28 @@ inline Reject LoadFrom(Reader& file) {
                 Arena::SetCurrent(nullptr);
                 return Reject::UnresolvedImport;
             }
-            *reinterpret_cast<uint32_t*>(base + offset) =
-                static_cast<uint32_t>(reinterpret_cast<uintptr_t>(fn));
+            // Pointer-width, not uint32_t: an aarch64 module's import slot is
+            // eight bytes and truncating one to 32 bits would write a plausible
+            // half-address that faults somewhere unrelated at first call.
+            *reinterpret_cast<uintptr_t*>(base + offset) =
+                reinterpret_cast<uintptr_t>(fn);
             ++importCount;
+            continue;
+        }
+
+        // Addr64 adds the FULL base before truncation can happen; the addend
+        // itself is a 32-bit offset inside the module, which is all the record
+        // has room for and all a module image can span.
+        uint8_t* site = image + offset;
+        if (kind == static_cast<uint32_t>(Wxlm::RelocKind::Addr64)) {
+            *reinterpret_cast<uint64_t*>(site) =
+                static_cast<uint64_t>(base) + static_cast<uint64_t>(value);
             continue;
         }
 
         // Kinds 0-3 are exactly WiiXLaunch_Cemu_Relocate's cases, applied to the
         // module's own base instead of the host's.
         value += static_cast<uint32_t>(base);
-        uint8_t* site = image + offset;
         switch (kind) {
             case 0: *reinterpret_cast<uint32_t*>(site) = value; break;
             case 1: *reinterpret_cast<uint16_t*>(site) =
@@ -822,8 +857,14 @@ inline Reject LoadFrom(Reader& file) {
 #if WIIXL_HOST
             // A host test must not write to an address a .wxlm names - it is a
             // number from a file, and here it is not a game address at all.
+            // Through uintptr_t: targetAddr is a 32-bit field and this build is
+            // 64-bit, which MSVC rightly warns about. Widening explicitly says
+            // the narrowing is understood rather than accidental - and it is a
+            // standing question for Switch, where a game address does not fit
+            // in 32 bits at all. See docs/loader.md on declared patches.
             WIIXL_LOG("[loader:%s] declared patch %u at %p not applied (host test)",
-                      id, i, reinterpret_cast<void*>(pe.targetAddr));
+                      id, i,
+                      reinterpret_cast<void*>(static_cast<uintptr_t>(pe.targetAddr)));
             (void)applied; (void)refused;
 #else
             if (Patches::Apply(pe, m.id) == Patches::Result::Ok) ++applied;

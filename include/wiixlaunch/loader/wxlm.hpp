@@ -91,8 +91,31 @@ enum class RelocKind : uint8_t {
     // import table rather than being a link-time address, and the loader
     // resolves it through the surface registry instead of adding base.
     Import   = 4,
+    // AArch64's R_AARCH64_ABS64 - a whole pointer, eight bytes wide.
+    //
+    // It is the ONLY absolute fixup an aarch64 module needs. Code addressing
+    // there is adrp+add, which is PC-relative and survives the move on its own
+    // PROVIDED the image is page-aligned, so the loader aligns aarch64 images
+    // to 4096 rather than 64. Get that wrong and adrp pairs land one page out
+    // with no relocation involved and nothing to catch it - see kImageAlign.
+    Addr64   = 5,
     Count
 };
+
+// How wide the site a relocation writes is, in bytes. Import is pointer-width
+// on whatever host reads the file, which is what makes one kind serve both
+// architectures; everything else is fixed by the kind.
+inline uint32_t RelocWidth(RelocKind k) {
+    switch (k) {
+        case RelocKind::Addr32:   return 4;
+        case RelocKind::Addr16Ha:
+        case RelocKind::Addr16Hi:
+        case RelocKind::Addr16Lo: return 2;
+        case RelocKind::Import:   return static_cast<uint32_t>(sizeof(void*));
+        case RelocKind::Addr64:   return 8;
+        default:                  return 0;
+    }
+}
 
 // One import: which surface, which symbol, and the minimum version required.
 // Carries names as well as the hash so a failure reads as

@@ -251,6 +251,10 @@ static Baseline MakeBaseline() {
 // ---------------------------------------------------------------------------
 static int g_Cases = 0, g_Failures = 0;
 static int g_Accepted = 0, g_Rejected = 0;
+// Relocation results read back and compared, as opposed to loads that merely
+// succeeded. Floored below for the usual reason: a check that stops running
+// looks exactly like a check that passes.
+static int g_ValueChecks = 0;
 
 // How many cases must run. The dead-hook incident (docs/modules.md, fourth
 // rule) was invisible partly because THE CASE COUNT DID NOT MOVE - there was no
@@ -815,6 +819,50 @@ int main() {
         Case("required surface not registered", v, Reject::MissingSurface);
     }
 
+    // --- Addr64, the AArch64 fixup ------------------------------------------
+    //
+    // No PowerPC module can produce this kind, so on the consoles that exist
+    // today it is code nothing reaches. This build is 64-bit and little-endian,
+    // which is exactly the shape a Switch module has, so the fixup can be
+    // exercised here for real - and the suite's own history is that a check
+    // nothing reaches is worse than a check nobody wrote.
+    {
+        auto v = base.bytes;
+        Put32(v, base.relocOffset, ((uint32_t)Wxlm::RelocKind::Addr64 << 24) | 0x28u);
+        Put32(v, base.relocOffset + 4, 0x10u);
+        Recrc(v);
+        ExpectAccepted("Addr64 relocation inside the payload", v);
+
+        // "It loaded" would not tell a correct 64-bit write from one truncated
+        // to 32 bits: on a host whose arena sits below 4 GiB the low half is
+        // right and the module runs anyway, which is the version of this bug
+        // that ships. Read the eight bytes back and compare against the base
+        // this run actually used.
+        ++g_ValueChecks;
+        const Loader::LoadedModule& m = Loader::impl::g_Modules[0];
+        uint64_t wrote = 0;
+        if (m.valid && m.image) std::memcpy(&wrote, m.image + 0x28, 8);
+        const uint64_t want =
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(m.image)) + 0x10ull;
+        if (!m.valid || !m.image || wrote != want) {
+            ++g_Failures;
+            std::printf("  FAIL  %-52s site holds 0x%llX, expected 0x%llX\n",
+                        "Addr64 wrote a full 64-bit pointer",
+                        (unsigned long long)wrote, (unsigned long long)want);
+        }
+    }
+    {
+        // 0x3C + 8 runs four bytes past a 64-byte payload, into the bss - which
+        // is memory the module owns, so the write would land somewhere legal
+        // and corrupt silently. Under the old flat "offset + 4" bound this case
+        // was ACCEPTED; it is the regression test for that bound being wrong.
+        auto v = base.bytes;
+        Put32(v, base.relocOffset, ((uint32_t)Wxlm::RelocKind::Addr64 << 24) | 0x3Cu);
+        Put32(v, base.relocOffset + 4, 0x10u);
+        Case("Addr64 site whose last four bytes leave the payload", v,
+             Reject::BadRelocation);
+    }
+
     // --- values a single bit flip cannot reach -----------------------------
     //
     // The sweep below changes one bit at a time, so it can never produce
@@ -1138,8 +1186,18 @@ int main() {
             std::memcpy(&hdr32, v.data() + h.relocOffset + i * 8, 4);
             std::memcpy(&val,   v.data() + h.relocOffset + i * 8 + 4, 4);
             const uint32_t kind = hdr32 >> 24, off = hdr32 & 0x00FFFFFFu;
-            if (kind > (uint32_t)Wxlm::RelocKind::Import) return false;
-            if (off + 4 > h.payloadSize) return false;
+            if (kind >= (uint32_t)Wxlm::RelocKind::Count) return false;
+            // Spelled out here rather than calling Wxlm::RelocWidth, on purpose:
+            // an oracle that asks the implementation what it thinks the answer
+            // is can only ever agree with it. Two independent statements of the
+            // same table is the whole mechanism.
+            uint32_t width = 4;
+            if (kind == (uint32_t)Wxlm::RelocKind::Addr16Ha ||
+                kind == (uint32_t)Wxlm::RelocKind::Addr16Hi ||
+                kind == (uint32_t)Wxlm::RelocKind::Addr16Lo) width = 2;
+            else if (kind == (uint32_t)Wxlm::RelocKind::Addr64) width = 8;
+            else if (kind == (uint32_t)Wxlm::RelocKind::Import) width = sizeof(void*);
+            if (off + width > h.payloadSize) return false;
             if (kind == (uint32_t)Wxlm::RelocKind::Import && val >= h.importCount)
                 return false;
         }
@@ -1213,8 +1271,9 @@ int main() {
 
     std::printf("\n%d containment checks, %d liveness checks\n",
                 g_ContainmentChecks, g_LivenessChecks);
-    std::printf("\n%d cases, %d rejected, %d accepted, %d FAILURES\n",
-                g_Cases, g_Rejected, acceptedTotal, g_Failures);
+    std::printf("\n%d cases, %d rejected, %d accepted, %d value(s) read back, "
+                "%d FAILURES\n",
+                g_Cases, g_Rejected, acceptedTotal, g_ValueChecks, g_Failures);
 
     // FLOORS. A suite that shrinks silently reports success over whatever is
     // left of itself, and a floor on the TOTAL does not constrain the split -
@@ -1236,6 +1295,12 @@ int main() {
         std::printf("LOADER FUZZ DISARMED: only %d of the expected %d cases were "
                     "REJECTED.\nMalformed modules are being accepted, or cases "
                     "stopped running.\n", g_Rejected, kExpectedRejected);
+        return 1;
+    }
+    if (g_ValueChecks == 0) {
+        std::printf("LOADER FUZZ DISARMED: no relocation VALUE was read back.\n"
+                    "Accepting a module says the loader wrote something; only\n"
+                    "reading the site says it wrote the right bytes.\n");
         return 1;
     }
     if (g_ContainmentChecks == 0 || g_LivenessChecks == 0) {
