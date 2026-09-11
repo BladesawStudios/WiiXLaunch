@@ -150,7 +150,8 @@ def main():
                 "  about whether a module can be produced for it.\n\n")
             return 1
 
-        # build_mod puts a switch build in <output>/switch/.
+        # build_mod puts a switch build in a subdirectory of <output>;
+        # walked rather than named so the two do not have to agree.
         built = None
         for root, _dirs, files in os.walk(out):
             for name in files:

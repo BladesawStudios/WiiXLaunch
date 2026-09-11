@@ -118,9 +118,10 @@ thing you ship. Every import it uses is named in that output — which is also
 the list the host will be asked for at load.
 
 For Switch, add `--target switch`. The same source, compiled with devkitA64
-into `build\switch\hello_mod.wxlm` — a separate file, because it is a
+into `build\switch-mods\hello_mod.wxlm` — a separate file, because it is a
 different architecture, and the loader refuses the wrong one by name rather
-than running it. Cemu and Wii U share the one module.
+than running it. Cemu and Wii U share the one module. Either way the build
+prints the path it wrote.
 
 ## 7. Open it in your editor
 

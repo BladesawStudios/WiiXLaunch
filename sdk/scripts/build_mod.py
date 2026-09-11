@@ -70,7 +70,14 @@ TARGETS = {
         # relocation set down to one absolute kind.
         "arch":     ["-mcmodel=small"],
         "toolchain": "devkitA64",
-        "subdir":   "switch",
+        # NOT "switch". In this repository build/switch/ is the HOST's - it is
+        # where build_switch.bat writes subsdk9 and main.npdm and where
+        # deploy.py reads them from - and a mod build with no --out lands in
+        # build/ too. They cannot actually clobber each other, since the host's
+        # files have fixed names and a mod's are <id>.elf/<id>.wxlm, but one
+        # directory holding both is how you end up staring at a folder
+        # wondering which half of it you just built.
+        "subdir":   "switch-mods",
     },
 }
 
@@ -450,6 +457,11 @@ def main():
     r = subprocess.run(pack)
     if r.returncode != 0:
         return 1
+
+    # The path, because it is not always where you would guess: a target with
+    # its own subdirectory puts it one level down, and the output above names
+    # the file without saying where it landed.
+    print("[build_mod] %s" % wxlm)
 
     # Resources, staged where deploy.py looks for them. Cleared first: a
     # directory left from a renamed or removed file would otherwise ship
