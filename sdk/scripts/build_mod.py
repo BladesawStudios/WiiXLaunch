@@ -430,7 +430,18 @@ def main():
 
     cmd = [gxx,
            "-std=gnu++20", "-fno-pie", "-fno-pic", "-Os",
-           "-ffreestanding", "-fno-exceptions", "-fno-rtti"]
+           "-ffreestanding", "-fno-exceptions", "-fno-rtti",
+           # WARNINGS, which this compiled without entirely until a real bug
+           # walked past every one of them: the BotW API server had
+           #     if (IsWrite(req)) { ... } else if (IsWrite(req)) { ... }
+           # so the second arm was unreachable and three of its routes had
+           # never once run. -Wduplicated-cond names that exact shape.
+           #
+           # Warnings, not errors. A mod is somebody else's code and failing
+           # their build over style is not this tool's business - but saying
+           # nothing at all was not either.
+           "-Wall", "-Wextra", "-Wduplicated-cond", "-Wduplicated-branches",
+           "-Wno-unused-parameter", "-Wno-unused-function"]
     cmd += tcfg["arch"]
     cmd += ["-D" + d for d in tcfg["defines"]]
     for inc in includes:
