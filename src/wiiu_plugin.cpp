@@ -15,8 +15,43 @@
 #include <wiixlaunch/time.hpp>
 #include <wiixlaunch/loader/loader.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
+#include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/patches.hpp>
+#include <coreinit/cache.h>
+#include <coreinit/memdefaultheap.h>
 #include <cstdio>
+
+// THE ARENA, and the two things this platform needs that the others state
+// differently.
+//
+// WHERE. Cemu reads the tail of its code cave and Switch reserves space in its
+// own .text, because Horizon will not let one address be both writable and
+// executable. Wii U needs neither trick: memory from the default heap can be
+// written and then executed, which is how WUMS loads and runs the plugins
+// themselves. So the reservation is an ordinary allocation and there is no
+// write alias - Arena::Writable() stays the identity here.
+//
+// 2 MB because it costs nothing on a console with MEM2 to spare, and because
+// it puts the best-effort grant at the same 256 KB cap Cemu lands on rather
+// than at a fraction of it.
+constexpr uint32_t kWiiUArenaSize = 2u * 1024u * 1024u;
+
+// CACHE MAINTENANCE, and it is not optional.
+//
+// The loader has just written instructions through the data cache and is about
+// to branch into them through the instruction cache. The Espresso does not
+// reconcile those on its own. Until now this platform used the loader's
+// DEFAULT flush hook, which is an empty function everywhere except Cemu - so a
+// module would have loaded, relocated correctly, and then executed whatever
+// happened to be in the instruction cache at that address.
+//
+// That failure needs hardware to see and says nothing useful when it happens,
+// which is the worst combination. Cemu never showed it because the emulator's
+// Backend::FlushCache was always wired up there.
+static void WiiUFlush(uintptr_t addr, uint32_t size) {
+    DCFlushRange(reinterpret_cast<void*>(addr), size);
+    ICInvalidateRange(reinterpret_cast<void*>(addr), size);
+}
 
 WUPS_PLUGIN_NAME(WUPS_PLUGIN_NAME_STR);
 WUPS_PLUGIN_DESCRIPTION(WUPS_PLUGIN_DESCRIPTION_STR);
@@ -101,6 +136,23 @@ ON_APPLICATION_START() {
     snprintf(msg, sizeof(msg), "WiiXLaunch: active (%lu hooks, init %s)",
              (unsigned long)B::g_PatchOkCount, B::g_BackendInitOk ? "ok" : "FAILED");
     NotificationModule_AddInfoNotification(msg);
+
+    // The reservation and the flush, before anything can ask for memory.
+    // Both are this platform's answers to questions the other two answer
+    // elsewhere; see the comments on kWiiUArenaSize and WiiUFlush.
+    void* arena = MEMAllocFromDefaultHeapEx(kWiiUArenaSize, 64);
+    if (arena) {
+        WiiXLaunch::Arena::SetReservation(reinterpret_cast<uintptr_t>(arena),
+                                          kWiiUArenaSize);
+        WiiXLaunch::Loader::SetFlushHook(&WiiUFlush);
+        WIIXL_LOG("[loader] arena %u B at %p", kWiiUArenaSize, arena);
+    } else {
+        // Not the same as "no modules", and the loader would otherwise report
+        // it as ARENA-NOT-READY without saying who failed to provide one.
+        WIIXL_LOG("[loader] could not allocate a %u B arena from the default "
+                  "heap - every module will be refused for memory, and that is "
+                  "this plugin's fault rather than theirs.", kWiiUArenaSize);
+    }
 
     // What this host is and what it offers, logged before any module is read,
     // so a rejection further down can be read against it.

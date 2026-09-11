@@ -278,9 +278,11 @@ python scripts/make_sdk.py --host
 * **Cemu is the only platform that has run.** The Switch and Wii U hosts build
   every time and have never been executed. A mod targets surfaces rather than a
   platform, so it should follow — but nothing has demonstrated that.
-* **Wii U has never been run.** It enumerates and loads from
-  `ON_APPLICATION_START`, it compiles, it is gated — and no one has executed
-  it. Treat it as untested rather than as working. Cemu and Switch have both
+* **Wii U has never been run.** It enumerates, reserves an arena from the
+  default heap, flushes caches and loads from `ON_APPLICATION_START` — and no
+  one has executed any of that. It needs Aroma on real hardware to verify;
+  Cemu cannot run WUPS plugins, so the Cemu target proves nothing about it.
+  Treat it as untested rather than as working. Cemu and Switch have both
   loaded modules for real.
 * **The Switch host has no hook-probe target**, so `wiixl.core:HookProbeTarget`
   returns null there and the two-module hook-collision demo reports "not

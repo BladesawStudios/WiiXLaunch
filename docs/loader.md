@@ -26,6 +26,19 @@ silently does nothing.
 |---|---|---|
 | Cemu | Entry hook `0x03098928` is already late enough | **Measured** |
 | Wii U (Aroma) | `ON_APPLICATION_START` | **Implemented, never run** |
+
+Each platform answers two questions differently, and both answers are load
+point code rather than anything the loader knows:
+
+| | arena lives in | cache flush |
+|---|---|---|
+| Cemu | tail of the code cave, read from the backend | `Backend::FlushCache` |
+| Wii U | `MEMAllocFromDefaultHeapEx`, written and executed at one address | `DCFlushRange` + `ICInvalidateRange` |
+| Switch | the host's own `.text`, written through a second mapping | `exl::util::Jit::Flush` |
+
+Switch is the only one needing `Arena::SetWriteAlias`, because Horizon is the
+only one of the three that refuses to make an address both writable and
+executable.
 | Switch | `exl_main`, in the subsdk before the game | **Measured** |
 
 Only Cemu needs a **game module** to nominate its load point, and only because
