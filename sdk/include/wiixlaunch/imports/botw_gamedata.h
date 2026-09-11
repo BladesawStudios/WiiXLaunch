@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gamedata v1.2, 57 symbol(s), from the surface's own table.
+// botw.gamedata v1.3, 59 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gamedata(SupportsRupees); }
 //     S::SupportsRupees(...);
 //
-// so a mod that uses two symbols imports two, not all 57.
+// so a mod that uses two symbols imports two, not all 59.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -93,10 +93,27 @@ extern uint32_t wiixl_import__botw_gamedata__SetFlagBoolForced(const char* name,
 extern uint32_t wiixl_import__botw_gamedata__GetFlagF32(const char* name, float* out);
 extern uint32_t wiixl_import__botw_gamedata__SetFlagF32(const char* name, float value);
 
+// TWO bypasses here, where the bool setter above has one, and that is the game
+// rather than an inconsistency: GameData::SetFlagF32 reaches both guards
+// through the typed setter, so a caller can unlock the one-trigger latch and
+// the program-writable permission independently.
+//
+// Separate from GdSetFlagF32 for the same reason GdSetFlagBoolForced is
+// separate from GdSetFlagBool - latching is the game's own rule about its own
+// save data, so the default path respects it and stepping outside has to be
+// asked for. The warning there applies here too: forcing a flag to a value the
+// event flow never produces can leave a quest somewhere it cannot recover
+// from. Back up the save.
+extern uint32_t wiixl_import__botw_gamedata__SetFlagF32Forced(const char* name, float value, uint32_t bypassLatch, uint32_t bypassPermission);
+
 // Vec3 through a float[3], never as a struct - see the ABI rules in
 // loader/surface.hpp for why a struct must not cross.
 extern uint32_t wiixl_import__botw_gamedata__GetFlagVec3(const char* name, float* out3);
 extern uint32_t wiixl_import__botw_gamedata__SetFlagVec3(const char* name, const float* in3);
+
+// See GdSetFlagF32Forced. Same two bypasses, same reason for being its own
+// symbol, same warning about where it can leave a save.
+extern uint32_t wiixl_import__botw_gamedata__SetFlagVec3Forced(const char* name, const float* in3, uint32_t bypassLatch, uint32_t bypassPermission);
 extern int32_t wiixl_import__botw_gamedata__FlagS32Count(void);
 extern int32_t wiixl_import__botw_gamedata__FlagBoolCount(void);
 extern int32_t wiixl_import__botw_gamedata__FlagF32Count(void);
@@ -135,11 +152,11 @@ extern uint32_t wiixl_import__botw_gamedata__IsDisplayOverridden(void);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gamedata@1.2 when packing,
+// added in a later minor should pass --require botw.gamedata@1.3 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gamedata {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 2;
+inline constexpr unsigned kVersionMinor = 3;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
