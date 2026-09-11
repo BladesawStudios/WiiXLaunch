@@ -33,6 +33,19 @@
 // spellings is two keys to document.
 
 #include <wiixlaunch/mod_log.h>
+// The buffer below is a zero-initialised 2 KB array, which GCC clears with a
+// call to memset whatever -ffreestanding says - so the header that creates
+// that need is the one that has to satisfy it. Without this a mod including
+// only mod_config.h links cleanly and branches to address 0 the first time it
+// builds a Config.
+//
+// __STDC_HOSTED__ and not a compiler check: the question is whether this
+// build has a C library, and a freestanding one answers 0. tools/config_test
+// drives this parser on a PC, where memset already exists and mod_runtime.h
+// would collide with it - and where its __attribute__((used)) does not parse.
+#if !defined(__STDC_HOSTED__) || __STDC_HOSTED__ == 0
+#include <wiixlaunch/mod_runtime.h>
+#endif
 #include <wiixlaunch/imports/wiixl_core.h>
 
 #include <cstdint>
