@@ -17,6 +17,14 @@
 #include <wiixlaunch/fs.hpp>
 #include <wiixlaunch/loader/arena.hpp>
 #include <wiixlaunch/hook_manager.hpp>
+// For the per-platform installers CoreInstallHook dispatches to. hook.hpp
+// pulls the same two in for the host's own hooks; a module's hooks have to
+// go through the same doors.
+#if WIIXL_SWITCH
+#include <wiixlaunch/switch/switch_backend.hpp>
+#elif WIIXL_WIIU
+#include <wiixlaunch/wiiu/wiiu_backend.hpp>
+#endif
 #include <wiixlaunch/hook_probe.hpp>
 #include <wiixlaunch/mod_fs.hpp>
 #include <wiixlaunch/tick.hpp>
@@ -127,14 +135,53 @@ extern "C" inline uintptr_t CoreHookProbeTarget() {
 // Returns the address to call to continue the chain, or 0 if the hook was
 // refused. A mod that ignores the return value and never calls it has replaced
 // the function, which is legal and reported.
+//
+// THE SAME PLATFORM DISPATCH THE HOST USES, which this did not do.
+//
+// hook.hpp's InstallVia has always chosen per platform: the chain manager on
+// Cemu, exlaunch on Switch, WUPS on Wii U - because Hooks::InstallHook emits
+// PowerPC, and because its trampoline pool and cache flush are #if WIIXL_CEMU
+// with the host-TEST fallback underneath. This function called the chain
+// manager directly on every platform, so a module got the one path that cannot
+// work anywhere but Cemu while the host beside it took the right one.
+//
+// On Switch that wrote `lis/ori/mtctr/bctr` into aarch64 code and the game died
+// on 0x618C64B4. On Wii U it would have built trampolines in a non-executable
+// static array and flushed nothing - the same bug, wearing the right ISA.
 extern "C" inline uintptr_t CoreInstallHook(uintptr_t target, uintptr_t callback) {
-    uintptr_t original = 0;
     const char* owner = WiiXLaunch::Hooks::CurrentOwner();
+    if (!owner) owner = "unattributed";
+
+#if WIIXL_CEMU
+    uintptr_t original = 0;
     const WiiXLaunch::Hooks::Install r =
-        WiiXLaunch::Hooks::InstallHook(target, callback,
-                                       owner ? owner : "unattributed", &original);
+        WiiXLaunch::Hooks::InstallHook(target, callback, owner, &original);
     if (r != WiiXLaunch::Hooks::Install::Ok) return 0;
     return original;
+#elif WIIXL_SWITCH
+    // The platform installs; the manager RECORDS, so the shared-target report
+    // is the same on all three even though only one of them chains. Noted
+    // first: a Note after a failed install would claim a hook that is not
+    // there, and a Note before a successful one costs nothing.
+    WiiXLaunch::Hooks::Note(target, callback, owner);
+    return WiiXLaunch::Backend::InstallHookAbsolute(target, callback);
+#elif WIIXL_WIIU
+    WiiXLaunch::Hooks::Note(target, callback, owner);
+    void* original = nullptr;
+    if (!WiiXLaunch::Backend::AddPPCExecutablePatch(
+            reinterpret_cast<void*>(callback), &original, target, nullptr, 0)) {
+        return 0;
+    }
+    return reinterpret_cast<uintptr_t>(original);
+#else
+    // The host test. Chaining here is the point - tools/hook_test decodes what
+    // the manager emitted, and that is the only coverage the encoding has.
+    uintptr_t original = 0;
+    const WiiXLaunch::Hooks::Install r =
+        WiiXLaunch::Hooks::InstallHook(target, callback, owner, &original);
+    if (r != WiiXLaunch::Hooks::Install::Ok) return 0;
+    return original;
+#endif
 }
 
 // --- appended in v1.3 ------------------------------------------------------

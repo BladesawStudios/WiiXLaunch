@@ -86,6 +86,7 @@ enum class Install : uint32_t {
     NoLinks,                 // kMaxLinks reached
     NoTrampoline,            // the pool is full
     PrologueNotRelocatable,  // a PC-relative branch in the displaced prologue
+    NoArchSupport,           // this manager cannot emit code for this CPU
 };
 
 inline const char* InstallName(Install r) {
@@ -96,10 +97,41 @@ inline const char* InstallName(Install r) {
         case Install::NoLinks:                return "NO-LINKS";
         case Install::NoTrampoline:           return "NO-TRAMPOLINE";
         case Install::PrologueNotRelocatable: return "PROLOGUE-NOT-RELOCATABLE";
+        case Install::NoArchSupport:          return "NO-ARCH-SUPPORT";
     }
     return "?";
 }
 
+// POWERPC ONLY, AND THAT IS A GAP RATHER THAN A DECISION.
+//
+// Everything below emits PowerPC, unconditionally, on every platform. It stayed
+// invisible for as long as only PowerPC hosts ran a module that hooked. The
+// first Switch boot where one did installed eight of these into aarch64 code
+// and the game died on an undefined instruction - 0x618C64B4, which is word 1
+// of this sequence, `ori r12,r12,lo`, decoded as arm64.
+//
+// The chain logic in this file is architecture-neutral. Five primitives are
+// not, and only two of them are small:
+//
+//   1. EmitLongJump / DecodeLongJump  - encoding. Small.
+//   2. IsPcRelativeBranch             - decoding. Small.
+//   3. impl::AllocWords               - on Switch this falls through to the
+//                                       HOST-TEST pool: ordinary .data, which
+//                                       is not executable.
+//   4. impl::Flush                    - a no-op off Cemu; aarch64 needs the
+//                                       instruction cache invalidated by hand.
+//   5. writing `target` itself        - the game's .text, which Horizon does
+//                                       not make writable for the asking.
+//
+// exlaunch implements all five (exl::hook::arch::Hook) and is already vendored,
+// so the fix is more likely to be delegation than reimplementation - especially
+// its prologue RELOCATOR, which fixes up adrp/adr/b/ldr-literal rather than
+// refusing them the way this file does.
+//
+// Until then Install refuses by name on a platform this cannot encode for. A
+// refusal costs a mod its hooks; emitting the wrong architecture costs the
+// user their game.
+//
 // --- PowerPC encoding, as arithmetic ---------------------------------------
 //
 // Deliberately pure functions over uint32_t. They run identically on the host,
@@ -287,6 +319,22 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
         return Install::BadTarget;
     }
 
+    // BEFORE ANYTHING IS WRITTEN. See the note above EmitLongJump.
+    //
+    // Guarded on the PLATFORM and not on the host machine, deliberately: the
+    // host test build is x86 and must keep exercising this whole function,
+    // because that test is the only thing standing between the encoding and
+    // the game. It is the Switch build that cannot be allowed through.
+#if WIIXL_SWITCH
+    WIIXL_LOG("Hook: %s refused at %p - %s: this hook manager emits PowerPC and "
+              "this host is aarch64", owner ? owner : "?",
+              reinterpret_cast<void*>(target), InstallName(Install::NoArchSupport));
+    WIIXL_LOG("Hook:   hooking is UNAVAILABLE on Switch, so a module that needs it "
+              "loads and then does nothing. This is missing work, not a broken "
+              "module - see the note above EmitLongJump in hook_manager.hpp.");
+    (void)callback;
+    return Install::NoArchSupport;
+#else
     Site* site = impl::FindSite(target);
 
     if (!site) {
@@ -408,6 +456,7 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
                   reinterpret_cast<void*>(target), site->depth, owners);
     }
     return Install::Ok;
+#endif  // !WIIXL_SWITCH - see the architecture note above EmitLongJump
 }
 
 // Records a hook the manager did not install itself.

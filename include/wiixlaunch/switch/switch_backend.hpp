@@ -12,6 +12,23 @@ namespace WiiXLaunch::Backend {
         return true;
     }
 
+    // An ABSOLUTE target, and untyped, for wiixl.core:InstallHook.
+    //
+    // The template below takes an OFFSET and adds the module base, because the
+    // host's own hooks are written against Ghidra offsets. A module's target
+    // has already been through wiixl.call and is a real address, so adding the
+    // base again would aim it into nothing. Two functions rather than one flag:
+    // the difference is which of two things the caller has, and a bool at the
+    // call site says neither.
+    //
+    // Returns the trampoline to call to continue into the game, or 0.
+    inline uintptr_t InstallHookAbsolute(uintptr_t targetAddr, uintptr_t callback) {
+        if (targetAddr == 0 || callback == 0) return 0;
+        void* orig = exl::hook::Hook(reinterpret_cast<void*>(targetAddr),
+                                     reinterpret_cast<void*>(callback), true);
+        return reinterpret_cast<uintptr_t>(orig);
+    }
+
     template<typename Ret, typename... Args>
     inline void InstallHook(uptr offset, Ret(*callback)(Args...), Ret(**outOriginal)(Args...)) {
         uptr targetAddr = exl::util::modules::GetTargetStart() + offset;
