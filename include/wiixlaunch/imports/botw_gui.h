@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gui v1.0, 89 symbol(s), from the surface's own table.
+// botw.gui v1.1, 90 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gui(Init); }
 //     S::Init(...);
 //
-// so a mod that uses two symbols imports two, not all 89.
+// so a mod that uses two symbols imports two, not all 90.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -84,6 +84,11 @@ extern uint32_t wiixl_import__botw_gui__MeasureText(const char* text, uint32_t s
 // Sprites are the GUI's own atlas, by id. A mod's own image goes through
 // botw.gfx's texture handles instead - see GuiImageTexture below.
 extern uint32_t wiixl_import__botw_gui__Image(int32_t sprite, float x, float y, float w, float h, uint32_t tint);
+
+// orient is the GUI::Orient bitmask: 0 none, 1 flip H, 2 flip V, 4 rotate 90,
+// 8 rotate 180, 12 rotate 270. rotation is degrees, applied about the rect's
+// centre, and is independent of the orient flags.
+extern uint32_t wiixl_import__botw_gui__ImageEx(int32_t sprite, float x, float y, float w, float h, uint32_t tint, uint32_t orient, int32_t blend, float rotation);
 extern uint32_t wiixl_import__botw_gui__SpriteReady(int32_t sprite);
 extern uint32_t wiixl_import__botw_gui__SpriteSize(int32_t sprite, float* w, float* h);
 extern uint32_t wiixl_import__botw_gui__FontReady(int32_t fontId);
@@ -135,11 +140,11 @@ extern uint32_t wiixl_import__botw_gui__ClaimFocus(void);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gui@1.0 when packing,
+// added in a later minor should pass --require botw.gui@1.1 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gui {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 0;
+inline constexpr unsigned kVersionMinor = 1;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
