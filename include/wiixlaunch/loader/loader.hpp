@@ -609,7 +609,9 @@ inline Reject LoadFrom(Reader& file) {
             request = static_cast<uint32_t>(total);
         }
 
-        const Arena::Grant g = Arena::Acquire(id, request, &sub);
+        // `need` twice over: folded into a stated request above, and passed
+        // here as the floor the best-effort path may not go under.
+        const Arena::Grant g = Arena::Acquire(id, request, need, &sub);
         if (g != Arena::Grant::Ok) {
             WIIXL_LOG("[loader:%s] %s: arena said %s", id,
                       RejectName(Reject::NoMemory), Arena::GrantName(g));

@@ -44,14 +44,18 @@
 // The size is its own number rather than wiixlaunch.json's memory.heap_size,
 // and deliberately: that value describes the Cemu code cave, which is a region
 // carved out of the game. This is .text in our own NSO - it costs exactly this
-// many zero bytes in the file, and nothing else competes for it. 256 KB is
-// generous for the eight modules Arena::kMaxModules allows, which run a couple
-// of kilobytes each; raise it here if a module ever needs more.
+// many zero bytes in the file, and nothing else competes for it.
+//
+// 256 KB was "generous for modules that run a couple of kilobytes each", and
+// that assumption lasted exactly until a real mod arrived. AIPuppet is an
+// 83 KB image - two thousand lines and a 64 KB texture - and botw_api is 66 KB,
+// so two modules were most of the arena and the rest had nowhere to go. A
+// megabyte of zero bytes in our own NSO is not worth being clever about.
 //
 // Page-aligned by JIT_CREATE, which matters: an aarch64 image must be
 // page-aligned or its adrp pairs land one page out, and starting the
 // reservation on a page boundary means the first grant is aligned for free.
-constexpr size_t kSwitchArenaSize = 0x40000;
+constexpr size_t kSwitchArenaSize = 0x100000;
 JIT_CREATE(g_WiiXLaunchArena, kSwitchArenaSize)
 
 // The pages were just written to through the RW view and are about to be

@@ -88,7 +88,11 @@ namespace WiiXLaunch::Arena {
 constexpr uint32_t kDefaultGrantCap = 256 * 1024;
 
 // A module cannot have more slots than the host can load modules.
-constexpr uint32_t kMaxModules = 8;
+//
+// Was 8, and the deploy already ships NINE - so the lexically last module was
+// going to be refused with "all 8 module slots are taken" on a host that had
+// plenty of room for it. This is a table size and a divisor, nothing more.
+constexpr uint32_t kMaxModules = 16;
 
 // Why a module can be refused on one machine and load on another, said in the
 // log rather than left for a bug report nobody can reproduce.
@@ -368,7 +372,18 @@ inline void* AllocHost(size_t size, size_t align) {
 //
 // `request` is the module's heapRequest: non-zero means a stated requirement
 // the host must meet exactly or refuse; zero means best effort.
-inline Grant Acquire(const char* owner, uint32_t request, SubArena** out) {
+//
+// `floor` is what the module needs merely to EXIST - its image. Best effort
+// used to mean a fair share and nothing else, so a module whose image was
+// larger than Total()/kMaxModules could not load at all, however empty the
+// arena was: AIPuppet is an 83 KB image and the Switch arena's fair share is
+// 32 KB, so it was refused against 224 KB of free space. A share is the right
+// answer to "how much spare room should this module get"; it is the wrong
+// answer to "may this module exist", and the two had been conflated. The floor
+// is still bounded by what is actually free, so an arena that genuinely cannot
+// hold the module still refuses it - with the message that says so.
+inline Grant Acquire(const char* owner, uint32_t request, uint32_t floor,
+                     SubArena** out) {
     *out = nullptr;
 
     if (!Ready()) {
@@ -406,6 +421,7 @@ inline Grant Acquire(const char* owner, uint32_t request, SubArena** out) {
         const uint32_t share = Total() / kMaxModules;
         uint32_t cap = share < kDefaultGrantCap ? share : kDefaultGrantCap;
         if (cap == 0) cap = free;          // an arena smaller than kMaxModules
+        if (cap < floor) cap = floor;      // it has to fit before it can be fair
         grant = free < cap ? free : cap;
         if (grant == 0) {
             WIIXL_LOG("Arena: %s REFUSED granted=0 requested=unspecified - nothing free "
