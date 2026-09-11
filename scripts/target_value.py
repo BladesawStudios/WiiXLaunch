@@ -35,6 +35,11 @@ def main():
             return 1
         node = node[key]
 
+    if isinstance(node, bool):
+        # "1"/"0" rather than "True"/"False", so a .bat can test it.
+        print(1 if node else 0)
+        return 0
+
     if isinstance(node, (dict, list)):
         sys.stderr.write(
             "[target] '%s' is a %s, not a value\n"

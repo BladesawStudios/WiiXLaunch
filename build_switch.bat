@@ -12,6 +12,7 @@ setlocal
 :: they got. A build that silently picks a target is the same class of problem
 :: as a gate nothing invokes.
 if not "%~1"=="" set "WIIXL_TARGET=%~1"
+if "%WIIXL_TARGET%"=="" set "WIIXL_TARGET=botw"
 
 call scripts\devkitpro_env.bat
 if %ERRORLEVEL% NEQ 0 exit /b 1
@@ -75,7 +76,20 @@ python scripts\test_switch_module.py "%STAGE%\wiixlaunch-switch.elf"
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 
-:: The same sample modules build_cemu builds, for THIS machine.
+:: The same sample modules build_cemu builds, for THIS machine - IF THIS TARGET
+:: WANTS THEM.
+::
+:: They are the framework's own examples and two are BotW's: e_player needs
+:: botw.player, c_patch carries BotW addresses. On a TOTK host the loader
+:: refuses them by name, which is the mechanism working - but they still get
+:: DEPLOYED, and a deploy writes the whole mods directory, so building them
+:: overwrote the TOTK modules that were supposed to be there. A boot then ran
+:: the mod's romfs against a game whose code half had never loaded.
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py samples`) do set "WANT_SAMPLES=%%i"
+if "%WANT_SAMPLES%"=="0" (
+    echo [WiiXLaunch] this target does not build the example mods
+    goto :after_samples
+)
 ::
 :: They were Cemu-only, and not by decision - nothing here built them, so
 :: build/switch-mods held whatever had been produced by hand. A module is a
@@ -107,6 +121,7 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 call :build_mod player_mod
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:after_samples
 python scripts\deploy.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
@@ -170,6 +185,6 @@ exit /b 0
 :: %1 = directory under examples/. Same script and same manifest as the Cemu
 :: build; only --target differs, which is the whole point of it being a flag.
 :build_mod
-python scripts\build_mod.py --source examples\%1 --target switch
+python scripts\build_mod.py --source examples\%1 --target switch --out build\%WIIXL_TARGET%
 if %ERRORLEVEL% NEQ 0 exit /b 1
 exit /b 0

@@ -38,5 +38,6 @@
     "graphic_pack_path": "The Legend of Zelda: Breath of the Wild/Mods/WiiXLaunch",
     "graphic_pack_version": "V208",
     "module_matches": "0x6267BFD0"
-  }
+  },
+  "samples": true
 }

@@ -43,5 +43,7 @@
   },
   "cemu": {
     "//": "Cemu runs Wii U titles. Nothing to build."
-  }
+  },
+  "//samples": "The example mods under examples/ are the framework's own and two of them are BotW's - e_player needs botw.player, c_patch carries BotW addresses. The loader refuses them by name on this host, which is the mechanism working, but they do not belong in a TOTK install and shipping them means a deploy can overwrite the mods that do.",
+  "samples": false
 }

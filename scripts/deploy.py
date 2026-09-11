@@ -55,7 +55,7 @@ def main():
     ap.add_argument("--target", default=None,
                     help="host target name; targets/<name>.json")
     args = ap.parse_args()
-    _, config = target_mod.resolve(root_dir, args.target)
+    target_name, config = target_mod.resolve(root_dir, args.target)
 
     project_name = config.get("project", {}).get("name", "Mod")
     switch_cfg = config.get("switch", {})
@@ -131,7 +131,11 @@ def main():
     # sd:/WiiXLaunch/mods/ is the SD ROOT, not the exefs directory, so this sits
     # beside atmosphere/ rather than under it: copy deploy/switch/ to the card
     # and both land where they belong.
-    switch_mods_src = os.path.join(root_dir, "build", "switch-mods")
+    # PER TARGET, like the deploy. build/switch-mods was shared, so building
+    # one game's modules and deploying another's shipped the first game's -
+    # which is how a TOTK install ended up holding BotW's samples and none of
+    # its own mods, with the romfs still active.
+    switch_mods_src = os.path.join(root_dir, "build", target_name, "switch-mods")
     # PER TITLE. sd:/WiiXLaunch/mods is one directory for every game on the
     # card - a graphic pack names its titleIds and a Wii U content folder
     # belongs to its game, but an SD card has no such scoping, so two games'
@@ -147,10 +151,19 @@ def main():
     # Same rule as the Cemu pack: a module that is no longer built must not
     # survive in the deployed directory, because the loader enumerates whatever
     # is there and would load it.
+    switch_ids = {m[:-len(".wxlm")] for m in switch_modules}
     for old_name in sorted(os.listdir(switch_mods_dst)):
+        old_path = os.path.join(switch_mods_dst, old_name)
         if old_name.endswith(".wxlm") and old_name not in switch_modules:
-            os.remove(os.path.join(switch_mods_dst, old_name))
+            os.remove(old_path)
             print(f"[Switch] Removed stale module {old_name}")
+        # ...AND ITS RESOURCES. Pruning only the .wxlm left the directory of
+        # files beside it, so a module removed from a build kept a folder in
+        # everyone's install forever - and on a host shared between games, one
+        # game's leftovers sat in the other's mods directory looking deliberate.
+        elif os.path.isdir(old_path) and old_name not in switch_ids:
+            shutil.rmtree(old_path)
+            print(f"[Switch] Removed stale resources {old_name}/")
 
     if switch_modules:
         print(f"[Switch] {len(switch_modules)} module(s) -> "
@@ -165,7 +178,10 @@ def main():
         # that reads a file of its own reads it from mods/<id>/ on whichever
         # platform it is running, so shipping them on one and not the other
         # would make the same module work in Cemu and fail on hardware.
-        switch_moddata = os.path.join(root_dir, "build", "switch-mods", "moddata")
+        # Beside the modules it belongs to. This still named the shared
+        # directory after the .wxlm files moved to a per-target one, so a
+        # target deployed its own modules and another target's resources.
+        switch_moddata = os.path.join(switch_mods_src, "moddata")
         if os.path.isdir(switch_moddata):
             for mod_id in sorted(os.listdir(switch_moddata)):
                 src_dir = os.path.join(switch_moddata, mod_id)
