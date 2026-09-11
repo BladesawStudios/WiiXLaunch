@@ -32,6 +32,20 @@ xcopy /s /e /y /i vendor\exlaunch "%STAGE%" > nul
 copy /y build\generated\switch\config.json "%STAGE%\config.json" > nul
 copy /y build\generated\switch\config.mk "%STAGE%\config.mk" > nul
 
+:: OUR MEMORY SETTINGS, OVER EXLAUNCH'S.
+::
+:: generate_config has always written this file and nothing ever staged it,
+:: so the Switch host compiled against exlaunch's defaults - JitSize
+:: 0x1000, which is TWENTY hook trampolines - while the target asked for
+:: 0x10000. A mod with twenty-six hooks aborted in AllocForTrampoline, and
+:: until one had that many nothing could tell. The whole "memory" block of a
+:: target was inert on this platform.
+copy /y build\generated\include\program\setting.hpp "%STAGE%\source\program\setting.hpp" > nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [WiiXLaunch] could not stage the generated setting.hpp
+    exit /b 1
+)
+
 :: Copy our source files into the exlaunch source tree
 if not exist "%STAGE%\source\wiixlaunch" mkdir "%STAGE%\source\wiixlaunch"
 xcopy /s /e /y /i src\* "%STAGE%\source\wiixlaunch" > nul

@@ -74,9 +74,20 @@ def generate_config(requested=None):
     os.makedirs(gen_switch_dir, exist_ok=True)
 
     debug_def = "#define EXL_DEBUG" if is_debug else ""
+    # A DROP-IN FOR exlaunch's OWN source/program/setting.hpp, which is what
+    # build_switch.bat now copies it over. It has to match that file's shape,
+    # not just its values: common.hpp is where ALIGN_UP and PAGE_SIZE come from,
+    # and the sanity asserts below are exlaunch's, kept because the numbers they
+    # check are now ours.
+    #
+    # THIS WAS GENERATED AND NEVER USED. The Switch build staged exlaunch's copy
+    # and compiled against JitSize 0x1000 - twenty hook trampolines - while this
+    # file said 0x10000. Nothing noticed until a mod installed twenty-six hooks
+    # and exl::hook aborted on AllocForTrampoline. The whole "memory" block of a
+    # target was inert on Switch.
     setting_hpp_content = f"""#pragma once
 
-#include <cstddef>
+#include "common.hpp"
 
 #define EXL_MODULE_NAME "{proj_name}"
 {debug_def}
@@ -94,6 +105,10 @@ namespace exl::setting {{
     constexpr size_t JitSize        = {jit_size};
     constexpr size_t InlinePoolSize = {inline_pool_size};
     constexpr size_t LogBufferSize  = {log_buf_size};
+
+    /* exlaunch's own sanity checks, on our numbers. */
+    static_assert(ALIGN_UP(JitSize, PAGE_SIZE) == JitSize, "");
+    static_assert(ALIGN_UP(InlinePoolSize, PAGE_SIZE) == InlinePoolSize, "");
 }}
 """
     setting_hpp_path = os.path.join(gen_inc_dir, "setting.hpp")

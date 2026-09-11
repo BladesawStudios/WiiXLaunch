@@ -416,7 +416,72 @@ inline bool ReadFile(const char* path, void* outBuffer, size_t maxBufferSize, si
         return false;
     }
     return true;
+#elif WIIXL_SWITCH
+    // THIS BRANCH DID NOT EXIST. ReadFile went straight to "#else return false"
+    // on Switch, so wiixl.core:ReadFile, GameReadFile and ModReadFile all
+    // answered "no" to every question - silently, because a bare `return false`
+    // logs nothing. FS::File works there and always has, which is why the
+    // LOADER could read modules off the SD while a module could not read its
+    // own config file beside them.
+    //
+    // Found when a mod's config.txt came back as -1 and the mod fell back to
+    // its built-in defaults, which is exactly the failure the config system was
+    // built to avoid: a setting that is present, correct, and ignored.
+    {
+        char storage[3][256];
+        const char* candidates[4];
+        impl::Candidates(path, storage, candidates);
+
+        nn::fs::FileHandle handle{};
+        bool opened = false;
+        for (uint32_t i = 0; i < 4u && !opened; ++i) {
+            if (!candidates[i] || !candidates[i][0]) continue;
+            // Not a "probably fails" check - a path with no mount name ABORTS
+            // the process rather than returning. See impl::HasMountName.
+            if (!impl::HasMountName(candidates[i])) continue;
+            if (nn::fs::OpenFile(&handle, candidates[i],
+                                 nn::fs::OpenMode_Read) == 0) {
+                opened = true;
+            }
+        }
+        if (!opened) {
+            WIIXL_LOG("WiiXLaunch: ReadFile could not open '%s' through any of "
+                      "the %u candidate paths", path, 4u);
+            return false;
+        }
+
+        long size = 0;
+        if (nn::fs::GetFileSize(&size, handle) != 0 || size < 0) {
+            WIIXL_LOG("WiiXLaunch: ReadFile opened '%s' but could not size it", path);
+            nn::fs::CloseFile(handle);
+            return false;
+        }
+
+        // TRUNCATION IS NOT AN ERROR HERE, and the caller is told how much it
+        // got - the same contract the Cemu branch has. A caller that cares
+        // compares against the size it expected.
+        const size_t want = (static_cast<size_t>(size) < maxBufferSize)
+                                ? static_cast<size_t>(size)
+                                : maxBufferSize;
+        const bool ok = (want == 0) ||
+                        (nn::fs::ReadFile(handle, 0, outBuffer,
+                                          static_cast<unsigned long>(want)) == 0);
+        nn::fs::CloseFile(handle);
+        if (!ok) {
+            WIIXL_LOG("WiiXLaunch: ReadFile failed reading %u B of '%s'",
+                      static_cast<uint32_t>(want), path);
+            return false;
+        }
+        if (outReadSize) *outReadSize = want;
+        return true;
+    }
 #else
+    // A platform with no implementation must SAY SO. The version of this that
+    // just returned false is why the gap above went unnoticed: "the file is not
+    // there" and "this host cannot read files at all" are different answers and
+    // they looked identical.
+    WIIXL_LOG("WiiXLaunch: ReadFile is not implemented on this platform - '%s' "
+              "was not read, which is not the same as not existing", path);
     return false;
 #endif
 }
