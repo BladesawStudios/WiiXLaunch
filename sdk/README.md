@@ -46,7 +46,7 @@ time it copies a struct.
 | surface | version |
 |---|---|
 | `botw.actor` | v1.0 |
-| `botw.armour` | v1.1 |
+| `botw.armour` | v1.2 |
 | `botw.camera` | v1.0 |
 | `botw.display` | v1.0 |
 | `botw.events` | v1.0 |
