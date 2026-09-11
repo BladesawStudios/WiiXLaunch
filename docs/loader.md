@@ -386,6 +386,40 @@ Two mods shipping a file of the same name is now a non-event. Before, it was a
 collision resolved by whichever the filesystem answered first: silent and
 order-dependent.
 
+### Where that directory is, per platform
+
+On Wii U and Cemu it is inside the game's own content, because that is the only
+storage those hosts have. On Switch it is on the **SD card**, and it is **per
+title**:
+
+```
+sd:/WiiXLaunch/mods/0100F2C0115B6000/        one game's modules
+    houselimit.wxlm
+    houselimit/config.txt
+sd:/WiiXLaunch/mods/01007EF00011E000/        another game's
+```
+
+The title id is not decoration. One SD card serves every game on the console, and
+a flat directory means every game's host is offered every game's modules. Most
+crossovers are already refused by name — a module needing a game surface this
+host does not publish, a declared patch whose origin bytes are not there, a
+runtime patch likewise. **But a module that needs only the base surfaces and
+hooks raw offsets is refused by nothing**, and that is exactly the shape of a mod
+for a game that has no module yet. Those offsets mean something entirely
+different in another game's image.
+
+The loader falls back to the flat `WiiXLaunch/mods/` when no per-title directory
+exists, so an existing card keeps working untouched and creating the directory is
+how you opt in. Which one it used is logged either way — a host silently reading
+a different directory than you think is worse than either.
+
+**Why the SD card and not romfs.** romfs is read-only and baked into a layered
+mod for one title; the SD card is writable, shared, and editable without
+rebuilding anything. A user changing `rooms = 45` to `rooms = 60` in a text file
+should not have to repack a romfs layer, and `FS::WriteFile` would have nowhere
+to put anything. It also keeps modules out of the romfs conflict space entirely,
+which matters when a mod manager is merging layers from several mods.
+
 ### Two reads, not one with a fallback
 
 `wiixl.core` gives a mod two distinct calls, and the choice is made at the call

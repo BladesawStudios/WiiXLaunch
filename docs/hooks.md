@@ -192,7 +192,7 @@ Offsets are addresses into the game binary. WiiXLaunch doesn't locate these for 
 
 Reminder:
 
-* `wiixlaunch.json`'s `switch.title_id_range_min`/`max` and `wiiu.target_title_ids` scope which game versions your hooks are expected to apply to.
+* The active target's `switch.title_id_range_min`/`max` and `wiiu.target_title_ids` (in `targets/<game>.json`) scope which game versions your hooks are expected to apply to.
 
 ## Raw memory patches
 
@@ -210,6 +210,66 @@ WiiXLaunch::CodePatch::Nop(offset);
 ```
 
 This writes directly to the target's memory/code cave rather than installing a trampoline (use it when you don't need to run any C++ logic at that address, just change what's there.)
+
+### `CodePatch` is unchecked, and that is the whole difference
+
+`CodePatch` writes what you tell it, where you tell it, and records nothing. It
+does handle the parts you cannot do with `memcpy`: on Switch it goes through
+exlaunch's `StreamPatcher`, which writes via a **writable alias** of the game's
+pages rather than the read-execute mapping the CPU runs from, and on Wii U it
+flushes the data cache and invalidates the instruction cache for the range. What
+it does not do is check anything.
+
+That is fine for host and game-module code, which ships with the host and is
+rebuilt when the host is. It is not fine for anything shipped separately, which
+is why a `.wxlm` does not get this call at all.
+
+### The checked path: an origin, a registry, and a read-back
+
+Mods patch through `wiixl.patch:Write`, and host code can use
+`WiiXLaunch::Patches::ApplyAt` directly. Both take the bytes that must
+**already** be at the target as well as the ones you want:
+
+```cpp
+// mov w1,#15  ->  mov w1,#45      (0x52800001 | imm << 5, Rd = w1)
+const uint32_t expected = 0x528001E1;
+const uint32_t wanted   = 0x528005A1;
+Patches::ApplyAt(addr,
+                 reinterpret_cast<const uint8_t*>(&wanted),
+                 reinterpret_cast<const uint8_t*>(&expected),
+                 sizeof(wanted), "mymod");
+```
+
+Four things then become possible that `CodePatch` cannot offer:
+
+* **A different game build is refused by name** (`ORIGIN-MISMATCH`, logging both
+  the expected and the found bytes) instead of having an instruction the patch
+  has never seen overwritten.
+* **Two mods aiming at the same address collide visibly** (`PATCH-OVERLAP`,
+  naming both), rather than the later one winning silently.
+* **A patch landing inside the 16 bytes a hook has displaced is refused**
+  (`HOOKED-WINDOW`) — those instructions live in a trampoline now, so writing
+  there would corrupt the branch into the chain and not the game.
+* **The write is verified after the fact.** The bytes are read back *through the
+  address the CPU executes* and compared; a mismatch is `WRITE-FAILED`, with
+  what was written and what is actually there.
+
+The refusals are an enum rather than a `bool` because they want different fixes:
+a malformed record is a build problem, an origin mismatch is a game-version
+problem, a hooked window is a mod-interaction problem.
+
+That last check exists because it caught a real one. Game code on Switch is
+mapped read-execute; a plain store to it either faults on hardware or — under a
+recompiler that does not enforce the permission — lands in memory while the
+translation of the *original* instruction keeps running. The bytes read back
+correctly and the game behaves as though nothing happened. Every other check
+above asks whether a patch is **allowed**; this is the only one that asks whether
+it **happened**, and without it a patch that did nothing reported success on the
+strength of a check performed before the store.
+
+For a patch that should be applied before any module runs, and restored or kept
+according to the target's `patches.persist`, declare it instead — see
+[Declared patches](loader.md#declared-patches).
 
 ## Platform differences you don't have to think about
 
@@ -273,7 +333,7 @@ MyHook::Install(switchOffset, wiiuOffset);
 ```
 
 * `Orig(args...)` - static member, calls the original function. Only valid to call after `Install()` has run.
-* `Install(switchOffset, wiiuOffset)` - installs the hook. On Wii U this always patches against `wiixlaunch.json`'s `wiiu.target_title_ids`.
+* `Install(switchOffset, wiiuOffset)` - installs the hook. On Wii U this always patches against the target's `wiiu.target_title_ids`.
 
 ### WIIXL_HOOK_DEFINE_REPLACE(name)
 
@@ -292,7 +352,7 @@ WIIXL_HOOK_REPLACE(MyHook, void, 0x1234, 0x5678, int a, float b) {
 // Switch / Cemu:
 MyHook::Install();
 
-// Wii U - defaults to wiixlaunch.json's target title IDs:
+// Wii U - defaults to the target's wiiu.target_title_ids:
 MyHook::Install();
 // or override per-hook:
 MyHook::Install(myTitleIds, myTitleIdCount);

@@ -17,7 +17,7 @@ git submodule add https://github.com/TKVSC-Team/wiixlaunch-botw vendor/wiixlaunc
 git submodule update --init --recursive
 ```
 
-That's it, no build script edits, no `wiixlaunch.json` changes. Every build path already scans `vendor/wiixlaunch-*` and wires up the include path automatically:
+That's it, no build script edits, no target-file changes. Every build path already scans `vendor/wiixlaunch-*` and wires up the include path automatically:
 
 * `scripts/generate_config.py` adds it to the generated Switch `config.mk`.
 * `build_cemu.bat`/`.sh` pass it straight through as `-I`.

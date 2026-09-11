@@ -250,6 +250,42 @@ it came from. For *why* a symbol behaves as it does, read the surface itself in
 `vendor/wiixlaunch-botw/include/wiixlaunch/botw/surfaces/*.hpp`; the comments
 above each function are the contract.
 
+### Settings, in a file beside your module
+
+A number a user might want to change should not be a constant you compiled in.
+`<wiixlaunch/mod_config.h>` reads a `key = value` file out of your own resource
+directory:
+
+```cpp
+#include <wiixlaunch/mod_config.h>
+
+WiiXLaunch::Config cfg;
+cfg.Load("config.txt");                         // scoped to YOUR directory
+int rooms = cfg.GetIntClamped("rooms", 45, 16, 128);
+bool loud = cfg.GetBool("verbose", false);
+```
+
+`Load` goes through the scoped read, so `config.txt` means
+`mods/<your id>/config.txt` and nothing else. Put the file in your mod's `data/`
+directory and `build_mod.py` stages it next to the `.wxlm`.
+
+Three things about the parser, because settings files are written by hand by
+people who have never seen the grammar:
+
+* **It has no allocator**, so the buffer is fixed at 2048 bytes and a file larger
+  than that is refused *entirely* rather than truncated. Half a settings file
+  that still parses is worse than none.
+* **A malformed value is not zero.** `rooms = fourty` does not silently become
+  `0`; the getter reports that it could not read a number and you get your
+  default. A parser that returns 0 tells the user their setting does not work
+  while looking like it worked.
+* **`GetIntClamped` states the range**, so an out-of-range value lands inside it
+  instead of indexing off the end of something.
+
+CRLF, missing trailing newlines, keys that are prefixes of other keys and
+comment lines (`#`, `;`, `//`) are all handled — `tools/config_test` drives 34
+cases of exactly these through the real `Load`.
+
 ---
 
 ## 6. Picking a tick

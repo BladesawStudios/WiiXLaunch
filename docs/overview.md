@@ -36,7 +36,7 @@ other people to install, you want the second: see
 
 * [Writing a mod](writing-mods.md) - the `.wxlm` path end to end: the three
   layers, imports, picking a tick, arming, and the freestanding rules.
-* [Setting Up](setup.md) - installing the toolchains, configuring `wiixlaunch.json`, building and deploying for each platform.
+* [Setting Up](setup.md) - installing the toolchains, writing a `targets/<game>.json`, building, verifying and deploying for each platform.
 * [Hooks](hooks.md) - writing `WIIXL_HOOK_DEFINE_TRAMPOLINE` hooks, finding offsets, raw memory patches.
 * [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on each platform.
 * [Cemu code cave relocation](cemu-relocation.md) - how the payload finds its own load address, and why it has to.
@@ -53,7 +53,7 @@ other people to install, you want the second: see
 * `vendor/` - exlaunch, wut, WUPS, libfunctionpatcher (git submodules).
 * `scripts/` - config generation and packaging.
 * `tools/` - host-side developer tools (see [Debugging](debugging.md)).
-* `wiixlaunch.json` - the one file that describes the HOST build: name, target title IDs, memory sizes. A `.wxlm` needs none of it - see [Writing a mod](writing-mods.md).
+* `targets/<game>.json` - one file per GAME, describing the host build for it: name, title IDs, memory sizes, which game module to compile in. A `.wxlm` needs none of it - see [Writing a mod](writing-mods.md).
 
 ## Graphics injection R&D
 

@@ -6,14 +6,14 @@
 
 Write game mods once in C++, and build for Switch, Wii U, and Cemu (2.6+).
 
-See [overview.md](/docs/overview.md) for detailed documentation.
+See [overview.md](docs/overview.md) for detailed documentation.
 
 ---
 
 ## Features
 
 * **Single C++ Codebase**: Define hooks and memory patches once using ExLaunch-style syntax (`WIIXL_HOOK_DEFINE_TRAMPOLINE`, `Orig(...)`).
-* **Unified Config (`wiixlaunch.json`)**: Manage project settings, memory sizes, Switch NPDM permissions, and Wii U Title IDs in one file.
+* **One file per game (`targets/<game>.json`)**: Project settings, memory sizes, Switch NPDM permissions and Wii U title IDs, per target. One checkout builds a host for any of them - `build_switch.bat totk`.
 * **ExLaunch Compatibility**: Support for function replacement, trampolines, and raw memory patching (`CodePatch::Nop`).
 * **Game Modules (`vendor/wiixlaunch-botw`)**: Pre-reverse engineered API methods for easy executable modding.
 

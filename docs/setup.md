@@ -183,8 +183,9 @@ host for all three platforms.
 
 ## Prerequisites
 
-* **Python 3** — runs `scripts/generate_config.py` (turns `wiixlaunch.json` into
-  the generated headers each target build reads) and `scripts/deploy.py`.
+* **Python 3** — runs `scripts/generate_config.py` (turns the active
+  `targets/<game>.json` into the generated headers each build reads) and
+  `scripts/deploy.py`.
 * **devkitPro**, with **devkitPPC** and **devkitA64** — for Wii U, Cemu and
   Switch. From [devkitpro.org](https://devkitpro.org/wiki/Getting_Started). On
   Windows, if devkitPro is not at `C:\devkitPro`, set `DEVKITPRO_WIN`.
@@ -209,25 +210,78 @@ Already cloned without it:
 git submodule update --init --recursive
 ```
 
-## Configuring the host
+## Configuring the host: one file per game
 
-Everything project-specific lives in [`wiixlaunch.json`](../wiixlaunch.json).
-This describes the **host** build — a `.wxlm` needs none of it and carries its
-own `mod.json` instead.
+Everything project-specific lives in `targets/<game>.json` — one file per
+**game**, describing the **host** build for it. A `.wxlm` needs none of it and
+carries its own `mod.json` instead.
+
+```
+targets/botw.json     Breath of the Wild   (the default)
+targets/totk.json     Tears of the Kingdom
+```
+
+One checkout builds a host for any of them. Pick a target by argument, or by
+setting `WIIXL_TARGET`:
+
+```bash
+build_switch.bat          # botw, the default
+build_switch.bat totk     # targets/totk.json
+```
+
+Everything that needs to know which game is being built resolves through
+`scripts/target.py`, and everything that resolves prints what it got. A build
+that silently picks a target is the same class of problem as a gate nothing
+invokes — and this is not hypothetical: `build_switch.bat` once had BotW's title
+ID typed into it, so the first build of a second game copied a TotK `subsdk9`
+into BotW's install. A value repeated in two places is a value that will
+disagree with itself. Shell scripts that need one value ask
+`scripts/target_value.py switch.title_id` rather than restating it.
+
+### What a target file contains
 
 * `project` — name, version, author, description, and `debug` (controls
   `EXL_DEBUG` on the Switch build).
 * `memory` — heap/JIT/inline-pool sizes and the Cemu debug log buffer size.
-* `switch` — title ID, subsdk name, thread stack size/priority.
+  `jit_size` is hook trampolines: the default `0x1000` is about twenty, and a
+  mod with more hooks than that aborts in `AllocForTrampoline`.
+* `modules` — which `vendor/wiixlaunch-*` game modules to compile in. `[]` is a
+  complete answer: TotK has no game module, and a host with none publishes the
+  base surfaces only, refusing a module that needs a game surface **by name**.
+* `patches` — `persist` decides whether declared patches survive the boot that
+  applied them. A demo host restores them so the sample patch mod does not
+  outlive itself; a host shipping real patch mods sets this true.
+* `samples` — whether the framework's example mods belong on this host. They are
+  BotW's, so a TotK host sets this false.
+* `switch` — title ID, subsdk name, NPDM settings, and `load_point` (see
+  [When the loader runs](#when-the-loader-runs-switch) below).
 * `wiiu` — the plugin's `.wps` filename and the target title IDs it patches.
 * `cemu` — the entry hook address, graphic pack path/version for your target
   game build, and `module_matches`. Usually needs no change; v208 is the only
   launchable version.
 
-`python scripts/generate_config.py` (the build scripts run it for you) turns
-this into headers under `build/generated/include/` and platform config under
-`build/generated/switch/`. These are regenerated every build — edit
-`wiixlaunch.json`, not the generated files.
+A section a target does not declare is a section that platform does not build.
+`targets/totk.json` has no `wiiu` or `cemu` block, because there is no Wii U
+Tears of the Kingdom, and the deploy says so instead of producing an empty
+plugin.
+
+`python scripts/generate_config.py` (every build script runs it) turns the
+active target into headers under `build/generated/include/` and platform config
+under `build/generated/switch/`. These are regenerated every build — edit the
+target file, not the generated ones.
+
+### When the loader runs (Switch)
+
+`switch.load_point` decides when modules are loaded, and the right answer is a
+fact about the game's SDK rather than a preference:
+
+* `exl_main` — as soon as exlaunch hands over. Fine on BotW's nnSdk 4.4.0.
+* `fs_ready` — at the first file the **game** opens. Required on nnSdk 15.x
+  (TotK): `nn::fs` has no allocator until nnSdk installs one during init, so
+  mounting the SD card any earlier calls through a null pointer and dies inside
+  `nn::fs::fsa::Register`. Waiting for the game to open a file is a statement
+  about the filesystem being up, rather than a guess about which function runs
+  when.
 
 ## Building
 
