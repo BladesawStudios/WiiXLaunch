@@ -592,6 +592,21 @@ inline Reject LoadFrom(Reader& file) {
     // The image itself is charged to that piece too. A module's footprint is
     // its code plus whatever it allocates, and leaving the image outside the
     // bound would mean a large module quietly costing more than its grant says.
+    // 64 bytes on PowerPC - cache-line, and what every FS destination wants.
+    //
+    // 4096 on AArch64, and it is a CORRECTNESS requirement rather than a
+    // performance one. An aarch64 module addresses its own data with adrp+add,
+    // which the linker has already resolved and which stays correct after the
+    // image moves ONLY if it moves by a whole number of pages: adrp computes
+    // (PC & ~0xFFF) + imm, so a sub-page shift changes the page difference the
+    // linker baked in. There is no relocation on those instructions to fix it
+    // up afterwards, so nothing would report the damage - the module would just
+    // read from one page away.
+    //
+    // Declared up here because the GRANT has to account for it; see below.
+    constexpr uint32_t kImageAlign =
+        (Wxlm::kHostMachine == Wxlm::Machine::AArch64) ? 4096u : 64u;
+
     Arena::SubArena* sub = nullptr;
     {
         const uint32_t need = h.payloadSize + h.bssSize;
@@ -609,9 +624,26 @@ inline Reject LoadFrom(Reader& file) {
             request = static_cast<uint32_t>(total);
         }
 
-        // `need` twice over: folded into a stated request above, and passed
-        // here as the floor the best-effort path may not go under.
-        const Arena::Grant g = Arena::Acquire(id, request, need, &sub);
+        // THE FLOOR IS THE IMAGE PLUS ITS ALIGNMENT PADDING, not the image.
+        //
+        // Sub-arenas are carved from the top of the arena and land wherever
+        // the running total leaves them; the image inside one is then aligned
+        // to kImageAlign. So a grant of exactly `need` fits only if the
+        // sub-arena happens to start aligned, and AIPuppet on Switch is what
+        // happens when it does not: granted 88064 at 0xb393800, aligned up to
+        // 0xb394000, and the last 2048 bytes no longer fit. Refused for lack
+        // of memory with 874 KB free, which is a true sentence and a useless
+        // one. Reserving the padding as well makes the grant sufficient
+        // wherever it lands.
+        const uint64_t floor64 =
+            static_cast<uint64_t>(need) + (kImageAlign - 1u);
+        if (floor64 > 0xFFFFFFFFull) {
+            WIIXL_LOG("[loader:%s] %s: a %u-byte image plus alignment does not fit "
+                      "a 32-bit size", id, RejectName(Reject::BadSectionBounds), need);
+            return Reject::BadSectionBounds;
+        }
+        const Arena::Grant g = Arena::Acquire(
+            id, request, static_cast<uint32_t>(floor64), &sub);
         if (g != Arena::Grant::Ok) {
             WIIXL_LOG("[loader:%s] %s: arena said %s", id,
                       RejectName(Reject::NoMemory), Arena::GrantName(g));
@@ -628,18 +660,6 @@ inline Reject LoadFrom(Reader& file) {
 
     // Allocations are charged to this module from here until its entry returns.
     Arena::SetCurrent(sub);
-    // 64 bytes on PowerPC - cache-line, and what every FS destination wants.
-    //
-    // 4096 on AArch64, and it is a CORRECTNESS requirement rather than a
-    // performance one. An aarch64 module addresses its own data with adrp+add,
-    // which the linker has already resolved and which stays correct after the
-    // image moves ONLY if it moves by a whole number of pages: adrp computes
-    // (PC & ~0xFFF) + imm, so a sub-page shift changes the page difference the
-    // linker baked in. There is no relocation on those instructions to fix it
-    // up afterwards, so nothing would report the damage - the module would just
-    // read from one page away.
-    constexpr uint32_t kImageAlign =
-        (Wxlm::kHostMachine == Wxlm::Machine::AArch64) ? 4096u : 64u;
     uint8_t* image = static_cast<uint8_t*>(Arena::AllocIn(*sub, imageSize, kImageAlign));
     if (!image) {
         WIIXL_LOG("[loader:%s] %s: wanted %u B for the image (payload %u + bss %u) "

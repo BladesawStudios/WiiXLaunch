@@ -51,6 +51,10 @@
 
 #include <cstdint>
 
+#if WIIXL_SWITCH
+#include <lib.hpp>
+#endif
+
 #if WIIXL_CEMU
 #include <wiixl_cemu_backend.hpp>
 #endif
@@ -132,7 +136,35 @@ inline uint32_t g_ArenaSize = 0;
 inline uintptr_t g_AddrBase = 0;
 
 inline uintptr_t Resolve(uint32_t targetAddr) {
+#if WIIXL_SWITCH
+    // AN OFFSET ON SWITCH, not an address. NSOs are relocated to a random base
+    // every launch, so there is no 32-bit number a patch record could hold that
+    // names a Switch address - the same reason wiixl.call exists. The only
+    // meaning available is the one hooks already use: an offset from the main
+    // module's start.
+    //
+    // g_AddrBase is still added, and is still zero outside a host test.
+    if (g_AddrBase == 0) {
+        return exl::util::modules::GetTargetStart() + static_cast<uintptr_t>(targetAddr);
+    }
+#endif
     return g_AddrBase + static_cast<uintptr_t>(targetAddr);
+}
+
+// Is [addr, addr+size) inside the game image?
+//
+// Only answerable where the host knows the image bounds, which today is Switch.
+// Returning true elsewhere is deliberate: "I cannot check" must not read as
+// "it failed", and on Wii U and Cemu the address IS the process address and the
+// origin comparison below is a meaningful test on its own.
+inline bool InGameImage(uintptr_t addr, uint32_t size) {
+#if WIIXL_SWITCH
+    const exl::util::Range& r = exl::util::GetMainModuleInfo().m_Total;
+    return addr >= r.m_Start && (addr + size) <= r.GetEnd() && (addr + size) >= addr;
+#else
+    (void)addr; (void)size;
+    return true;
+#endif
 }
 
 inline void CopyOwner(char* dst, const char* src) {
@@ -185,6 +217,19 @@ inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
     if (p.targetAddr == 0) return Result::BadTarget;
 
     const uintptr_t addr = impl::Resolve(p.targetAddr);
+
+    // BEFORE ANYTHING DEREFERENCES IT. The origin comparison at the bottom of
+    // this function READS the target, and an address that is not mapped kills
+    // the process there - which turns "this patch is refused" into "the game
+    // does not boot", and refusing without killing the boot is the entire
+    // contract this module documents.
+    //
+    // It happened the first time a declared patch reached a Switch: c_patch
+    // carries the Wii U address 0x3a75d48, the sample built for aarch64 all
+    // the same, and the origin read faulted at 0x03a75000 before any check
+    // could have an opinion. The arithmetic checks below were all correct and
+    // none of them ever ran.
+    if (!impl::InGameImage(addr, p.size)) return Result::BadTarget;
 
     // DERIVED, not set. An explicit SetArena would be a check that goes dead
     // the day someone forgets to call it, and a dead check is indistinguishable
