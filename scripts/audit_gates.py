@@ -40,19 +40,19 @@ ROOT = os.path.dirname(HERE)
 
 # (script, [(gate token that must appear, human name)])
 #
-# build_cemu runs most of the gates: the Wii U build produces no .wxlm, no Cemu
-# host payload and no relocation table, so test_host/test_wxlm/loader_fuzz have
-# nothing to say about it.
+# ONE PLACE, BECAUSE VERIFYING IS NOT BUILDING.
 #
-# build_switch is the exception, and it earned it. A module CAN be built for
-# that platform now, and whether it comes out with the right machine, the right
-# byte order and only relocation kinds that exist on AArch64 is a question only
-# a devkitA64 build can answer - so test_switch_module runs there, where that
-# toolchain is already required, rather than making build_cemu need it. format_test is arguably
-# cross-platform - the formatter ships on all three - but it is run once per
-# full build rather than three times, which build_all covers.
+# These gates used to be spread across build_cemu and build_switch, which made
+# "build a host" and "verify the tree" the same command: you could not have
+# either without the other, and a build script also deployed, so the only way to
+# run the gates was to publish a host. The build scripts build one host for one
+# game now and nothing else. Everything below moved to test.bat / test.sh.
+#
+# The audit itself did not change shape, and this is exactly the moment it is
+# for: gates being moved between files is precisely when one gets dropped and
+# nothing notices.
 WIRING = [
-    ("build_cemu.bat", [
+    ("test.bat", [
         ("test_host.py",            "test_host"),
         ("test_wxlm.py",            "test_wxlm"),
         ("test_log_lengths.py",     "test_log_lengths"),
@@ -67,14 +67,9 @@ WIRING = [
         ("gen_imports.py",          "gen_imports --check"),
         ("make_sdk.py",             "make_sdk --verify"),
         ("audit_gates.py",          "audit_gates (this file)"),
+        ("test_switch_module.py",   "test_switch_module"),
     ]),
-    ("build_switch.bat", [
-        ("test_switch_module.py", "test_switch_module"),
-    ]),
-    ("build_switch.sh", [
-        ("test_switch_module.py", "test_switch_module"),
-    ]),
-    ("build_cemu.sh", [
+    ("test.sh", [
         ("test_host.py",           "test_host"),
         ("test_wxlm.py",           "test_wxlm"),
         ("test_log_lengths.py",    "test_log_lengths"),
@@ -89,6 +84,7 @@ WIRING = [
         ("gen_imports.py",         "gen_imports --check"),
         ("make_sdk.py",            "make_sdk --verify"),
         ("audit_gates.py",         "audit_gates (this file)"),
+        ("test_switch_module.py",  "test_switch_module"),
     ]),
 ]
 

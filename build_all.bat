@@ -49,12 +49,12 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo.
-echo Running final deployment packager...
-python scripts\deploy.py
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-echo.
 echo ==========================================
-echo All builds completed successfully!
-echo Output artifacts ready in deploy/ folder.
+echo All three hosts built.
+echo   build\switch\subsdk9
+echo   build\wiiu\
+echo   build\wiixlaunch_cemu
+echo.
+echo Verify with  test.bat
+echo Install with python scripts\deploy.py --target ^<name^>
 echo ==========================================

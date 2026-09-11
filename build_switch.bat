@@ -67,124 +67,22 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 if not exist build\switch mkdir build\switch
 copy /y "%STAGE%\deploy\subsdk9" build\switch\subsdk9 > nul
 copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
+:: The linked ELF, kept beside the artifacts. test.bat's test_switch_module gate
+:: reads it to check which nn:: symbols the host imports, and the build stage it
+:: was linked in lives under %TEMP% and is deleted by the next build - so a gate
+:: that reached into the stage was reading whatever the last build happened to
+:: leave there.
+copy /y "%STAGE%\wiixlaunch-switch.elf" build\switch\wiixlaunch-switch.elf > nul
 
-:: Can a MODULE be built for this platform? The host building says nothing
-:: about that - it was true for months while wxlm.py wrote MACHINE_PPC32 into
-:: every file it produced. Run here rather than in build_cemu because this is
-:: where devkitA64 is already a hard requirement.
-python scripts\test_switch_module.py "%STAGE%\wiixlaunch-switch.elf"
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-
-:: The same sample modules build_cemu builds, for THIS machine - IF THIS TARGET
-:: WANTS THEM.
+:: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
 ::
-:: They are the framework's own examples and two are BotW's: e_player needs
-:: botw.player, c_patch carries BotW addresses. On a TOTK host the loader
-:: refuses them by name, which is the mechanism working - but they still get
-:: DEPLOYED, and a deploy writes the whole mods directory, so building them
-:: overwrote the TOTK modules that were supposed to be there. A boot then ran
-:: the mod's romfs against a game whose code half had never loaded.
-for /f "usebackq delims=" %%i in (`python scripts\target_value.py samples`) do set "WANT_SAMPLES=%%i"
-if "%WANT_SAMPLES%"=="0" (
-    echo [WiiXLaunch] this target does not build the example mods
-    goto :after_samples
-)
+:: It used to also build the example modules, run scripts/deploy.py and copy the
+:: result straight into Ryujinx's mods folder and virtual SD card. Three
+:: different jobs behind one command: you could not build without publishing,
+:: and a deploy writes the WHOLE mods directory, so building a host for one game
+:: could overwrite the modules installed for another.
 ::
-:: They were Cemu-only, and not by decision - nothing here built them, so
-:: build/switch-mods held whatever had been produced by hand. A module is a
-:: different binary per target (aarch64, little-endian, ABS64 relocations), so
-:: "the samples pass" was a statement about PowerPC and nothing else, and the
-:: one platform where module loading is newest had the least coverage.
-
-:: the smallest complete module
-call :build_mod sample_mod
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: two modules hooking the same function, in load order
-call :build_mod hook_mod_a
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: the second half of that pair
-call :build_mod hook_mod_b
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: a declared patch rather than a hook
-call :build_mod patch_mod
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: the wiixl.net demonstration
-call :build_mod net_mod
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: the botw.player v1.1 demonstration
-call :build_mod player_mod
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:after_samples
-python scripts\deploy.py
-if %ERRORLEVEL% NEQ 0 exit /b 1
-
-:: deploy.py only writes deploy\switch\atmosphere\contents\... - it never
-:: touches Ryujinx's actual mods folder. That gap meant every test this
-:: session after the mods copy was last done by hand kept re-running the
-:: SAME stale subsdk9 no matter what changed in source, which cost a lot of
-:: debugging time chasing phantom "identical behavior across different code"
-:: symptoms that were really just "never rebuilt." Copy straight into the
-:: mods folder here so `main.npdm`/`subsdk9` in Ryujinx are always what was
-:: just compiled.
-:: The mod folder name is ours to pick - Ryujinx reads every subfolder of
-:: the title id. This pointed at NVNInjectionTest, a folder from an older
-:: setup that no longer exists, so the guard below was false on every
-:: build and the copy silently never happened. That is precisely the
-:: staleness the comment above was written about, one level up.
-:: THE TARGET'S TITLE ID, NOT A CONSTANT.
-::
-:: This was hardcoded to BotW. The first build of a second target therefore
-:: copied a TOTK subsdk9 over the BotW host, and the next BotW boot would have
-:: run it - a value repeated in two places is a value that will disagree with
-:: itself. It comes from the resolver the rest of the build used.
-for /f "usebackq delims=" %%i in (`python scripts\target_value.py switch.title_id`) do set "TITLE_ID=%%i"
-if "%TITLE_ID%"=="" (
-    echo [WiiXLaunch] Could not read switch.title_id for this target
-    exit /b 1
-)
-set RYUJINX_MOD_EXEFS=%APPDATA%\Ryujinx\mods\contents\%TITLE_ID%\WiiXLaunch\exefs
-if exist "%RYUJINX_MOD_EXEFS%" (
-    copy /y "deploy\switch\atmosphere\contents\%TITLE_ID%\exefs\subsdk9" "%RYUJINX_MOD_EXEFS%\subsdk9" > nul
-    copy /y "deploy\switch\atmosphere\contents\%TITLE_ID%\exefs\main.npdm" "%RYUJINX_MOD_EXEFS%\main.npdm" > nul
-    echo Copied to Ryujinx mods folder: %RYUJINX_MOD_EXEFS%
-)
-
-:: And the modules, onto Ryujinx's virtual SD card. Same gap as the exefs copy
-:: above and the same consequence: the loader reads sd:/WiiXLaunch/mods, nothing
-:: put anything there, and the modules that ran in the last Switch test were
-:: copied in by hand - so that test proved the loader worked and proved nothing
-:: about the build.
-:: The delete is not tidiness. The loader enumerates the directory, so a module
-:: left from an older build is one the next boot LOADS.
-set RYUJINX_SD=%APPDATA%\Ryujinx\sdcard
-set RYUJINX_SD_MODS=%RYUJINX_SD%\WiiXLaunch\mods\%TITLE_ID%
-if exist "%RYUJINX_SD%" (
-    if not exist "%RYUJINX_SD_MODS%" mkdir "%RYUJINX_SD_MODS%"
-    del /q "%RYUJINX_SD_MODS%\*.wxlm" 2>nul
-    rem xcopy, not copy: modules have resource DIRECTORIES beside them
-    rem (mods/<id>/), and copying only *.wxlm shipped the code without the
-    rem files it reads. "rem" and not "::" because a :: label inside a
-    rem parenthesised if block is a cmd parse error, which is how this
-    rem announced itself: "and was unexpected at this time".
-    xcopy /e /i /y /q "deploy\switch\WiiXLaunch\mods\%TITLE_ID%" "%RYUJINX_SD_MODS%" > nul
-    echo Copied modules to Ryujinx SD card: %RYUJINX_SD_MODS%
-)
-
-
-echo Switch build complete!
-exit /b 0
-
-:: --- one module, built for aarch64 --------------------------------------
-:: %1 = directory under examples/. Same script and same manifest as the Cemu
-:: build; only --target differs, which is the whole point of it being a flag.
-:build_mod
-python scripts\build_mod.py --source examples\%1 --target switch --out build\%WIIXL_TARGET%
-if %ERRORLEVEL% NEQ 0 exit /b 1
+::   gates and example modules -> test.bat
+::   packaging and installing  -> python scripts\deploy.py --target <name>
+echo Switch host built: build\switch\subsdk9
 exit /b 0

@@ -50,5 +50,13 @@ make -C "$STAGE" TARGET="$WPS_TARGET"
 mkdir -p build/wiiu
 cp "$STAGE/$WPS_NAME" "build/wiiu/$WPS_NAME"
 
-python3 scripts/deploy.py
-echo "Wii U build complete!"
+# THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
+#
+# It used to also run every gate, build the six example modules and call
+# scripts/deploy.py. Three different jobs behind one command: you could not
+# build a host without also publishing one, and a deploy writes the WHOLE mods
+# directory, so building for one game could overwrite another game's modules.
+#
+#   gates and example modules -> test.sh
+#   packaging and installing  -> python3 scripts/deploy.py --target <name>
+echo "Wii U host built: build/wiiu/$WPS_NAME"

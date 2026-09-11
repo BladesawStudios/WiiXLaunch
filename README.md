@@ -47,10 +47,16 @@ extern "C" void WiiXLaunch_Init() {
 ## Building
 
 ### Windows Batch Scripts (Convenience)
-* **Build Switch**: `build_switch.bat`
-* **Build Wii U**: `build_wiiu.bat`
-* **Build Cemu**: `build_cemu.bat`
+* **Build Switch**: `build_switch.bat [target]`
+* **Build Wii U**: `build_wiiu.bat [target]`
+* **Build Cemu**: `build_cemu.bat [target]`
 * **Build All**: `build_all.bat`
+
+Each builds one host for one game and nothing else. Verifying and installing are
+separate, on purpose:
+
+* **Every gate**: `test.bat` (or `./test.sh`)
+* **Package and install**: `python scripts/deploy.py --target <name>`
 
 ### Build via CMake
 

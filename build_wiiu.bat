@@ -52,6 +52,14 @@ if not exist build\wiiu mkdir build\wiiu
 copy /y "%STAGE%\%WPS_NAME%" build\wiiu\%WPS_NAME% > nul
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
-python scripts\deploy.py
-if %ERRORLEVEL% NEQ 0 exit /b 1
-echo Wii U build complete!
+:: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
+::
+:: It used to also run every gate, build the six example modules and call
+:: scripts/deploy.py. Three different jobs behind one command: you could not
+:: build a host without also publishing one, and a deploy writes the WHOLE mods
+:: directory, so building for one game could overwrite another game's modules.
+::
+::   gates and example modules -> test.bat
+::   packaging and installing  -> python scripts\deploy.py --target <name>
+echo Wii U host built: build\wiiu\%WPS_NAME%
+exit /b 0

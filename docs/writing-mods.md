@@ -410,7 +410,7 @@ configuring and the framework tree can be absent entirely.
 diffs the result against the same probe built from the full checkout. A byte
 difference or a build failure fails the gate, so "a mod can be built without the
 framework" is something that happened during this build rather than something
-the architecture diagram claims. It runs in `build_cemu`, and it is how
+the architecture diagram claims. It runs in `test.bat`, and it is how
 `ppc_relocs.py` was caught missing from the first SDK - a dependency you forgot
 is not one you can notice from inside the tree that has it.
 
@@ -421,7 +421,8 @@ is not one you can notice from inside the tree that has it.
 Run before you trust anything:
 
 ```
-build_all.bat                 all three targets, plus every gate
+build_all.bat                 all three hosts
+test.bat                      every gate, plus the example modules
 python scripts\surface_coverage.py    every public module function is reachable or excused
 ```
 

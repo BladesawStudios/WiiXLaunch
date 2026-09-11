@@ -37,11 +37,18 @@ mkdir -p build/switch
 cp "$STAGE/deploy/subsdk9" build/switch/subsdk9
 cp "$STAGE/deploy/main.npdm" build/switch/main.npdm
 
-# Can a MODULE be built for this platform? The host building says nothing about
-# that - it was true for months while wxlm.py wrote MACHINE_PPC32 into every
-# file it produced. Run here rather than in build_cemu because this is where
-# devkitA64 is already a hard requirement.
-python3 scripts/test_switch_module.py
+# THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
+#
+# It used to also run every gate, build the six example modules and call
+# scripts/deploy.py. Three different jobs behind one command: you could not
+# build a host without also publishing one, and a deploy writes the WHOLE mods
+# directory, so building for one game could overwrite another game's modules.
+#
+#   gates and example modules -> test.sh
+#   packaging and installing  -> python3 scripts/deploy.py --target <name>
 
-python3 scripts/deploy.py
-echo "Switch build complete!"
+# The linked ELF, kept beside the artifacts: test.sh's test_switch_module
+# gate reads it to check which nn:: symbols the host imports, and the build
+# stage it was linked in is deleted by the next build.
+cp "$STAGE/wiixlaunch-switch.elf" build/switch/wiixlaunch-switch.elf
+echo "Switch host built: build/switch/subsdk9"

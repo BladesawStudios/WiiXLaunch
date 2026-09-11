@@ -33,101 +33,13 @@ echo "Building Cemu payload (PowerPC)..."
   src/main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
   -o build/wiixlaunch_cemu
 
-# Host-completeness check - see scripts/test_host.py. Links the same host from
-# an EMPTY main.cpp and asserts it is still complete, because main.cpp becomes a
-# .wxlm at stage 4 and nothing the host needs may come from it.
-: > build/empty_main.cpp
-"$DKP_PPC_GXX" \
-  -std=gnu++20 -fno-pie -fno-pic -msdata=none \
-  -D__CEMU__=1 -DWIIXL_CEMU=1 \
-  -I include -I build/generated/include "${MODULE_FLAGS[@]}" \
-  -nostartfiles -T scripts/cemu.ld -Wl,-q \
-  build/empty_main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
-  -o build/wiixlaunch_cemu_hosttest
-python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
-
-# The .wxlm writer and the format header have to agree; a drift between them
-# is the one failure neither side can detect at runtime.
-python3 scripts/test_wxlm.py
-
-# No WIIXL_LOG line may exceed the 200-char cap; truncation used to be silent.
-python3 scripts/test_log_lengths.py
-
-# Are the gates below actually wired in, and is a failure fatal? Every gate
-# self-checks its own liveness, which is the right shape - but no gate can
-# detect that nothing calls it. Runs first, so a missing gate is reported
-# before the build spends time on the ones that are present.
-python3 scripts/audit_gates.py
-
-# Surface coverage: every public entry point in the module either has a surface
-# symbol or an entry in EXCLUDED with a reason. See scripts/surface_coverage.py.
-python3 scripts/surface_coverage.py
-
-# The generated import headers must match the surfaces they came from.
-python3 scripts/gen_imports.py --check
-
-# The committed SDK matches the surfaces, and a module built from it alone is
-# byte-identical to one built from the tree.
-python3 scripts/make_sdk.py --check --verify
-
-# WIIXL_LOG's formatter. Every platform's logging goes through it and it cannot
-# be exercised on a console. NOT WIRED IN UNTIL 2026-09-04 - written, passing
-# when run by hand, and never called by a build script, so it could not fail at
-# all. A gate nothing invokes is the limit case of the fourth rule in
-# docs/modules.md, and the one thing a gate cannot detect about itself; see
-# scripts/audit_gates.py.
-bash tools/format_test/build.sh
-
-# sqrt, sin and cos for modules: a .wxlm has no libm, so mod_math.h writes them
-# out, and an approximation nobody measured is a wrong answer with good manners.
-# A million points against the host's libm, asserting the bounds the header
-# quotes. It caught a 1.7e-6 error in cos at large angles that reading could not.
-bash tools/mathtest/build.sh
-
-# The NVN block-linear swizzle, checked against a texture NVN has actually
-# accepted rather than against a restatement of the rules. botw.gfx promises
-# raw pixels on both backends and the NVN half was handing rows to a path
-# that wants the tiled layout.
-bash tools/nvn_swizzle_test/build.sh
-
-# mod_config.h. Hand-written settings files, and the ways they go wrong:
-# prefix keys, CRLF, words where numbers go, no trailing newline.
-bash tools/config_test/build.sh
-
-# The central hook manager: a three-deep chain verified by decoding the
-# instructions it emitted. Construction, not execution - the boot proves that.
-bash tools/hook_test/build.sh
-
-# Socket ownership. The fake transport underneath RECYCLES file descriptors,
-# because a use-after-close only becomes cross-mod corruption once the number
-# has been handed to somebody else - and no real platform will do that on cue.
-bash tools/net_test/build.sh
-
-# Fuzz the loader. Runs on every build rather than on request - a check that
-# has to be remembered is a check that stops happening.
+# THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
 #
-# A MISSING TOOLCHAIN IS A FAILURE, NOT A WARNING. It used to print a banner and
-# let the build succeed; "skipped" is a state that has to be seen, and a banner
-# scrolls past. No gate exits 0 on a missing input.
-set +e
-bash tools/loader_fuzz/build.sh
-FUZZ_RC=$?
-set -e
-if [ $FUZZ_RC -eq 2 ]; then
-    echo
-    echo ============================================================
-    echo "[loader_fuzz] SETUP PROBLEM - not a broken source tree."
-    echo "[loader_fuzz] This gate requires a host C++ compiler, which was not"
-    echo "[loader_fuzz] found. Install one, or build on a machine that has it."
-    echo "[loader_fuzz] The loader was NOT fuzzed, so this build FAILS rather"
-    echo "[loader_fuzz] than shipping an untested loader."
-    echo ============================================================
-    echo
-    exit 1
-elif [ $FUZZ_RC -ne 0 ]; then
-    echo "[loader_fuzz] FAILED - see above."
-    exit 1
-fi
-
-python3 scripts/deploy.py
-echo "Cemu build complete!"
+# It used to also run every gate, build the six example modules and call
+# scripts/deploy.py. Three different jobs behind one command: you could not
+# build a host without also publishing one, and a deploy writes the WHOLE mods
+# directory, so building for one game could overwrite another game's modules.
+#
+#   gates and example modules -> test.sh
+#   packaging and installing  -> python3 scripts/deploy.py --target <name>
+echo "Cemu host built: build/wiixlaunch_cemu"

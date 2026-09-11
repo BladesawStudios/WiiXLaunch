@@ -232,11 +232,16 @@ this into headers under `build/generated/include/` and platform config under
 ## Building
 
 ```bash
-build_cemu.bat      # Cemu, plus every gate
-build_wiiu.bat      # Wii U
-build_switch.bat    # Switch
-build_all.bat       # all three
+build_cemu.bat      # the Cemu host
+build_wiiu.bat      # the Wii U host
+build_switch.bat    # the Switch host
+build_all.bat       # all three hosts
 ```
+
+A build script builds **one host for one game and nothing else**. It does not
+run the gates, does not build the example modules, does not package, and does
+not copy anything into an emulator. Pass a target to pick the game:
+`build_switch.bat totk`.
 
 Or CMake directly, Switch only — Wii U and Cemu use devkitPPC and the WUPS
 Makefile flow, since their output is not a normal CMake executable target:
@@ -246,15 +251,38 @@ cmake -B build/switch -DPLATFORM=SWITCH
 cmake --build build/switch
 ```
 
-`build_cemu` runs the gates: the loader fuzzer, the host and format tests,
-surface coverage, the import-header freshness check, and an SDK cut and
-verified by building a module from it. A gate failing fails the build.
+## Verifying
+
+```bash
+test.bat            # or ./test.sh
+```
+
+Every gate, in one place: the loader fuzzer, the host and format tests, surface
+coverage, the import-header freshness check, an SDK cut and verified by building
+a module from it, and the six example modules built for both machine types. A
+gate failing fails the run.
+
+Two gates want a host to have been built first - `test_host` links its own, but
+`test_switch_module` reads `build/switch/wiixlaunch-switch.elf`, and says so
+rather than skipping if it is missing.
+
+These used to live inside `build_cemu` and `build_switch`, which meant you could
+not build a host without also running every gate and publishing the result.
+`scripts/audit_gates.py` checks that each gate is still invoked from `test.bat`
+and `test.sh`, so moving one out fails rather than quietly losing coverage.
 
 ## Deploying
 
+Packaging and installing is its own step, and always explicit:
+
 ```bash
-python scripts/deploy.py
+python scripts/deploy.py --target botw
 ```
+
+It writes `deploy/` and copies into the emulator directories it finds. Nothing
+else calls it - a deploy writes the **whole** mods directory, so running it as
+part of a build meant building a host for one game could overwrite the modules
+installed for another.
 
 Packages what you have built into `deploy/`:
 
