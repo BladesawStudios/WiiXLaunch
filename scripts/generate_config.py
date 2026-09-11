@@ -42,6 +42,17 @@ def generate_config(requested=None):
     patches_cfg = cfg.get("patches", {})
     patches_persist = bool(patches_cfg.get("persist", False))
 
+    # WHERE THE SWITCH HOST LOADS MODULES.
+    #
+    # 0 means exl_main, before the game's own main - the earliest point there
+    # is, and right wherever it works. It does not work on every SDK: nn::fs
+    # has no allocator until the application installs one, so on nnSdk 15.x the
+    # first mount calls through a null pointer. A target that hits that names
+    # the game function to defer to instead, and the host hooks it.
+    load_point_offset = switch_cfg.get("load_point_offset", "0x0")
+    if isinstance(load_point_offset, str):
+        load_point_offset = int(load_point_offset, 0)
+
     gen_dir = os.path.join(root_dir, "build", "generated")
     gen_inc_dir = os.path.join(gen_dir, "include", "program")
     gen_switch_dir = os.path.join(gen_dir, "switch")
@@ -99,6 +110,11 @@ namespace WiiXLaunch::Host {{
     // SD card holds every game's modules; a graphic pack and a Wii U content
     // directory are already scoped to their title, and an SD card is not.
     constexpr char ModsDir[]     = "WiiXLaunch/mods/{title_id.upper()}";
+
+    // 0 = load at exl_main, before the game's main. Non-zero = hook this offset
+    // in the game and load after the original runs, for an SDK where the
+    // filesystem is not usable that early. See the target's //load_point note.
+    constexpr unsigned long SwitchLoadPointOffset = {load_point_offset:#x};
 
     // false: declared patches are verified and then RESTORED between LoadAll and
     // RunPhase, so the sample patch mod demonstrates its three outcomes without

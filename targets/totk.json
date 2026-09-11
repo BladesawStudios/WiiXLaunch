@@ -34,7 +34,9 @@
     "main_thread_priority": 44,
     "default_cpu_id": 0,
     "mount_path": "/mnt/sdcard",
-    "//": "system_resource_size and extra_service_access must match TOTK 1.2.1's own main.npdm - the game's memory init fails at boot if the size is 0, and exlaunch's generic service list omits four that TOTK grants itself."
+    "//": "system_resource_size and extra_service_access must match TOTK 1.2.1's own main.npdm - the game's memory init fails at boot if the size is 0, and exlaunch's generic service list omits four that TOTK grants itself.",
+    "//load_point": "nninitStartup, at Ghidra 0x71005C3050 minus the 0x7100000000 base. Loading at exl_main is too early on this SDK: nn::fs has no allocator until the game installs one here, so MountSdCardForDebug calls through a null pointer and dies in nn::fs::fsa::Register. We cannot install one ourselves - the game imports nn::fs::SetAllocator and calls it from this very function, and a second SetAllocator fails once the first has been used.",
+    "load_point_offset": "0x5C3050"
   },
   "wiiu": {
     "//": "There is no Wii U Tears of the Kingdom. Nothing to build."

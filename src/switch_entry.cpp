@@ -27,6 +27,9 @@
 #include <wiixlaunch/patches.hpp>
 
 #include <lib/util/sys/jit.hpp>
+// exl::hook::Hook and util::modules::GetTargetOffset, for a target whose
+// filesystem is not usable at exl_main. See WiiXLaunch_SwitchLoadPoint.
+#include <lib.hpp>
 
 // THE ARENA HAS TO BE EXECUTABLE, and on this platform that is the whole
 // problem.
@@ -75,7 +78,8 @@ static void SwitchFlush(uintptr_t, uint32_t) {
 // It lives in a .cpp rather than in that header because loader.hpp is a large
 // header and switch_backend.hpp rides in through the umbrella on every single
 // translation unit. Same split as the Wii U side, for the same reason.
-extern "C" void WiiXLaunch_SwitchLoadPoint() {
+// Everything the old load point did, now callable at two different moments.
+static void RunLoader() {
     // The reservation, before anything can ask for memory. Base is the .text
     // address a module will RUN from; the alias is where it is written.
     g_WiiXLaunchArena.Initialize();
@@ -157,6 +161,61 @@ extern "C" void WiiXLaunch_SwitchLoadPoint() {
         WIIXL_LOG("[loader] no modules loaded. The game boots normally either way; "
                   "if the directory is simply empty that is the default state of a "
                   "fresh host, and the lines above say which it was.");
+    }
+}
+
+// --- when RunLoader is called ----------------------------------------------
+//
+// exl_main is the earliest moment there is, and for a long time it was the only
+// one - the host runs before the game's own main, so hooks are installed and
+// declared patches applied before a single game instruction executes. That is
+// worth keeping wherever it works.
+//
+// IT DOES NOT WORK EVERYWHERE. nn::fs allocates through an allocator the
+// APPLICATION installs, in nninitStartup, and until then there is none. On
+// nnSdk 4.4.0 one was already in place by the time a subsdk ran; on 15.3.1 it
+// is not, and MountSdCardForDebug calls through a null pointer and dies inside
+// nn::fs::fsa::Register with "invalid memory access at 0x0". TOTK 1.2.1 does
+// exactly that.
+//
+// AND WE MUST NOT INSTALL OUR OWN. The game imports nn::fs::SetAllocator and
+// calls it from nninitStartup; a second SetAllocator fails once the first has
+// been used, so winning that race means the game's own call fails instead.
+//
+// So a target that hits this names the function to defer to, and the host hooks
+// it: the original runs, the game installs its allocator, and the loader goes
+// immediately after - still before the game's main. Offset 0 keeps the old
+// behaviour, which is what every target that works today uses.
+static void (*s_OrigLoadPoint)() = nullptr;
+
+static void DeferredLoadPoint() {
+    // ORIGINAL FIRST. The whole point of deferring here is what this call does
+    // - without it the filesystem is in exactly the state that crashed.
+    if (s_OrigLoadPoint) s_OrigLoadPoint();
+    RunLoader();
+}
+
+extern "C" void WiiXLaunch_SwitchLoadPoint() {
+    if constexpr (WiiXLaunch::Host::SwitchLoadPointOffset == 0) {
+        RunLoader();
+    } else {
+        const uintptr_t target =
+            exl::util::modules::GetTargetOffset(WiiXLaunch::Host::SwitchLoadPointOffset);
+        s_OrigLoadPoint = reinterpret_cast<void (*)()>(
+            exl::hook::Hook(reinterpret_cast<void*>(target),
+                            reinterpret_cast<void*>(&DeferredLoadPoint), true));
+        WIIXL_LOG("[loader] deferred: modules load after the game's own +0x%x "
+                  "(%p), because this SDK has no filesystem before it. See "
+                  "load_point_offset in this host's target.",
+                  static_cast<uint32_t>(WiiXLaunch::Host::SwitchLoadPointOffset),
+                  reinterpret_cast<void*>(target));
+        if (!s_OrigLoadPoint) {
+            // Without the original there is no continuing the chain, and calling
+            // it is what makes the filesystem usable. Say so rather than loading
+            // into the same crash.
+            WIIXL_LOG("[loader] the hook returned no original - NOT loading, "
+                      "because the reason for deferring is what that call does.");
+        }
     }
 }
 
