@@ -499,8 +499,13 @@ def main():
     if os.path.isdir(data_src):
         shutil.copytree(data_src, staged)
         files = sum(len(f) for _r, _d, f in os.walk(staged))
+        # mod_id, not args.id - which is None unless --id was passed on the
+        # command line, and it usually is not: the id comes from mod.json.
+        # The PATH above always used mod_id, so the files went to the right
+        # place and only the line saying so was wrong. It read
+        # "None: staged 1 resource file(s) for mods/None/" on every build.
         print("[build_mod] %s: staged %d resource file(s) for mods/%s/"
-              % (args.id, files, args.id))
+              % (mod_id, files, mod_id))
 
     return 0
 

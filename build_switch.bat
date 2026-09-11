@@ -48,6 +48,39 @@ copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
 python scripts\test_switch_module.py "%STAGE%\wiixlaunch-switch.elf"
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+
+:: The same sample modules build_cemu builds, for THIS machine.
+::
+:: They were Cemu-only, and not by decision - nothing here built them, so
+:: build/switch-mods held whatever had been produced by hand. A module is a
+:: different binary per target (aarch64, little-endian, ABS64 relocations), so
+:: "the samples pass" was a statement about PowerPC and nothing else, and the
+:: one platform where module loading is newest had the least coverage.
+
+:: the smallest complete module
+call :build_mod sample_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: two modules hooking the same function, in load order
+call :build_mod hook_mod_a
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: the second half of that pair
+call :build_mod hook_mod_b
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: a declared patch rather than a hook
+call :build_mod patch_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: the wiixl.net demonstration
+call :build_mod net_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
+:: the botw.player v1.1 demonstration
+call :build_mod player_mod
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 python scripts\deploy.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
@@ -71,4 +104,35 @@ if exist "%RYUJINX_MOD_EXEFS%" (
     echo Copied to Ryujinx mods folder: %RYUJINX_MOD_EXEFS%
 )
 
+:: And the modules, onto Ryujinx's virtual SD card. Same gap as the exefs copy
+:: above and the same consequence: the loader reads sd:/WiiXLaunch/mods, nothing
+:: put anything there, and the modules that ran in the last Switch test were
+:: copied in by hand - so that test proved the loader worked and proved nothing
+:: about the build.
+:: The delete is not tidiness. The loader enumerates the directory, so a module
+:: left from an older build is one the next boot LOADS.
+set RYUJINX_SD=%APPDATA%\Ryujinx\sdcard
+set RYUJINX_SD_MODS=%RYUJINX_SD%\WiiXLaunch\mods
+if exist "%RYUJINX_SD%" (
+    if not exist "%RYUJINX_SD_MODS%" mkdir "%RYUJINX_SD_MODS%"
+    del /q "%RYUJINX_SD_MODS%\*.wxlm" 2>nul
+    rem xcopy, not copy: modules have resource DIRECTORIES beside them
+    rem (mods/<id>/), and copying only *.wxlm shipped the code without the
+    rem files it reads. "rem" and not "::" because a :: label inside a
+    rem parenthesised if block is a cmd parse error, which is how this
+    rem announced itself: "and was unexpected at this time".
+    xcopy /e /i /y /q "deploy\switch\WiiXLaunch\mods" "%RYUJINX_SD_MODS%" > nul
+    echo Copied modules to Ryujinx SD card: %RYUJINX_SD_MODS%
+)
+
+
 echo Switch build complete!
+exit /b 0
+
+:: --- one module, built for aarch64 --------------------------------------
+:: %1 = directory under examples/. Same script and same manifest as the Cemu
+:: build; only --target differs, which is the whole point of it being a flag.
+:build_mod
+python scripts\build_mod.py --source examples\%1 --target switch
+if %ERRORLEVEL% NEQ 0 exit /b 1
+exit /b 0

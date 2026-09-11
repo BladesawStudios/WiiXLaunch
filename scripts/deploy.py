@@ -98,6 +98,64 @@ def main():
     deploy_or_placeholder(build_switch_npdm, os.path.join(switch_deploy_dir, "main.npdm"),
                           "# WiiXLaunch Switch NPDM\n", "Switch")
 
+    # --- Switch modules -----------------------------------------------------
+    #
+    # NOTHING DEPLOYED THESE. build_mod.py --target switch has been writing
+    # .wxlm files to build/switch-mods/ since Switch support landed, the loader
+    # has been enumerating sd:/WiiXLaunch/mods/ for just as long, and no step
+    # connected the two - the modules that ran on Switch got there because
+    # somebody copied them by hand. The build was green throughout, because a
+    # deploy that ships no modules and a deploy that ships the wrong ones look
+    # identical from inside the build.
+    #
+    # sd:/WiiXLaunch/mods/ is the SD ROOT, not the exefs directory, so this sits
+    # beside atmosphere/ rather than under it: copy deploy/switch/ to the card
+    # and both land where they belong.
+    switch_mods_src = os.path.join(root_dir, "build", "switch-mods")
+    switch_mods_dst = os.path.join(deploy_dir, "switch", "WiiXLaunch", "mods")
+    os.makedirs(switch_mods_dst, exist_ok=True)
+    switch_modules = sorted(f for f in os.listdir(switch_mods_src)
+                            if f.endswith(".wxlm")) if os.path.isdir(switch_mods_src) else []
+
+    # Same rule as the Cemu pack: a module that is no longer built must not
+    # survive in the deployed directory, because the loader enumerates whatever
+    # is there and would load it.
+    for old_name in sorted(os.listdir(switch_mods_dst)):
+        if old_name.endswith(".wxlm") and old_name not in switch_modules:
+            os.remove(os.path.join(switch_mods_dst, old_name))
+            print(f"[Switch] Removed stale module {old_name}")
+
+    if switch_modules:
+        print(f"[Switch] {len(switch_modules)} module(s) -> WiiXLaunch/mods/ on the SD "
+              f"card, in the lexical order the loader will load them:")
+        for i, name in enumerate(switch_modules, 1):
+            src = os.path.join(switch_mods_src, name)
+            shutil.copy2(src, os.path.join(switch_mods_dst, name))
+            print(f"[Switch]   {i}. {name} ({os.path.getsize(src)} bytes)")
+
+        # Per-module resource directories, same as the Cemu pack. A module
+        # that reads a file of its own reads it from mods/<id>/ on whichever
+        # platform it is running, so shipping them on one and not the other
+        # would make the same module work in Cemu and fail on hardware.
+        switch_moddata = os.path.join(root_dir, "build", "switch-mods", "moddata")
+        if os.path.isdir(switch_moddata):
+            for mod_id in sorted(os.listdir(switch_moddata)):
+                src_dir = os.path.join(switch_moddata, mod_id)
+                if not os.path.isdir(src_dir):
+                    continue
+                dst_dir = os.path.join(switch_mods_dst, mod_id)
+                if os.path.isdir(dst_dir):
+                    shutil.rmtree(dst_dir)
+                shutil.copytree(src_dir, dst_dir)
+                files = sum(len(f) for _r, _d, f in os.walk(dst_dir))
+                print(f"[Switch]   resources -> WiiXLaunch/mods/{mod_id}/ "
+                      f"({files} file(s))")
+    else:
+        print("[Switch] No .wxlm in build/switch-mods/ - the SD card gets no modules. "
+              "These are built by scripts/build_mod.py --target switch, which is a "
+              "SEPARATE build from the Cemu one and produces a different binary.")
+
+
     build_wiiu_wps = os.path.join(root_dir, "build", "wiiu", plugin_name)
 
     deploy_or_placeholder(build_wiiu_wps, os.path.join(wiiu_deploy_dir, plugin_name),
