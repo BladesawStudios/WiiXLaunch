@@ -118,6 +118,14 @@ def check_registry_capacity():
 # decision; leaving the reason here is what stops the next person re-deciding it
 # by accident.
 EXCLUDED = {
+    # The two halves of NVN texture creation. botw.gfx:CreateTexture is the one
+    # a module calls and it takes PIXELS, the same as GX2 - these are how the
+    # NVN backend gets from pixels to the memory pool it actually wants.
+    "CreateTextureRaw": "what botw.gfx:CreateTexture calls on NVN; a module "
+                        "uses the surface, not this",
+    "CreateTexturePackaged": "takes an NVN container, which is a build-time "
+                             "artifact of the host; a module has pixels",
+
     # Host plumbing a mod has no business calling - these install hooks or hand
     # back raw engine pointers that the surfaces wrap properly.
     "GetRaw": "raw pointer; botw.player's escape hatch is the audited way",

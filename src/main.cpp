@@ -178,7 +178,11 @@ extern "C" void WiiXLaunch_Init() {
     // callback fires once the game has built one. Same shape as the GX2 branch
     // below, and the reason neither creates its texture here.
     NVN::OnInitialized([]() {
-        g_LogoTexture = NVN::CreateTexture(g_TestPicTextureBytes, kTestPicTextureSize);
+        // Packaged, not raw: this header is a full NVN container, 0x200 of
+        // header then the pixels. The raw entry point is for callers that
+        // have only pixels - see botw.gfx.
+        g_LogoTexture = NVN::CreateTexturePackaged(g_TestPicTextureBytes,
+                                                   kTestPicTextureSize);
         WIIXL_LOG("WiiXLaunch: NVN logo texture initialized: %p",
                   reinterpret_cast<void*>(g_LogoTexture));
     });
