@@ -271,6 +271,38 @@ For a patch that should be applied before any module runs, and restored or kept
 according to the target's `patches.persist`, declare it instead — see
 [Declared patches](loader.md#declared-patches).
 
+### One declaration, both architectures
+
+A declared patch's `targetAddr` is a single 32-bit field, and it cannot mean the
+same thing on both platforms: on Wii U and Cemu it is an absolute address, on
+Switch an offset from the module base, because an NSO lands somewhere different
+every launch. Widening it would not have helped either, because the origin and
+replacement are *machine code* — a PowerPC `or r30,r4,r4` is `7C 9E 23 78` and
+an AArch64 `mov w1,#15` is `E1 01 80 52`. There is nothing a shared byte list
+could say.
+
+So the whole triple is chosen at compile time, the same way `WIIXL_OFFSET`
+chooses an address:
+
+```cpp
+WIIXL_DECLARE_PATCH_CROSS(room_cap,
+    /* Switch offset  */ 0x01B299EC,
+    WIIXL_PATCH_BYTES(0xE1, 0x01, 0x80, 0x52),   // mov w1,#15
+    WIIXL_PATCH_BYTES(0xA1, 0x05, 0x80, 0x52),   // mov w1,#45
+    /* Wii U address  */ 0x02000030,
+    WIIXL_PATCH_BYTES(0x7C, 0x9E, 0x23, 0x78),   // or  r30,r4,r4
+    WIIXL_PATCH_BYTES(0x60, 0x9E, 0x00, 0x00));  // ori r30,r4,0
+```
+
+A `.wxlm` is already built per architecture — PPC32 for Wii U and Cemu, AArch64
+for Switch — so only one record is ever emitted and the module carries no dead
+weight for the other. Bytes are in **memory order on both sides**, which means
+they are not written the same way round: PowerPC is big-endian, AArch64 little.
+
+For a patch that only exists on one platform, do not invent an address for the
+other — guard the declaration with `#if WIIXL_SWITCH` and the other module
+simply carries one fewer patch.
+
 ## Platform differences you don't have to think about
 
 `WIIXL_HOOK_DEFINE_TRAMPOLINE` and `CodePatch` cover the same three backends as everything else in the framework:

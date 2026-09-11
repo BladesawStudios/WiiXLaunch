@@ -55,6 +55,7 @@ WIRING = [
     ("test.bat", [
         ("test_host.py",            "test_host"),
         ("test_wxlm.py",            "test_wxlm"),
+        ("test_patch_decl.py",      "test_patch_decl"),
         ("test_log_lengths.py",     "test_log_lengths"),
         ("format_test\\build.bat",  "format_test"),
         ("mathtest\\build.bat",     "mathtest"),
@@ -72,6 +73,7 @@ WIRING = [
     ("test.sh", [
         ("test_host.py",           "test_host"),
         ("test_wxlm.py",           "test_wxlm"),
+        ("test_patch_decl.py",     "test_patch_decl"),
         ("test_log_lengths.py",    "test_log_lengths"),
         ("format_test/build.sh",   "format_test"),
         ("mathtest/build.sh",      "mathtest"),
@@ -94,12 +96,13 @@ WIRING = [
 # them: deleting a row from WIRING would have dropped the count and still
 # printed success. A gate that checks other gates for liveness and has none of
 # its own is the joke writing itself.
-EXPECTED_MIN_INVOCATIONS = 33
-EXPECTED_MIN_SCRIPTS = 31
+EXPECTED_MIN_INVOCATIONS = 35
+EXPECTED_MIN_SCRIPTS = 32
 
 MUST_EXIST = [
     "scripts/test_host.py",
     "scripts/test_wxlm.py",
+    "scripts/test_patch_decl.py",
     "scripts/test_switch_module.py",
     "scripts/aarch64_relocs.py",
     "scripts/test_log_lengths.py",

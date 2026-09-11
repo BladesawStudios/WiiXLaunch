@@ -74,6 +74,14 @@ if %ERRORLEVEL% NEQ 0 (
 python scripts\test_host.py build\wiixlaunch_cemu_hosttest
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:: WIIXL_DECLARE_PATCH_CROSS picks an architecture with the preprocessor, and a
+:: macro that picked wrong would emit the other machine's bytes against the
+:: other kind of address - a module that builds, packs, loads and is refused at
+:: boot on somebody else's console. This compiles a fixture with both toolchains
+:: and reads the emitted record back out of each ELF.
+python scripts\test_patch_decl.py
+if %ERRORLEVEL% NEQ 0 exit /b 1
+
 :: The .wxlm writer and the format header have to agree; a drift between them
 :: is the one failure neither side can detect at runtime. See test_wxlm.py.
 python scripts\test_wxlm.py

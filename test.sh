@@ -61,6 +61,13 @@ python3 scripts/audit_gates.py
   -o build/wiixlaunch_cemu_hosttest
 python3 scripts/test_host.py build/wiixlaunch_cemu_hosttest
 
+# WIIXL_DECLARE_PATCH_CROSS picks an architecture with the preprocessor, and a
+# macro that picked wrong would emit the other machine's bytes against the other
+# kind of address - a module that builds, packs, loads and is refused at boot on
+# somebody else's console. Compiles a fixture with both toolchains and reads the
+# emitted record back out of each ELF.
+python3 scripts/test_patch_decl.py
+
 # The .wxlm writer and the format header have to agree; a drift between them
 # is the one failure neither side can detect at runtime.
 python3 scripts/test_wxlm.py
