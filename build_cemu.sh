@@ -84,6 +84,12 @@ bash tools/format_test/build.sh
 # quotes. It caught a 1.7e-6 error in cos at large angles that reading could not.
 bash tools/mathtest/build.sh
 
+# The NVN block-linear swizzle, checked against a texture NVN has actually
+# accepted rather than against a restatement of the rules. botw.gfx promises
+# raw pixels on both backends and the NVN half was handing rows to a path
+# that wants the tiled layout.
+bash tools/nvn_swizzle_test/build.sh
+
 # The central hook manager: a three-deep chain verified by decoding the
 # instructions it emitted. Construction, not execution - the boot proves that.
 bash tools/hook_test/build.sh

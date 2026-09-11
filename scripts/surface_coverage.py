@@ -126,6 +126,12 @@ EXCLUDED = {
     "CreateTexturePackaged": "takes an NVN container, which is a build-time "
                              "artifact of the host; a module has pixels",
 
+    # The tiling between those two. Pure arithmetic over bytes, with no NVN
+    # call in it - which is why tools/nvn_swizzle_test can check it against a
+    # real packaged texture on a PC. A module never needs it: it hands over
+    # rows and the backend decides what the device wants.
+    "SwizzleRgba8": "the NVN block-linear layout, applied by CreateTextureRaw; a module passes linear pixels and does not know or care",
+
     # Host plumbing a mod has no business calling - these install hooks or hand
     # back raw engine pointers that the surfaces wrap properly.
     "GetRaw": "raw pointer; botw.player's escape hatch is the audited way",

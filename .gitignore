@@ -64,3 +64,7 @@ tools/mathtest/*.obj
 # committing and would be wrong on anyone else's machine if it were.
 compile_commands.json
 .vscode/
+
+tools/nvn_swizzle_test/nvn_swizzle_test.exe
+tools/nvn_swizzle_test/nvn_swizzle_test
+tools/nvn_swizzle_test/*.obj

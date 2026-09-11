@@ -168,6 +168,24 @@ if errorlevel 2 (
     exit /b 1
 )
 
+:: The NVN block-linear swizzle. botw.gfx promises raw pixels on both backends;
+:: GX2 has always tiled them on the CPU and the NVN side copied them in rows
+:: into a path that means "already in the device's layout", so the first module
+:: texture on Switch got a memory pool of the wrong size and, had it not, would
+:: have drawn stripes.
+::
+:: Derived from an artefact rather than asserted: testpic_texture_bytes.hpp is a
+:: texture NVN has accepted and drawn, so this swizzles it back and demands the
+:: same bytes.
+call tools\nvn_swizzle_test\build.bat
+if errorlevel 2 (
+    echo [nvn_swizzle_test] SETUP PROBLEM - MSVC not found; see the format_test note above.
+    exit /b 1
+) else if errorlevel 1 (
+    echo [nvn_swizzle_test] FAILED - the NVN texture layout is wrong; see above.
+    exit /b 1
+)
+
 :: The central hook manager. Verifies a three-deep chain by DECODING the
 :: instructions it emitted - call order, the prologue captured once and exactly,
 :: and each Original pointing where it should. It cannot execute PowerPC; the
