@@ -78,6 +78,7 @@ enum class Result : uint32_t {
     HookedWindow,     // overlaps the 16 bytes a hook has already displaced
     PatchOverlap,     // overlaps bytes another module already patched
     NoSlots,          // kMaxPatches already recorded
+    WriteFailed,      // the bytes were written and the target still disagrees
 };
 
 inline const char* ResultName(Result r) {
@@ -90,6 +91,7 @@ inline const char* ResultName(Result r) {
         case Result::HookedWindow:   return "HOOKED-WINDOW";
         case Result::PatchOverlap:   return "PATCH-OVERLAP";
         case Result::NoSlots:        return "NO-SLOTS";
+        case Result::WriteFailed:    return "WRITE-FAILED";
     }
     return "?";
 }
@@ -351,11 +353,75 @@ inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin
         return r;
     }
 
+#if WIIXL_SWITCH
+    // WRITING TO .text THROUGH .text IS NOT A WRITE.
+    //
+    // Horizon maps the game's code read-execute. A store to it either aborts on
+    // hardware or - under an emulator that does not enforce the permission -
+    // lands in memory while the recompiler goes on running the translation it
+    // already made of the ORIGINAL instruction. Both outcomes are silent, and
+    // the second is worse: the bytes read back correctly and the game behaves as
+    // if nothing was patched.
+    //
+    // That is what happened. A mod rewrote a `mov w1,#15` into `mov w1,#99`,
+    // this function logged "applied (origin verified)", and the HUD went on
+    // printing 15. The origin check happens BEFORE the store; nothing after it
+    // ever looked.
+    //
+    // exlaunch already solved this for its own patcher: a second, writable
+    // mapping of the same physical pages, made once at boot, plus a dcache
+    // flush and an icache invalidate so the CPU - or the recompiler's
+    // invalidation tracking - sees the new instruction. Hooks went through it
+    // all along, which is why hooks worked and raw patches did not.
+    {
+        const exl::util::RwPages& pages = exl::patch::impl::GetRwPages();
+        const uintptr_t ro = pages.GetRo();
+        const uintptr_t span = static_cast<uintptr_t>(pages.GetSize());
+        if (addr < ro || (addr - ro) > span || (addr - ro) + size > span) {
+            // The alias covers the module up to the end of .rodata. Past that
+            // there is nothing to write THROUGH, and writing to the plain
+            // address would be the silent non-write all over again.
+            impl::g_RefusedCount++;
+            WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - outside the writable "
+                      "alias of the game image", owner,
+                      ResultName(Result::BadTarget), where, size);
+            return Result::BadTarget;
+        }
+        uint8_t* rw = reinterpret_cast<uint8_t*>(pages.GetRw() + (addr - ro));
+        for (uint32_t i = 0; i < size; ++i) rw[i] = data[i];
+        pages.Flush();
+    }
+#else
     volatile uint8_t* at = reinterpret_cast<volatile uint8_t*>(addr);
     for (uint32_t i = 0; i < size; ++i) at[i] = data[i];
+#endif
 #if WIIXL_CEMU
     Backend::FlushCache(addr, size);
 #endif
+
+    // READ IT BACK, THROUGH THE ADDRESS THE CPU EXECUTES.
+    //
+    // Not through whatever alias the write used - the point is to ask the same
+    // mapping the game runs from whether it changed. Every earlier check in
+    // this function tests whether the patch is ALLOWED; this is the only one
+    // that tests whether it HAPPENED, and its absence is what let a patch that
+    // did nothing report success for as long as this code has existed.
+    {
+        const volatile uint8_t* check =
+            reinterpret_cast<const volatile uint8_t*>(addr);
+        for (uint32_t i = 0; i < size; ++i) {
+            if (check[i] == data[i]) continue;
+            impl::g_RefusedCount++;
+            WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - wrote %02X %02X %02X "
+                      "%02X, target still reads %02X %02X %02X %02X",
+                      owner, ResultName(Result::WriteFailed), where, size,
+                      data[0], data[1], data[2], data[3],
+                      check[0], check[1], check[2], check[3]);
+            WIIXL_LOG("Patch:   the store was accepted and did not take - the "
+                      "target is not writable through the mapping used");
+            return Result::WriteFailed;
+        }
+    }
 
     Applied& a = impl::g_Applied[impl::g_AppliedCount++];
     a.addr = addr;
