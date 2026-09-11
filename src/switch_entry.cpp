@@ -167,55 +167,85 @@ static void RunLoader() {
 // --- when RunLoader is called ----------------------------------------------
 //
 // exl_main is the earliest moment there is, and for a long time it was the only
-// one - the host runs before the game's own main, so hooks are installed and
+// one: the host runs before the game's own main, so hooks are installed and
 // declared patches applied before a single game instruction executes. That is
 // worth keeping wherever it works.
 //
-// IT DOES NOT WORK EVERYWHERE. nn::fs allocates through an allocator the
-// APPLICATION installs, in nninitStartup, and until then there is none. On
-// nnSdk 4.4.0 one was already in place by the time a subsdk ran; on 15.3.1 it
-// is not, and MountSdCardForDebug calls through a null pointer and dies inside
-// nn::fs::fsa::Register with "invalid memory access at 0x0". TOTK 1.2.1 does
-// exactly that.
+// IT DOES NOT WORK EVERYWHERE. nn::fs allocates through an allocator that is
+// installed during nnSdk's own init, and until then there is none. On nnSdk
+// 4.4.0 one was in place by the time a subsdk ran - which is why BotW has never
+// needed any of this. On 15.3.1 it is not, so MountSdCardForDebug calls through
+// a null pointer and dies inside nn::fs::fsa::Register before the loader has
+// read a byte. TOTK 1.2.1 does exactly that.
 //
-// AND WE MUST NOT INSTALL OUR OWN. The game imports nn::fs::SetAllocator and
-// calls it from nninitStartup; a second SetAllocator fails once the first has
-// been used, so winning that race means the game's own call fails instead.
+// WHY NOT "HOOK A GAME FUNCTION THAT RUNS LATER". That was the first attempt and
+// it silently did nothing. nninitStartup and nnMain exist in the game's module,
+// but at those addresses they are PLT THUNKS the game uses for its own calls -
+// nnSdk resolves the symbols through the dynamic table and jumps to the real
+// definitions, so a hook on the thunk is never reached. The log said "deferred"
+// and then nothing, for three minutes of gameplay.
 //
-// So a target that hits this names the function to defer to, and the host hooks
-// it: the original runs, the game installs its allocator, and the loader goes
-// immediately after - still before the game's main. Offset 0 keeps the old
-// behaviour, which is what every target that works today uses.
-static void (*s_OrigLoadPoint)() = nullptr;
+// So the trigger is a fact about the filesystem rather than a guess about the
+// game: the first time anything opens a file, fs works. That is true on every
+// SDK and in every title, and it needs no per-game offset.
+static void (*volatile s_OrigOpenFile)(void*, const char*, int) = nullptr;
+static bool s_LoadDone = false;
+static bool s_InLoader = false;
 
-static void DeferredLoadPoint() {
-    // ORIGINAL FIRST. The whole point of deferring here is what this call does
-    // - without it the filesystem is in exactly the state that crashed.
-    if (s_OrigLoadPoint) s_OrigLoadPoint();
-    RunLoader();
+extern "C" uint32_t WiiXLaunch_OpenFileHook(void* handle, const char* path, int mode) {
+    // THE GUARD IS NOT OPTIONAL. RunLoader opens .wxlm files, which comes
+    // straight back through here; without s_InLoader the first module read
+    // recurses until the stack ends.
+    if (!s_LoadDone && !s_InLoader) {
+        s_LoadDone = true;
+        s_InLoader = true;
+        WIIXL_LOG("[loader] filesystem is up (the game opened '%s') - loading now",
+                  path ? path : "?");
+        RunLoader();
+        s_InLoader = false;
+    }
+
+    auto orig = reinterpret_cast<uint32_t (*)(void*, const char*, int)>(s_OrigOpenFile);
+    return orig ? orig(handle, path, mode) : 1;
 }
 
 extern "C" void WiiXLaunch_SwitchLoadPoint() {
-    if constexpr (WiiXLaunch::Host::SwitchLoadPointOffset == 0) {
+    if constexpr (WiiXLaunch::Host::SwitchLoadPoint == 0) {
         RunLoader();
-    } else {
-        const uintptr_t target =
-            exl::util::modules::GetTargetOffset(WiiXLaunch::Host::SwitchLoadPointOffset);
-        s_OrigLoadPoint = reinterpret_cast<void (*)()>(
-            exl::hook::Hook(reinterpret_cast<void*>(target),
-                            reinterpret_cast<void*>(&DeferredLoadPoint), true));
-        WIIXL_LOG("[loader] deferred: modules load after the game's own +0x%x "
-                  "(%p), because this SDK has no filesystem before it. See "
-                  "load_point_offset in this host's target.",
-                  static_cast<uint32_t>(WiiXLaunch::Host::SwitchLoadPointOffset),
+        return;
+    }
+
+    // The address of an IMPORTED function, which in position-independent code
+    // is loaded from the GOT and is therefore nnSdk's real one - not this
+    // module's call stub. Checked below rather than trusted, because a stub
+    // would hook only our own calls and look exactly like success.
+    const uintptr_t target =
+        reinterpret_cast<uintptr_t>(&nn::fs::OpenFile);
+
+    const auto& self = exl::util::GetSelfModuleInfo().m_Total;
+    if (target >= self.m_Start && target < self.GetEnd()) {
+        WIIXL_LOG("[loader] nn::fs::OpenFile resolved to %p, which is inside THIS "
+                  "module - that is a call stub, not nnSdk. Loading now and "
+                  "accepting the risk rather than hooking something inert.",
                   reinterpret_cast<void*>(target));
-        if (!s_OrigLoadPoint) {
-            // Without the original there is no continuing the chain, and calling
-            // it is what makes the filesystem usable. Say so rather than loading
-            // into the same crash.
-            WIIXL_LOG("[loader] the hook returned no original - NOT loading, "
-                      "because the reason for deferring is what that call does.");
-        }
+        RunLoader();
+        return;
+    }
+
+    s_OrigOpenFile = reinterpret_cast<void (*)(void*, const char*, int)>(
+        exl::hook::Hook(reinterpret_cast<void*>(target),
+                        reinterpret_cast<void*>(&WiiXLaunch_OpenFileHook), true));
+
+    WIIXL_LOG("[loader] deferred (%s): modules load at the first file the game "
+              "opens. nn::fs::OpenFile is at %p; this SDK has no usable "
+              "filesystem before then.",
+              WiiXLaunch::Host::SwitchLoadPointName,
+              reinterpret_cast<void*>(target));
+
+    if (!s_OrigOpenFile) {
+        WIIXL_LOG("[loader] the hook returned no original - the game would lose "
+                  "every file it opens, so this host will NOT load modules.");
+        s_LoadDone = true;
     }
 }
 

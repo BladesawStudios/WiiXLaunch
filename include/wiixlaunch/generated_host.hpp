@@ -18,10 +18,11 @@ namespace WiiXLaunch::Host {
     // directory are already scoped to their title, and an SD card is not.
     constexpr char ModsDir[]     = "WiiXLaunch/mods/01007EF00011E000";
 
-    // 0 = load at exl_main, before the game's main. Non-zero = hook this offset
-    // in the game and load after the original runs, for an SDK where the
-    // filesystem is not usable that early. See the target's //load_point note.
-    constexpr unsigned long SwitchLoadPointOffset = 0x0;
+    // 0 = exl_main, before the game's main.
+    // 1 = the first file the game opens, for an SDK whose filesystem is not
+    //     usable that early. See the target's //load_point note.
+    constexpr int SwitchLoadPoint = 0;
+    constexpr char SwitchLoadPointName[] = "exl_main";
 
     // false: declared patches are verified and then RESTORED between LoadAll and
     // RunPhase, so the sample patch mod demonstrates its three outcomes without

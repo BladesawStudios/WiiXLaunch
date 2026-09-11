@@ -49,9 +49,23 @@ def generate_config(requested=None):
     # has no allocator until the application installs one, so on nnSdk 15.x the
     # first mount calls through a null pointer. A target that hits that names
     # the game function to defer to instead, and the host hooks it.
-    load_point_offset = switch_cfg.get("load_point_offset", "0x0")
-    if isinstance(load_point_offset, str):
-        load_point_offset = int(load_point_offset, 0)
+    # WHEN the Switch host loads modules.
+    #
+    #   exl_main   before the game's own main. The earliest there is, and right
+    #              wherever it works.
+    #   fs_ready   at the first file the GAME opens. nn::fs is unusable until
+    #              nnSdk installs its allocator during init, and on 15.x that is
+    #              after a subsdk runs - so the mount dies on a null pointer.
+    #              Waiting for a real file open is a fact about the filesystem
+    #              rather than a guess about which game function runs when.
+    load_point_names = {"exl_main": 0, "fs_ready": 1}
+    load_point = switch_cfg.get("load_point", "exl_main")
+    if load_point not in load_point_names:
+        sys.stderr.write(
+            "[ConfigGen] switch.load_point is %r; known values are %s\n"
+            % (load_point, ", ".join(sorted(load_point_names))))
+        sys.exit(1)
+    load_point_id = load_point_names[load_point]
 
     gen_dir = os.path.join(root_dir, "build", "generated")
     gen_inc_dir = os.path.join(gen_dir, "include", "program")
@@ -111,10 +125,11 @@ namespace WiiXLaunch::Host {{
     // directory are already scoped to their title, and an SD card is not.
     constexpr char ModsDir[]     = "WiiXLaunch/mods/{title_id.upper()}";
 
-    // 0 = load at exl_main, before the game's main. Non-zero = hook this offset
-    // in the game and load after the original runs, for an SDK where the
-    // filesystem is not usable that early. See the target's //load_point note.
-    constexpr unsigned long SwitchLoadPointOffset = {load_point_offset:#x};
+    // 0 = exl_main, before the game's main.
+    // 1 = the first file the game opens, for an SDK whose filesystem is not
+    //     usable that early. See the target's //load_point note.
+    constexpr int SwitchLoadPoint = {load_point_id};
+    constexpr char SwitchLoadPointName[] = "{load_point}";
 
     // false: declared patches are verified and then RESTORED between LoadAll and
     // RunPhase, so the sample patch mod demonstrates its three outcomes without
