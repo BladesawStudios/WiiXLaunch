@@ -545,7 +545,69 @@ inline bool WriteFile(const char* path, const void* buffer, size_t size, size_t*
         return true;
     }
     return false;
+#elif WIIXL_SWITCH
+    // ONE DESTINATION, NOT A SEARCH. Reading tries every candidate path because
+    // the file is somewhere and the question is where; writing must not, or the
+    // same call lands in a different place depending on what already exists.
+    // The SD form is the only one a host may write to.
+    {
+        char storage[3][256];
+        const char* candidates[4];
+        impl::Candidates(path, storage, candidates);
+
+        const char* dest = nullptr;
+        for (uint32_t i = 0; i < 4u && !dest; ++i) {
+            if (!candidates[i] || !candidates[i][0]) continue;
+            if (!impl::HasMountName(candidates[i])) continue;
+            dest = candidates[i];
+        }
+        if (!dest) {
+            WIIXL_LOG("WiiXLaunch: WriteFile has no mounted destination for '%s'",
+                      path);
+            return false;
+        }
+
+        // Already there is not an error - CreateFile refuses an existing path
+        // and SetFileSize below settles the length either way.
+        nn::fs::CreateFile(dest, static_cast<long>(size));
+
+        nn::fs::FileHandle handle{};
+        if (nn::fs::OpenFile(&handle, dest, nn::fs::OpenMode_Write) != 0) {
+            WIIXL_LOG("WiiXLaunch: WriteFile could not open '%s' for writing", dest);
+            return false;
+        }
+
+        // BEFORE THE WRITE. Writing from offset 0 over a longer file leaves the
+        // old tail past the new end, and for anything line-oriented - a config,
+        // a log - that tail still parses. This is what makes an overwrite an
+        // overwrite.
+        if (nn::fs::SetFileSize(handle, static_cast<long>(size)) != 0) {
+            WIIXL_LOG("WiiXLaunch: WriteFile could not set '%s' to %u B - refusing "
+                      "rather than leaving the old contents past the new end",
+                      dest, static_cast<uint32_t>(size));
+            nn::fs::CloseFile(handle);
+            return false;
+        }
+
+        const nn::fs::WriteOption opt =
+            nn::fs::WriteOption::CreateOption(nn::fs::WriteOptionFlag_Flush);
+        const bool ok = (nn::fs::WriteFile(handle, 0, buffer,
+                                           static_cast<unsigned long>(size), opt) == 0);
+        if (ok) nn::fs::FlushFile(handle);
+        nn::fs::CloseFile(handle);
+
+        if (!ok) {
+            WIIXL_LOG("WiiXLaunch: WriteFile failed writing %u B to '%s'",
+                      static_cast<uint32_t>(size), dest);
+            return false;
+        }
+        if (outWrittenSize) *outWrittenSize = size;
+        return true;
+    }
 #else
+    // Says so, rather than returning a false that reads as "the write failed".
+    WIIXL_LOG("WiiXLaunch: WriteFile is not implemented on this platform - '%s' "
+              "was not written", path);
     return false;
 #endif
 }

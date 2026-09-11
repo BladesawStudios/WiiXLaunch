@@ -73,6 +73,15 @@ ALLOWED_NN_IMPORTS = {
     "nn::fs::ReadDirectory(long*, nn::fs::DirectoryEntry*, "
     "nn::fs::DirectoryHandle, long)",
     "nn::fs::CloseDirectory(nn::fs::DirectoryHandle)",
+    # Writing, added when FS::WriteFile got a Switch branch. Every one of
+    # these was confirmed present in the game's own dynamic symbol table
+    # before being imported - an nn:: symbol that does not resolve aborts
+    # the process at load, before this host can say anything about it.
+    "nn::fs::CreateFile(char const*, long)",
+    "nn::fs::WriteFile(nn::fs::FileHandle, long, void const*, unsigned long, "
+    "nn::fs::WriteOption const&)",
+    "nn::fs::FlushFile(nn::fs::FileHandle)",
+    "nn::fs::SetFileSize(nn::fs::FileHandle, long)",
     # exlaunch's own runtime linking, not ours.
     "nn::ro::detail::g_pAutoLoadList",
     "nn::ro::detail::g_LookupGlobalManualFunctionPointer",

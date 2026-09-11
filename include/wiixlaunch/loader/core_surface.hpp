@@ -247,7 +247,10 @@ extern "C" inline int32_t CoreModReadFile(const char* path, void* buffer,
 }
 
 extern "C" inline uint32_t CoreModFileExists(const char* path) {
-#if WIIXL_CEMU || WIIXL_WIIU
+// Switch was excluded from this guard while the body it guards - FS::File -
+// has worked there all along. Nothing about this code was platform-specific;
+// the #if was.
+#if WIIXL_CEMU || WIIXL_WIIU || WIIXL_SWITCH
     char full[WiiXLaunch::ModFS::kMaxScopedPath];
     if (WiiXLaunch::ModFS::Resolve(path, full) != WiiXLaunch::ModFS::PathResult::Ok) {
         return 0;
@@ -302,7 +305,8 @@ extern "C" inline int32_t CoreReadFile(const char* path, void* buffer, uint32_t 
 // Does a path exist and open? Cheap existence check that does not need a
 // buffer, for a mod deciding whether an optional asset is present.
 extern "C" inline uint32_t CoreFileExists(const char* path) {
-#if WIIXL_CEMU || WIIXL_WIIU
+// As above: FS::File opens on Switch, so this always could have.
+#if WIIXL_CEMU || WIIXL_WIIU || WIIXL_SWITCH
     WiiXLaunch::FS::File f;
     if (!f.Open(path)) return 0;
     const uint32_t size = f.Size();
