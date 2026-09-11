@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gfx v1.0, 21 symbol(s), from the surface's own table.
+// botw.gfx v1.1, 22 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gfx(IsGX2); }
 //     S::IsGX2(...);
 //
-// so a mod that uses two symbols imports two, not all 21.
+// so a mod that uses two symbols imports two, not all 22.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -21,6 +21,7 @@
 // a function-pointer alias cannot be spliced into a declarator without
 // moving the parameter's name inside the parens.
 using ModDrawFn = void (*)(uintptr_t cmdBuf, uintptr_t dstTexture, int32_t w, int32_t h);
+using ModInitFn = void (*)();
 
 extern "C" {
 extern uint32_t wiixl_import__botw_gfx__IsGX2(void);
@@ -31,6 +32,10 @@ extern uint32_t wiixl_import__botw_gfx__SupportsBatching(void);
 extern uint32_t wiixl_import__botw_gfx__SupportsBackdrop(void);
 extern uint32_t wiixl_import__botw_gfx__Init(void);
 extern uint32_t wiixl_import__botw_gfx__RegisterDraw(ModDrawFn fn);
+
+// Called once when the graphics device exists, or immediately if it already
+// does. One per module, like a draw callback.
+extern uint32_t wiixl_import__botw_gfx__OnInitialized(ModInitFn fn);
 extern uint32_t wiixl_import__botw_gfx__DrawCallbackCount(void);
 extern uint32_t wiixl_import__botw_gfx__CreateTexture(const void* rgba, uint32_t size, int32_t width, int32_t height, int32_t format);
 
@@ -74,11 +79,11 @@ extern uintptr_t wiixl_import__botw_gfx__AllocMEM1(uint32_t size, uint32_t align
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gfx@1.0 when packing,
+// added in a later minor should pass --require botw.gfx@1.1 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gfx {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 0;
+inline constexpr unsigned kVersionMinor = 1;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call

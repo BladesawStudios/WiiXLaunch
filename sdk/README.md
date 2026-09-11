@@ -52,7 +52,7 @@ time it copies a struct.
 | `botw.events` | v1.0 |
 | `botw.flyt` | v1.0 |
 | `botw.gamedata` | v1.3 |
-| `botw.gfx` | v1.0 |
+| `botw.gfx` | v1.1 |
 | `botw.gui` | v1.1 |
 | `botw.input` | v1.1 |
 | `botw.map` | v1.1 |
