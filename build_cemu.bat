@@ -150,6 +150,24 @@ if errorlevel 2 (
     exit /b 1
 )
 
+:: sqrt, sin and cos for modules. A .wxlm has no libm, so include/wiixlaunch/
+:: mod_math.h writes them out - and an approximation nobody measured is just a
+:: wrong answer with good manners. This sweeps a million points against the
+:: host's libm and asserts the bounds the header quotes.
+::
+:: It has already earned its place twice: cos was 1.7e-6 out at large angles
+:: because it added pi/2 in float before reducing, and the first version of the
+:: test compared our float input against libm's double one, so every number it
+:: printed was the cast rather than the code. Neither is visible by reading.
+call tools\mathtest\build.bat
+if errorlevel 2 (
+    echo [mathtest] SETUP PROBLEM - MSVC not found; see the format_test note above.
+    exit /b 1
+) else if errorlevel 1 (
+    echo [mathtest] FAILED - mod_math.h is outside its stated bounds; see above.
+    exit /b 1
+)
+
 :: The central hook manager. Verifies a three-deep chain by DECODING the
 :: instructions it emitted - call order, the prologue captured once and exactly,
 :: and each Original pointing where it should. It cannot execute PowerPC; the

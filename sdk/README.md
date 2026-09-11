@@ -39,6 +39,13 @@ calls to them even under -ffreestanding, nothing else defines them, and the
 link succeeds anyway - so without this a module branches to address 0 the first
 time it copies a struct.
 
+`mod_math.h` gives you `WiiXLaunch::ModMath::Sqrt`, `Sin` and `Cos`. There is no
+`<cmath>` under -ffreestanding and no libm to link, so these are written out and
+their error is measured rather than assumed: 7.1e-08 relative for sqrt, 2.2e-07
+absolute for sin and cos over +/- 100 radians. They deliberately do NOT install
+themselves into `namespace std`; a mod ported from `<cmath>` changes its call
+sites, which is a handful of lines and says plainly which one is running.
+
 ## What this SDK was cut from
 
 24 surfaces:

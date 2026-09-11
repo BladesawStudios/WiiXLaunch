@@ -53,6 +53,10 @@ tools/net_test/net_test.exe
 tools/net_test/net_test.obj
 tools/net_test/net_test
 
+tools/mathtest/mathtest.exe
+tools/mathtest/mathtest
+tools/mathtest/*.obj
+
 # Editor configuration, written by build_mod.py next to whatever it builds.
 # It is derived from the exact compile command, which makes it correct and
 # makes it MACHINE-SPECIFIC: absolute paths to this checkout and to wherever

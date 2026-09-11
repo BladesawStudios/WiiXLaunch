@@ -78,6 +78,12 @@ python3 scripts/make_sdk.py --check --verify
 # scripts/audit_gates.py.
 bash tools/format_test/build.sh
 
+# sqrt, sin and cos for modules: a .wxlm has no libm, so mod_math.h writes them
+# out, and an approximation nobody measured is a wrong answer with good manners.
+# A million points against the host's libm, asserting the bounds the header
+# quotes. It caught a 1.7e-6 error in cos at large angles that reading could not.
+bash tools/mathtest/build.sh
+
 # The central hook manager: a three-deep chain verified by decoding the
 # instructions it emitted. Construction, not execution - the boot proves that.
 bash tools/hook_test/build.sh

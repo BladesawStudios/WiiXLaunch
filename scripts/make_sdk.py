@@ -17,6 +17,7 @@ A .wxlm needs three scripts and a set of headers. That is the whole dependency:
         scripts/wxlm_mod.ld      linked at 0, keeps .init_array
         include/wiixlaunch/imports/*.h   one per surface, generated
         include/wiixlaunch/mod_runtime.h memcpy and friends
+        include/wiixlaunch/mod_math.h    sqrt, sin, cos
         sdk.json                 which host this was cut from
         README.md
 
@@ -74,7 +75,12 @@ HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h"),
            # The host's own formatter, shared rather than reimplemented - a mod
            # gets %p and %.2f and the 23 cases in tools/format_test that guard
            # them. mod_log.h includes it.
-           os.path.join("wiixlaunch", "format.hpp")]
+           os.path.join("wiixlaunch", "format.hpp"),
+           # sqrt, sin and cos. A mod doing anything three-dimensional needs
+           # them, <cmath> is not available freestanding, and libm is not
+           # linked - so without this the mod either does not compile or, worse,
+           # links to nothing. Bounds measured by tools/mathtest.
+           os.path.join("wiixlaunch", "mod_math.h")]
 IMPORTS = os.path.join("include", "wiixlaunch", "imports")
 
 # A module built with the SDK is refused by a host whose surfaces have moved on
@@ -159,6 +165,13 @@ generated from the host's own tables so it cannot be wrong.
 calls to them even under -ffreestanding, nothing else defines them, and the
 link succeeds anyway - so without this a module branches to address 0 the first
 time it copies a struct.
+
+`mod_math.h` gives you `WiiXLaunch::ModMath::Sqrt`, `Sin` and `Cos`. There is no
+`<cmath>` under -ffreestanding and no libm to link, so these are written out and
+their error is measured rather than assumed: 7.1e-08 relative for sqrt, 2.2e-07
+absolute for sin and cos over +/- 100 radians. They deliberately do NOT install
+themselves into `namespace std`; a mod ported from `<cmath>` changes its call
+sites, which is a handful of lines and says plainly which one is running.
 
 ## What this SDK was cut from
 
