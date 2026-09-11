@@ -1,4 +1,5 @@
-// The four functions every non-trivial .wxlm needs and cannot get anywhere.
+// The handful of functions every non-trivial .wxlm needs and cannot get
+// anywhere.
 //
 // A module is compiled -ffreestanding -nostdlib, so nothing defines memcpy.
 // GCC does not care: it SYNTHESISES calls to memcpy, memset, memmove and memcmp
@@ -69,6 +70,38 @@ inline int memcmp(const void* a, const void* b, size_t n) {
     const uint8_t* y = static_cast<const uint8_t*>(b);
     for (size_t i = 0; i < n; ++i) {
         if (x[i] != y[i]) return static_cast<int>(x[i]) - static_cast<int>(y[i]);
+    }
+    return 0;
+}
+
+// strcmp and strncmp, which <cstring> DECLARES and nothing defines.
+//
+// Not synthesised by the compiler the way memcpy is - a module has to call
+// these by name - but the ending is identical: <cstring> is available under
+// -ffreestanding, so `std::strcmp` compiles, and the link lets it stay
+// undefined. AIPuppet calls strcmp seventeen times to compare BotW AI state
+// names, and every one of them would have branched to 0.
+//
+// UNSIGNED CHAR. The sign of the result is the entire contract, and on a
+// target where plain char is signed - PowerPC is the other way, AArch64 this
+// way - comparing as char makes any byte over 0x7F sort BELOW ASCII. Actor
+// names are ASCII today; the first UTF-8 one would invert a comparison
+// silently.
+__attribute__((used))
+inline int strcmp(const char* a, const char* b) {
+    const unsigned char* x = reinterpret_cast<const unsigned char*>(a);
+    const unsigned char* y = reinterpret_cast<const unsigned char*>(b);
+    while (*x && *x == *y) { ++x; ++y; }
+    return static_cast<int>(*x) - static_cast<int>(*y);
+}
+
+__attribute__((used))
+inline int strncmp(const char* a, const char* b, size_t n) {
+    const unsigned char* x = reinterpret_cast<const unsigned char*>(a);
+    const unsigned char* y = reinterpret_cast<const unsigned char*>(b);
+    for (size_t i = 0; i < n; ++i) {
+        if (x[i] != y[i]) return static_cast<int>(x[i]) - static_cast<int>(y[i]);
+        if (!x[i]) break;               // both ended; the rest of n is not read
     }
     return 0;
 }
