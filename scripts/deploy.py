@@ -132,7 +132,14 @@ def main():
     # beside atmosphere/ rather than under it: copy deploy/switch/ to the card
     # and both land where they belong.
     switch_mods_src = os.path.join(root_dir, "build", "switch-mods")
-    switch_mods_dst = os.path.join(deploy_dir, "switch", "WiiXLaunch", "mods")
+    # PER TITLE. sd:/WiiXLaunch/mods is one directory for every game on the
+    # card - a graphic pack names its titleIds and a Wii U content folder
+    # belongs to its game, but an SD card has no such scoping, so two games'
+    # modules land together and each host is offered both. The host prefers
+    # this subdirectory and falls back to the flat one only when it is absent,
+    # so writing here is what opts a card in.
+    switch_mods_dst = os.path.join(deploy_dir, "switch", "WiiXLaunch", "mods",
+                                   switch_title_id)
     os.makedirs(switch_mods_dst, exist_ok=True)
     switch_modules = sorted(f for f in os.listdir(switch_mods_src)
                             if f.endswith(".wxlm")) if os.path.isdir(switch_mods_src) else []
@@ -146,8 +153,9 @@ def main():
             print(f"[Switch] Removed stale module {old_name}")
 
     if switch_modules:
-        print(f"[Switch] {len(switch_modules)} module(s) -> WiiXLaunch/mods/ on the SD "
-              f"card, in the lexical order the loader will load them:")
+        print(f"[Switch] {len(switch_modules)} module(s) -> "
+              f"WiiXLaunch/mods/{switch_title_id}/ on the SD card, in the lexical "
+              f"order the loader will load them:")
         for i, name in enumerate(switch_modules, 1):
             src = os.path.join(switch_mods_src, name)
             shutil.copy2(src, os.path.join(switch_mods_dst, name))
@@ -168,7 +176,8 @@ def main():
                     shutil.rmtree(dst_dir)
                 shutil.copytree(src_dir, dst_dir)
                 files = sum(len(f) for _r, _d, f in os.walk(dst_dir))
-                print(f"[Switch]   resources -> WiiXLaunch/mods/{mod_id}/ "
+                print(f"[Switch]   resources -> "
+                      f"WiiXLaunch/mods/{switch_title_id}/{mod_id}/ "
                       f"({files} file(s))")
     else:
         print("[Switch] No .wxlm in build/switch-mods/ - the SD card gets no modules. "

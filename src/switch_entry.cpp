@@ -20,6 +20,7 @@
 #include <wiixlaunch/loader/loader.hpp>
 // Host::PatchesPersist - whether declared patches outlive the load.
 #include <wiixlaunch/generated_host.hpp>
+#include <wiixlaunch/mod_fs.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/surface.hpp>
 #include <wiixlaunch/loader/arena.hpp>
@@ -95,7 +96,40 @@ extern "C" void WiiXLaunch_SwitchLoadPoint() {
 
     // Lexical filename order, which is also hook priority - a specification
     // rather than an enumeration artefact. See docs/loader.md.
-    const uint32_t loaded = WiiXLaunch::Loader::LoadAll("WiiXLaunch/mods");
+    // PER-TITLE FIRST, SHARED AS A FALLBACK.
+    //
+    // sd:/WiiXLaunch/mods is one directory for every game on the card. Cemu's
+    // equivalent lives inside a graphic pack that names its titleIds and Wii U's
+    // lives in the game's own content, so both are already scoped; an SD card
+    // is not. Two games' modules therefore land in the same folder and each
+    // game's host tries to load both.
+    //
+    // Most crossovers are already refused by name: a module needing a game
+    // surface this host does not publish, a declared patch whose origin bytes
+    // are not there, a runtime patch likewise. A module that needs only the
+    // base surfaces and HOOKS RAW OFFSETS is refused by nothing - and that is
+    // exactly the shape of a mod for a game with no module yet.
+    //
+    // The fallback is deliberate rather than tidy: an existing card keeps
+    // working untouched, and creating the per-title directory is how you opt
+    // in. Which one was used is logged either way, because a host silently
+    // reading a different directory than you think is worse than either.
+    const char* modsDir = WiiXLaunch::Host::ModsDir;
+    if (WiiXLaunch::Loader::impl::DirectoryExists(modsDir)) {
+        WIIXL_LOG("[loader] mods directory: %s (this title only)", modsDir);
+    } else {
+        modsDir = "WiiXLaunch/mods";
+        WIIXL_LOG("[loader] mods directory: %s - SHARED BY EVERY GAME on this "
+                  "card, because %s does not exist. A module built for another "
+                  "game will be offered to this host.",
+                  modsDir, WiiXLaunch::Host::ModsDir);
+    }
+
+    // ModFS follows, so a module's own files are found beside the module that
+    // was actually loaded rather than wherever a constant said.
+    WiiXLaunch::ModFS::SetRoot(modsDir);
+
+    const uint32_t loaded = WiiXLaunch::Loader::LoadAll(modsDir);
 
     // Declared patches are applied during the loads above; they are verified
     // and put back HERE, between LoadAll and RunPhase, so no module code runs

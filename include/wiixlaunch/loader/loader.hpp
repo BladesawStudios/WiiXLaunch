@@ -1155,6 +1155,36 @@ inline nn::fs::DirectoryEntry g_DirEntry;
 // path list: a directory that resolves differently from the files inside it is
 // a bug with no symptom until something enumerates, and that has happened once
 // already on Cemu.
+// Does this directory exist at all?
+//
+// Distinct from "it enumerated nothing", which is the ambiguity this codebase
+// keeps removing. The Switch host chooses between a per-title mods directory
+// and the shared one, and "the per-title folder is empty" must not read as
+// "the per-title folder is absent": one is a user who has installed nothing
+// there yet, the other is a user who has not opted in.
+inline bool DirectoryExists(const char* dir) {
+    if (!dir || !dir[0]) return false;
+    if (!FS::impl::EnsureFSClient()) return false;
+
+    char storage[3][256];
+    const char* candidates[4];
+    FS::impl::Candidates(dir, storage, candidates);
+
+    for (uint32_t c = 0; c < 4u; ++c) {
+        if (!candidates[c] || !candidates[c][0]) continue;
+        // A path with no mount name does not fail, it ABORTS - see
+        // FS::impl::HasMountName.
+        if (!FS::impl::HasMountName(candidates[c])) continue;
+        nn::fs::DirectoryHandle handle{};
+        if (nn::fs::OpenDirectory(&handle, candidates[c],
+                                  nn::fs::OpenDirectoryMode_File) == 0) {
+            nn::fs::CloseDirectory(handle);
+            return true;
+        }
+    }
+    return false;
+}
+
 inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t cap) {
     if (!FS::impl::EnsureFSClient()) {
         WIIXL_LOG("[loader] cannot enumerate %s - the SD card is not mounted", dir);

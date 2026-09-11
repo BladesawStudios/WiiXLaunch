@@ -57,6 +57,28 @@ namespace WiiXLaunch::ModFS {
 // directory too; a module's resources sit in a subdirectory named for its id.
 constexpr const char* kModsRoot = "WiiXLaunch/mods";
 
+// ...and where it ACTUALLY lives this boot, which on Switch may be a per-title
+// subdirectory of that.
+//
+// sd:/WiiXLaunch/mods is one folder shared by every game on the card, because a
+// Switch SD card has no per-title place for a host's own files - unlike Cemu,
+// where the mods directory sits inside a graphic pack that names its titleIds,
+// and Wii U, where it sits in the game's own content. So two games' modules
+// land in the same directory and each game's host tries to load both.
+//
+// Most crossovers are already refused: a mod needing a game surface is refused
+// by name, and a patch is refused because the bytes it expects are not there.
+// A mod that only needs the base surfaces and HOOKS RAW OFFSETS is refused by
+// nothing, and that is the common shape for a game with no module yet.
+//
+// The loader therefore prefers WiiXLaunch/mods/<titleid>/ and this follows it,
+// so a module's own files are found beside the module that was actually loaded
+// rather than in whichever directory the constant happened to name.
+inline const char* g_Root = kModsRoot;
+
+inline void SetRoot(const char* root) { if (root && *root) g_Root = root; }
+inline const char* Root() { return g_Root; }
+
 // The host's own resources live under a reserved id rather than beside the
 // mods directory, so the scheme has no exception. An exception is how someone
 // later concludes the scheme is optional.
@@ -137,7 +159,7 @@ inline PathResult CheckScoped(const char* path) {
     }
 
     // "<root>/<id>/<path>" plus separators and a terminator.
-    const uint32_t rootLen = impl::Len(kModsRoot);
+    const uint32_t rootLen = impl::Len(Root());
     const char* id = ModContext::Current();
     const uint32_t idLen = impl::Len(id ? id : "");
     if (rootLen + 1u + idLen + 1u + n + 1u > kMaxScopedPath) return PathResult::TooLong;
@@ -160,7 +182,7 @@ inline PathResult Resolve(const char* path, char* out) {
     if (r != PathResult::Ok) return r;
 
     uint32_t n = 0;
-    for (const char* p = kModsRoot; *p && n + 1 < kMaxScopedPath; ++p) out[n++] = *p;
+    for (const char* p = Root(); *p && n + 1 < kMaxScopedPath; ++p) out[n++] = *p;
     if (n + 1 < kMaxScopedPath) out[n++] = '/';
     for (const char* p = id; *p && n + 1 < kMaxScopedPath; ++p) out[n++] = *p;
     if (n + 1 < kMaxScopedPath) out[n++] = '/';
@@ -172,7 +194,7 @@ inline PathResult Resolve(const char* path, char* out) {
 // The host's own resource directory, for host code rather than for a mod.
 inline void HostPath(const char* path, char* out) {
     uint32_t n = 0;
-    for (const char* p = kModsRoot; *p && n + 1 < kMaxScopedPath; ++p) out[n++] = *p;
+    for (const char* p = Root(); *p && n + 1 < kMaxScopedPath; ++p) out[n++] = *p;
     if (n + 1 < kMaxScopedPath) out[n++] = '/';
     for (const char* p = kHostId; *p && n + 1 < kMaxScopedPath; ++p) out[n++] = *p;
     if (n + 1 < kMaxScopedPath) out[n++] = '/';

@@ -91,6 +91,15 @@ namespace WiiXLaunch::Host {{
     constexpr char TargetName[]  = "{target_name}";
     constexpr char ProjectName[] = "{proj_name}";
 
+    // Uppercase, because that is how Atmosphere spells a title id on disk and
+    // the Switch host builds an SD path out of this.
+    constexpr char TitleId[]     = "{title_id.upper()}";
+
+    // sd:/WiiXLaunch/mods/<TitleId>, which is where this host looks first. One
+    // SD card holds every game's modules; a graphic pack and a Wii U content
+    // directory are already scoped to their title, and an SD card is not.
+    constexpr char ModsDir[]     = "WiiXLaunch/mods/{title_id.upper()}";
+
     // false: declared patches are verified and then RESTORED between LoadAll and
     // RunPhase, so the sample patch mod demonstrates its three outcomes without
     // outliving its own boot.

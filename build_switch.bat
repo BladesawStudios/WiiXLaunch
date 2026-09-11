@@ -135,7 +135,7 @@ if exist "%RYUJINX_MOD_EXEFS%" (
 :: The delete is not tidiness. The loader enumerates the directory, so a module
 :: left from an older build is one the next boot LOADS.
 set RYUJINX_SD=%APPDATA%\Ryujinx\sdcard
-set RYUJINX_SD_MODS=%RYUJINX_SD%\WiiXLaunch\mods
+set RYUJINX_SD_MODS=%RYUJINX_SD%\WiiXLaunch\mods\%TITLE_ID%
 if exist "%RYUJINX_SD%" (
     if not exist "%RYUJINX_SD_MODS%" mkdir "%RYUJINX_SD_MODS%"
     del /q "%RYUJINX_SD_MODS%\*.wxlm" 2>nul
@@ -144,7 +144,7 @@ if exist "%RYUJINX_SD%" (
     rem files it reads. "rem" and not "::" because a :: label inside a
     rem parenthesised if block is a cmd parse error, which is how this
     rem announced itself: "and was unexpected at this time".
-    xcopy /e /i /y /q "deploy\switch\WiiXLaunch\mods" "%RYUJINX_SD_MODS%" > nul
+    xcopy /e /i /y /q "deploy\switch\WiiXLaunch\mods\%TITLE_ID%" "%RYUJINX_SD_MODS%" > nul
     echo Copied modules to Ryujinx SD card: %RYUJINX_SD_MODS%
 )
 
