@@ -69,7 +69,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # is one you cannot notice from inside the tree that has it.
 SCRIPTS = ["build_mod.py", "wxlm.py", "ppc_relocs.py", "aarch64_relocs.py",
            "wxlm_mod.ld", "wxlm_mod_aarch64.ld"]
-HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h")]
+HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h"),
+           os.path.join("wiixlaunch", "mod_log.h"),
+           # The host's own formatter, shared rather than reimplemented - a mod
+           # gets %p and %.2f and the 23 cases in tools/format_test that guard
+           # them. mod_log.h includes it.
+           os.path.join("wiixlaunch", "format.hpp")]
 IMPORTS = os.path.join("include", "wiixlaunch", "imports")
 
 # A module built with the SDK is refused by a host whose surfaces have moved on

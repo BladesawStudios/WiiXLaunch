@@ -19,7 +19,13 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HEADER = os.path.normpath(os.path.join(HERE, "..", "..", "include", "wiixlaunch", "debug_log.hpp"))
+# format.hpp, not debug_log.hpp. The formatter moved into its own header so
+# that a .wxlm could use it too - a module cannot include debug_log.hpp,
+# which reaches for the ring buffer and OSReport. The extraction still
+# happens rather than the test just #including the header, because the test
+# must compile it with NO WiiXLaunch include path at all: that is what
+# proves it is freestanding, which is the property a module depends on.
+HEADER = os.path.normpath(os.path.join(HERE, "..", "..", "include", "wiixlaunch", "format.hpp"))
 
 
 def main():
@@ -35,7 +41,7 @@ def main():
         close = next(i for i in range(fmt + 1, len(lines)) if lines[i] == "}")
     except StopIteration:
         sys.stderr.write(
-            "could not locate 'namespace impl {' .. FormatText in debug_log.hpp.\n"
+            "could not locate 'namespace impl {' .. FormatText in format.hpp.\n"
             "If that header was restructured, update the markers here.\n")
         return 1
 
@@ -52,7 +58,7 @@ def main():
     missing = [n for n in required if n not in body]
     if missing:
         sys.stderr.write(
-            "extracted %d lines from debug_log.hpp but they do not contain: %s\n"
+            "extracted %d lines from format.hpp but they do not contain: %s\n"
             "The 'namespace impl {' .. FormatText markers no longer describe the\n"
             "file. Update them here rather than shipping a partial extraction.\n"
             % (close - start + 1, ", ".join(missing)))
@@ -84,7 +90,7 @@ def main():
 
     dst = os.path.join(HERE, "formatter_extract.hpp")
     io.open(dst, "w", encoding="utf-8").write(out)
-    print("[format_test] extracted %d lines of debug_log.hpp -> formatter_extract.hpp "
+    print("[format_test] extracted %d lines of format.hpp -> formatter_extract.hpp "
           "(%d required symbols present)" % (close - start + 1, len(required)))
     return 0
 
