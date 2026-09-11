@@ -30,6 +30,22 @@
 #include <coreinit/filesystem.h>
 #elif WIIXL_SWITCH
 #include <nn/fs.hpp>
+
+// ONE BINDING EXLAUNCH DOES NOT SHIP, DECLARED HERE RATHER THAN THERE.
+//
+// vendor/exlaunch is upstream (shadowninja108/exlaunch), not a fork of ours,
+// so an edit inside it is an edit a clean clone does not have - the build
+// would fail for anyone else and pass here. A declaration costs nothing to
+// keep on our side: the symbol is resolved from nnSdk at load either way.
+//
+// SetFileSize(FileHandle, long) is confirmed present in the game's own
+// dynamic symbol table as _ZN2nn2fs11SetFileSizeENS0_10FileHandleEl. It is
+// what makes an overwrite shorter than the old file actually shorter; see
+// WriteFile below.
+namespace nn::fs {
+Result SetFileSize(FileHandle handle, s64 size);
+}
+
 #endif
 
 namespace WiiXLaunch::FS {
