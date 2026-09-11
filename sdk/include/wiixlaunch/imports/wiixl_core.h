@@ -72,6 +72,19 @@ extern uint32_t wiixl_import__wiixl_core__HeapRemaining(void);
 // Returns the address to call to continue the chain, or 0 if the hook was
 // refused. A mod that ignores the return value and never calls it has replaced
 // the function, which is legal and reported.
+//
+// THE SAME PLATFORM DISPATCH THE HOST USES, which this did not do.
+//
+// hook.hpp's InstallVia has always chosen per platform: the chain manager on
+// Cemu, exlaunch on Switch, WUPS on Wii U - because Hooks::InstallHook emits
+// PowerPC, and because its trampoline pool and cache flush are #if WIIXL_CEMU
+// with the host-TEST fallback underneath. This function called the chain
+// manager directly on every platform, so a module got the one path that cannot
+// work anywhere but Cemu while the host beside it took the right one.
+//
+// On Switch that wrote `lis/ori/mtctr/bctr` into aarch64 code and the game died
+// on 0x618C64B4. On Wii U it would have built trampolines in a non-executable
+// static array and flushed nothing - the same bug, wearing the right ISA.
 extern uintptr_t wiixl_import__wiixl_core__InstallHook(uintptr_t target, uintptr_t callback);
 extern uintptr_t wiixl_import__wiixl_core__HookProbeTarget(void);
 extern uint32_t wiixl_import__wiixl_core__HookProbeClaimTag(uint32_t tag);
