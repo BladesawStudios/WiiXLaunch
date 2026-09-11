@@ -421,21 +421,30 @@ Everything above assumes you have this repo. A mod author does not need it.
 python scripts/make_sdk.py build/sdk
 ```
 
-cuts a self-contained SDK - 31 files, no submodules, no game headers, no host
-source:
+cuts a self-contained SDK - no submodules, no game headers, no host source.
+`make_sdk` prints how many files it wrote, so that number lives in one place
+rather than here as well:
 
 ```
 sdk/
-    scripts/build_mod.py   wxlm.py   ppc_relocs.py   wxlm_mod.ld
+    scripts/build_mod.py   wxlm.py
+            ppc_relocs.py       wxlm_mod.ld           PowerPC
+            aarch64_relocs.py   wxlm_mod_aarch64.ld   AArch64
     include/wiixlaunch/imports/*.h        one per surface, generated
     include/wiixlaunch/mod_runtime.h      memcpy and friends
+    include/wiixlaunch/mod_log.h          WIIXL_LOG
+    include/wiixlaunch/mod_math.h         sqrt, sin, cos - there is no libm
+    include/wiixlaunch/mod_config.h       the key = value settings reader
+    include/wiixlaunch/format.hpp         the .wxlm layout
+    include/wiixlaunch/patch_decl.hpp     WIIXL_DECLARE_PATCH
     sdk.json  README.md                   which host this was cut from
 ```
 
-Hand that to someone with devkitPPC and they build with:
+Hand that to someone with devkitPro and they build with:
 
 ```
 python sdk/scripts/build_mod.py --source their_mod
+python sdk/scripts/build_mod.py --source their_mod --target switch
 ```
 
 `build_mod.py` derives its root from its own location, so nothing needs
