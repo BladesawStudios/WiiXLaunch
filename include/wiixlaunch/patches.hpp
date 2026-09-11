@@ -389,7 +389,14 @@ inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin
         }
         uint8_t* rw = reinterpret_cast<uint8_t*>(pages.GetRw() + (addr - ro));
         for (uint32_t i = 0; i < size; ++i) rw[i] = data[i];
-        pages.Flush();
+
+        // Flush the DATA side where it was written, invalidate the INSTRUCTION
+        // side where it runs - two mappings of one set of physical pages, and
+        // the two caches do not see each other. RwPages::Flush() would do both
+        // over the whole claim, which for TOTK is the better part of 74 MB of
+        // cache maintenance per four-byte patch.
+        armDCacheFlush(rw, size);
+        armICacheInvalidate(reinterpret_cast<void*>(addr), size);
     }
 #else
     volatile uint8_t* at = reinterpret_cast<volatile uint8_t*>(addr);
