@@ -18,6 +18,8 @@
 
 #include <wiixlaunch/debug_log.hpp>
 #include <wiixlaunch/loader/loader.hpp>
+// Host::PatchesPersist - whether declared patches outlive the load.
+#include <wiixlaunch/generated_host.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/surface.hpp>
 #include <wiixlaunch/loader/arena.hpp>
@@ -100,10 +102,17 @@ extern "C" void WiiXLaunch_SwitchLoadPoint() {
     // while the game is modified. Same ordering as the other two platforms, and
     // it was wrong on Cemu once with the boot log to prove it.
     //
-    // A host shipping REAL patch mods must delete the RestoreAll call; a patch
-    // is meant to persist.
+    // WHETHER THEY STAY IS A SETTING NOW - patches.persist in the target's
+    // config, which is how a host says it ships real patch mods rather than the
+    // sample. This used to be a comment asking you to delete the call, and a
+    // comment telling you to edit code is a setting nobody has written down.
     WiiXLaunch::Patches::VerifyApplied();
-    WiiXLaunch::Patches::RestoreAll();
+    if constexpr (!WiiXLaunch::Host::PatchesPersist) {
+        WiiXLaunch::Patches::RestoreAll();
+    } else {
+        WIIXL_LOG("Patch: this host keeps declared patches (patches.persist), so "
+                  "they are verified and LEFT IN PLACE");
+    }
     WiiXLaunch::Patches::LogState();
 
     if (loaded != 0) {

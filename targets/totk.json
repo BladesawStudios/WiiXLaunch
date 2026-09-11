@@ -1,0 +1,45 @@
+{
+  "project": {
+    "name": "WiiXLaunch_TotK",
+    "version": "1.0.0",
+    "author": "Mindstormman",
+    "description": "WiiXLaunch host for Tears of the Kingdom 1.2.1",
+    "debug": true
+  },
+  "memory": {
+    "heap_size": "0x50000",
+    "jit_size": "0x10000",
+    "inline_pool_size": "0x10000",
+    "log_buffer_size": 512
+  },
+  "modules": [],
+  "patches": {
+    "persist": true
+  },
+  "switch": {
+    "title_id": "0100F2C0115B6000",
+    "title_id_range_min": "0x0100F2C0115B6000",
+    "title_id_range_max": "0x0100F2C0115B6000",
+    "subsdk_name": "subsdk9",
+    "load_kind": "Module",
+    "system_resource_size": "0x01000000",
+    "optimize_memory_allocation": true,
+    "extra_service_access": [
+      "ectx:aw",
+      "mnpp:app",
+      "ngct:u",
+      "notif:a"
+    ],
+    "main_thread_stack_size": "0x00100000",
+    "main_thread_priority": 44,
+    "default_cpu_id": 0,
+    "mount_path": "/mnt/sdcard",
+    "//": "system_resource_size and extra_service_access must match TOTK 1.2.1's own main.npdm - the game's memory init fails at boot if the size is 0, and exlaunch's generic service list omits four that TOTK grants itself."
+  },
+  "wiiu": {
+    "//": "There is no Wii U Tears of the Kingdom. Nothing to build."
+  },
+  "cemu": {
+    "//": "Cemu runs Wii U titles. Nothing to build."
+  }
+}

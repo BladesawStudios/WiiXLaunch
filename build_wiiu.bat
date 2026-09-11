@@ -9,12 +9,12 @@ python scripts\generate_config.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: The plugin filename lives in exactly one place - wiiu.plugin_name in
-:: wiixlaunch.json - and is read from there rather than repeated here. It feeds
+:: the active target in targets/ - and is read from there rather than repeated
 :: the Makefile's TARGET (passed on the command line below) and the copy step at
 :: the end; hardcoding it in either spot is how it drifts on a rename.
-for /f "usebackq delims=" %%i in (`python -c "import json;print(json.load(open('wiixlaunch.json'))['wiiu']['plugin_name'])"`) do set "WPS_NAME=%%i"
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py wiiu.plugin_name`) do set "WPS_NAME=%%i"
 if not defined WPS_NAME (
-    echo [WiiXLaunch] Could not read wiiu.plugin_name from wiixlaunch.json
+    echo [WiiXLaunch] Could not read wiiu.plugin_name from this target
     exit /b 1
 )
 :: Makefile's TARGET is the same name without the .wps extension

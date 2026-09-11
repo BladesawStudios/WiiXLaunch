@@ -1,6 +1,18 @@
 @echo off
 setlocal
 
+
+:: WHICH GAME THIS HOST IS FOR.
+::
+::   build_switch.bat            the default target
+::   build_switch.bat totk     targets/totk.json
+::
+:: Set before anything else runs, so generate_config and deploy cannot disagree
+:: about it - they both resolve through scripts/target.py and both print what
+:: they got. A build that silently picks a target is the same class of problem
+:: as a gate nothing invokes.
+if not "%~1"=="" set "WIIXL_TARGET=%~1"
+
 call scripts\devkitpro_env.bat
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
@@ -97,10 +109,21 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 :: setup that no longer exists, so the guard below was false on every
 :: build and the copy silently never happened. That is precisely the
 :: staleness the comment above was written about, one level up.
-set RYUJINX_MOD_EXEFS=%APPDATA%\Ryujinx\mods\contents\01007EF00011E000\WiiXLaunch\exefs
+:: THE TARGET'S TITLE ID, NOT A CONSTANT.
+::
+:: This was hardcoded to BotW. The first build of a second target therefore
+:: copied a TOTK subsdk9 over the BotW host, and the next BotW boot would have
+:: run it - a value repeated in two places is a value that will disagree with
+:: itself. It comes from the resolver the rest of the build used.
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py switch.title_id`) do set "TITLE_ID=%%i"
+if "%TITLE_ID%"=="" (
+    echo [WiiXLaunch] Could not read switch.title_id for this target
+    exit /b 1
+)
+set RYUJINX_MOD_EXEFS=%APPDATA%\Ryujinx\mods\contents\%TITLE_ID%\WiiXLaunch\exefs
 if exist "%RYUJINX_MOD_EXEFS%" (
-    copy /y "deploy\switch\atmosphere\contents\01007EF00011E000\exefs\subsdk9" "%RYUJINX_MOD_EXEFS%\subsdk9" > nul
-    copy /y "deploy\switch\atmosphere\contents\01007EF00011E000\exefs\main.npdm" "%RYUJINX_MOD_EXEFS%\main.npdm" > nul
+    copy /y "deploy\switch\atmosphere\contents\%TITLE_ID%\exefs\subsdk9" "%RYUJINX_MOD_EXEFS%\subsdk9" > nul
+    copy /y "deploy\switch\atmosphere\contents\%TITLE_ID%\exefs\main.npdm" "%RYUJINX_MOD_EXEFS%\main.npdm" > nul
     echo Copied to Ryujinx mods folder: %RYUJINX_MOD_EXEFS%
 )
 

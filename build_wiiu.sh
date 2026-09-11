@@ -12,12 +12,12 @@ echo "Generating config..."
 python3 scripts/generate_config.py
 
 # The plugin filename lives in exactly one place - wiiu.plugin_name in
-# wiixlaunch.json - and is read from there rather than repeated here. It feeds
+# the active target in targets/ - and is read from there rather than repeated
 # the Makefile's TARGET (passed on the command line below) and the copy step at
 # the end; hardcoding it in either spot is how it drifts on a rename.
-WPS_NAME=$(python3 -c "import json;print(json.load(open('wiixlaunch.json'))['wiiu']['plugin_name'])")
+WPS_NAME=$(python3 scripts/target_value.py wiiu.plugin_name)
 if [ -z "$WPS_NAME" ]; then
-    echo "[WiiXLaunch] Could not read wiiu.plugin_name from wiixlaunch.json"
+    echo "[WiiXLaunch] Could not read wiiu.plugin_name from this target"
     exit 1
 fi
 # Makefile's TARGET is the same name without the .wps extension

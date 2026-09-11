@@ -1,6 +1,18 @@
 @echo off
 setlocal enabledelayedexpansion
 
+
+:: WHICH GAME THIS HOST IS FOR.
+::
+::   build_cemu.bat            the default target
+::   build_cemu.bat totk       targets/totk.json
+::
+:: Set before anything else runs, so generate_config and deploy cannot disagree
+:: about it - they both resolve through scripts/target.py and both print what
+:: they got. A build that silently picks a target is the same class of problem
+:: as a gate nothing invokes.
+if not "%~1"=="" set "WIIXL_TARGET=%~1"
+
 call scripts\devkitpro_env.bat
 if %ERRORLEVEL% NEQ 0 exit /b 1
 

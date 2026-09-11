@@ -4,9 +4,14 @@ import json
 import os
 import re
 import shutil
+import argparse
+
 import sys
 import subprocess
 import struct
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import target as target_mod
 
 import ppc_relocs
 
@@ -42,14 +47,15 @@ def find_devkitppc_tool(name):
 
 def main():
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_path = os.path.join(root_dir, "wiixlaunch.json")
 
-    if not os.path.exists(config_path):
-        print(f"Error: Could not find config at {config_path}")
-        sys.exit(1)
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    # THE SAME RESOLVER THE BUILD USED. A deploy that picked its own config could
+    # package a TOTK payload into a BotW graphic pack and be entirely consistent
+    # with itself while doing it.
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--target", default=None,
+                    help="host target name; targets/<name>.json")
+    args = ap.parse_args()
+    _, config = target_mod.resolve(root_dir, args.target)
 
     project_name = config.get("project", {}).get("name", "Mod")
     switch_cfg = config.get("switch", {})
@@ -69,8 +75,22 @@ def main():
     cemu_deploy_dir = os.path.join(deploy_dir, "cemu", "graphicPacks", project_name)
 
     os.makedirs(switch_deploy_dir, exist_ok=True)
-    os.makedirs(wiiu_deploy_dir, exist_ok=True)
-    os.makedirs(cemu_deploy_dir, exist_ok=True)
+    # A TARGET NEED NOT HAVE EVERY PLATFORM. There is no Wii U Tears of the
+    # Kingdom, so a TOTK host that produced an Aroma plugin and a Cemu graphic
+    # pack would be producing two things that cannot run, and the operator would
+    # have to know to ignore them. A section containing nothing but "//" notes
+    # declares nothing, which is how targets/totk.json says so out loud instead
+    # of by omission.
+    def declares(section):
+        return any(not k.startswith("//") for k in config.get(section, {}))
+
+    want_wiiu = declares("wiiu")
+    want_cemu = declares("cemu")
+
+    if want_wiiu:
+        os.makedirs(wiiu_deploy_dir, exist_ok=True)
+    if want_cemu:
+        os.makedirs(cemu_deploy_dir, exist_ok=True)
 
     print("==========================================")
     print(f" WiiXLaunch Deployment Packager for [{project_name}]")
@@ -156,10 +176,20 @@ def main():
               "SEPARATE build from the Cemu one and produces a different binary.")
 
 
-    build_wiiu_wps = os.path.join(root_dir, "build", "wiiu", plugin_name)
+    if want_wiiu:
+        build_wiiu_wps = os.path.join(root_dir, "build", "wiiu", plugin_name)
+        deploy_or_placeholder(build_wiiu_wps,
+                              os.path.join(wiiu_deploy_dir, plugin_name),
+                              "# WiiXLaunch Wii U Aroma WPS Plugin\n", "Wii U")
+    else:
+        print("[Wii U] this target declares no wiiu section - nothing to build")
 
-    deploy_or_placeholder(build_wiiu_wps, os.path.join(wiiu_deploy_dir, plugin_name),
-                          "# WiiXLaunch Wii U Aroma WPS Plugin\n", "Wii U")
+    if not want_cemu:
+        print("[Cemu] this target declares no cemu section - nothing to build")
+        print("")
+        print("Deployment structures ready in:")
+        print(f" - Switch (Console / Ryujinx / Yuzu): {switch_deploy_dir}")
+        return
 
     cemu_cfg = config.get("cemu", {})
     gp_path = cemu_cfg.get("graphic_pack_path", f"{project_name}/Mods/WiiXLaunch")
