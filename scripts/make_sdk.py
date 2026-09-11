@@ -18,6 +18,7 @@ A .wxlm needs three scripts and a set of headers. That is the whole dependency:
         include/wiixlaunch/imports/*.h   one per surface, generated
         include/wiixlaunch/mod_runtime.h memcpy and friends
         include/wiixlaunch/mod_math.h    sqrt, sin, cos
+        include/wiixlaunch/patch_decl.hpp  WIIXL_DECLARE_PATCH
         sdk.json                 which host this was cut from
         README.md
 
@@ -80,7 +81,13 @@ HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h"),
            # them, <cmath> is not available freestanding, and libm is not
            # linked - so without this the mod either does not compile or, worse,
            # links to nothing. Bounds measured by tools/mathtest.
-           os.path.join("wiixlaunch", "mod_math.h")]
+           os.path.join("wiixlaunch", "mod_math.h"),
+           # Declared patches. The .wxlm format has carried a patch section
+           # since stage 7 and examples/patch_mod declares three, but the header
+           # that writes one was never shipped - so the capability existed and
+           # no SDK user could reach it. Found while porting a mod whose whole
+           # job is five instruction rewrites.
+           os.path.join("wiixlaunch", "patch_decl.hpp")]
 IMPORTS = os.path.join("include", "wiixlaunch", "imports")
 
 # A module built with the SDK is refused by a host whose surfaces have moved on
