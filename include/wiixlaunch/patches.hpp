@@ -210,32 +210,32 @@ inline uint32_t ExaminedCount() { return impl::g_ExaminedCount; }
 // is exactly why HookedWindow is tested first: reporting ORIGIN-MISMATCH for a
 // patch into a hook would send someone looking at their game version when the
 // answer is another mod.
-inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
+// Everything below works on a RESOLVED ADDRESS rather than on a PatchEntry.
+//
+// A declared patch holds a 32-bit targetAddr and is resolved once. A runtime
+// patch through wiixl.patch already HAS the address, and could not be expressed
+// in that field anyway - an aarch64 image under real ASLR does not sit below
+// 4 GB. Both roads meet here, which is the whole point of the refactor: a patch
+// written at module entry is now checked against, and recorded alongside, every
+// declared one, instead of being written with only its origin looked at.
+inline Result CheckAt(uintptr_t addr, const uint8_t* origin, uint32_t size,
+                      const char** collidesWith) {
     if (collidesWith) *collidesWith = nullptr;
 
-    if (p.size == 0 || p.size > Wxlm::kMaxPatchBytes) return Result::BadSize;
-    if (p.targetAddr == 0) return Result::BadTarget;
-
-    const uintptr_t addr = impl::Resolve(p.targetAddr);
+    if (size == 0 || size > Wxlm::kMaxPatchBytes) return Result::BadSize;
+    if (addr == 0 || !origin) return Result::BadTarget;
 
     // BEFORE ANYTHING DEREFERENCES IT. The origin comparison at the bottom of
     // this function READS the target, and an address that is not mapped kills
     // the process there - which turns "this patch is refused" into "the game
     // does not boot", and refusing without killing the boot is the entire
     // contract this module documents.
-    //
-    // It happened the first time a declared patch reached a Switch: c_patch
-    // carries the Wii U address 0x3a75d48, the sample built for aarch64 all
-    // the same, and the origin read faulted at 0x03a75000 before any check
-    // could have an opinion. The arithmetic checks below were all correct and
-    // none of them ever ran.
-    if (!impl::InGameImage(addr, p.size)) return Result::BadTarget;
+    if (!impl::InGameImage(addr, size)) return Result::BadTarget;
 
     // DERIVED, not set. An explicit SetArena would be a check that goes dead
     // the day someone forgets to call it, and a dead check is indistinguishable
-    // from a passing one - the whole subject of the fourth rule. The real host
-    // reads the arena it already owns; only a host test, which has no arena,
-    // supplies one.
+    // from a passing one. The real host reads the arena it already owns; only a
+    // host test, which has no arena, supplies one.
     uintptr_t arenaBase = impl::g_ArenaBase;
     uint32_t arenaSize = impl::g_ArenaSize;
 #if WIIXL_CEMU
@@ -244,7 +244,7 @@ inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
         arenaSize = Arena::Total();
     }
 #endif
-    if (arenaSize != 0 && impl::Overlaps(addr, p.size, arenaBase, arenaSize)) {
+    if (arenaSize != 0 && impl::Overlaps(addr, size, arenaBase, arenaSize)) {
         return Result::IntoArena;
     }
 
@@ -252,16 +252,17 @@ inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
     for (uint32_t i = 0; i < Hooks::SiteCount(); ++i) {
         const Hooks::Site* s = Hooks::SiteAt(i);
         if (!s) continue;
-        if (impl::Overlaps(addr, p.size, s->target, Hooks::kJumpWords * 4)) {
+        if (impl::Overlaps(addr, size, s->target, Hooks::kJumpWords * 4)) {
             if (collidesWith && s->head) *collidesWith = s->head->owner;
             return Result::HookedWindow;
         }
     }
 
-    // Against every patch already applied.
+    // Against every patch already applied - declared or runtime, now that both
+    // are recorded in the same table.
     for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
         const Applied& a = impl::g_Applied[i];
-        if (impl::Overlaps(addr, p.size, a.addr, a.size)) {
+        if (impl::Overlaps(addr, size, a.addr, a.size)) {
             if (collidesWith) *collidesWith = a.owner;
             return Result::PatchOverlap;
         }
@@ -270,52 +271,67 @@ inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
     // Last, because it is the one that reads the target. Everything above is
     // arithmetic and can be answered without touching the game's memory.
     const volatile uint8_t* at = reinterpret_cast<const volatile uint8_t*>(addr);
-    for (uint32_t i = 0; i < p.size; ++i) {
-        if (at[i] != p.origin[i]) return Result::OriginMismatch;
+    for (uint32_t i = 0; i < size; ++i) {
+        if (at[i] != origin[i]) return Result::OriginMismatch;
     }
 
     if (impl::g_AppliedCount >= kMaxPatches) return Result::NoSlots;
     return Result::Ok;
 }
 
-// Applies one patch on behalf of `owner`, or refuses it by name.
+// Decides whether a declared patch may be written, without writing it.
+//
+// Separate from Apply so a test can assert the REASON on a target it has no
+// intention of letting anything write to. The order of the checks is the order
+// of the diagnoses: a malformed record is not a game-version problem, and a
+// hooked window is not an origin mismatch even though a hooked window will
+// always ALSO fail an origin check - the jump is there, not the prologue. That
+// is exactly why HookedWindow is tested first.
+inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
+    if (collidesWith) *collidesWith = nullptr;
+    if (p.size == 0 || p.size > Wxlm::kMaxPatchBytes) return Result::BadSize;
+    if (p.targetAddr == 0) return Result::BadTarget;
+    return CheckAt(impl::Resolve(p.targetAddr), p.origin, p.size, collidesWith);
+}
+
+// Applies one patch at an already-resolved address, or refuses it by name.
 //
 // Never fatal. A refused patch leaves the target untouched and the boot
 // continues - one mod's bad patch must not cost the user their game, and must
 // not silently cost them the other mods either.
-inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
+inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin,
+                      uint32_t size, const char* owner) {
     impl::g_ExaminedCount++;
+    if (!owner) owner = "?";
 
     const char* collides = nullptr;
-    const Result r = Check(p, &collides);
+    const Result r = CheckAt(addr, origin, size, &collides);
+    void* where = reinterpret_cast<void*>(addr);
 
     if (r != Result::Ok) {
         impl::g_RefusedCount++;
         switch (r) {
             case Result::HookedWindow:
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - inside the hook %s wrote",
-                          owner, ResultName(r),
-                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
-                          p.size, collides ? collides : "a hook");
+                          owner, ResultName(r), where, size,
+                          collides ? collides : "a hook");
                 WIIXL_LOG("Patch:   it would corrupt the branch into the chain, not the "
                           "game - those instructions live in a trampoline now");
                 break;
             case Result::PatchOverlap:
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - %s already patched those "
-                          "bytes", owner, ResultName(r),
-                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
-                          p.size, collides ? collides : "another module");
+                          "bytes", owner, ResultName(r), where, size,
+                          collides ? collides : "another module");
                 WIIXL_LOG("Patch:   both mods write the same address - this is the pair "
                           "to disable one of");
                 break;
             case Result::OriginMismatch: {
                 const volatile uint8_t* at =
-                    reinterpret_cast<const volatile uint8_t*>(impl::Resolve(p.targetAddr));
+                    reinterpret_cast<const volatile uint8_t*>(addr);
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - expected %02X %02X %02X "
                           "%02X, found %02X %02X %02X %02X",
-                          owner, ResultName(r),
-                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)),
-                          p.size, p.origin[0], p.origin[1], p.origin[2], p.origin[3],
+                          owner, ResultName(r), where, size,
+                          origin[0], origin[1], origin[2], origin[3],
                           at[0], at[1], at[2], at[3]);
                 WIIXL_LOG("Patch:   built against a different build of the game; "
                           "writing it would corrupt a function it has never seen");
@@ -323,39 +339,54 @@ inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
             }
             case Result::IntoArena:
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - inside the module arena",
-                          owner, ResultName(r),
-                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)), p.size);
+                          owner, ResultName(r), where, size);
                 WIIXL_LOG("Patch:   arena addresses differ on every boot, so an absolute "
                           "patch cannot mean anything there");
                 break;
             default:
                 WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B)", owner, ResultName(r),
-                          reinterpret_cast<void*>(impl::Resolve(p.targetAddr)), p.size);
+                          where, size);
                 break;
         }
         return r;
     }
 
-    const uintptr_t where = impl::Resolve(p.targetAddr);
-    volatile uint8_t* at = reinterpret_cast<volatile uint8_t*>(where);
-    for (uint32_t i = 0; i < p.size; ++i) at[i] = p.data[i];
+    volatile uint8_t* at = reinterpret_cast<volatile uint8_t*>(addr);
+    for (uint32_t i = 0; i < size; ++i) at[i] = data[i];
 #if WIIXL_CEMU
-    Backend::FlushCache(where, p.size);
+    Backend::FlushCache(addr, size);
 #endif
 
     Applied& a = impl::g_Applied[impl::g_AppliedCount++];
-    a.addr = where;
-    a.size = p.size;
+    a.addr = addr;
+    a.size = size;
     for (uint32_t i = 0; i < Wxlm::kMaxPatchBytes; ++i) {
-        a.origin[i] = p.origin[i];
-        a.data[i] = p.data[i];
+        a.origin[i] = (i < size) ? origin[i] : 0;
+        a.data[i]   = (i < size) ? data[i]   : 0;
     }
     a.restored = false;
-    impl::CopyOwner(a.owner, owner ? owner : "?");
+    impl::CopyOwner(a.owner, owner);
 
-    WIIXL_LOG("Patch: %s applied %u B at %p (origin verified)",
-              a.owner, p.size, reinterpret_cast<void*>(impl::Resolve(p.targetAddr)));
+    WIIXL_LOG("Patch: %s applied %u B at %p (origin verified)", a.owner, size, where);
     return Result::Ok;
+}
+
+inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
+    if (p.size == 0 || p.size > Wxlm::kMaxPatchBytes) {
+        impl::g_ExaminedCount++;
+        impl::g_RefusedCount++;
+        WIIXL_LOG("Patch: %s REFUSED %s - size %u", owner ? owner : "?",
+                  ResultName(Result::BadSize), p.size);
+        return Result::BadSize;
+    }
+    if (p.targetAddr == 0) {
+        impl::g_ExaminedCount++;
+        impl::g_RefusedCount++;
+        WIIXL_LOG("Patch: %s REFUSED %s - null target", owner ? owner : "?",
+                  ResultName(Result::BadTarget));
+        return Result::BadTarget;
+    }
+    return ApplyAt(impl::Resolve(p.targetAddr), p.data, p.origin, p.size, owner);
 }
 
 // Goes back and READS every applied patch's target.

@@ -186,6 +186,21 @@ if errorlevel 2 (
     exit /b 1
 )
 
+:: mod_config.h, the key = value file a module reads from its own directory.
+::
+:: The inputs are written BY HAND by people who have never seen the grammar, so
+:: the cases are the ways such a file goes wrong: a key that is a prefix of
+:: another key, CRLF from Notepad, a value that is a word, no trailing newline.
+:: A parser that reads "fourty" as 0 tells the user their setting does not work.
+call tools\config_test\build.bat
+if errorlevel 2 (
+    echo [config_test] SETUP PROBLEM - MSVC not found; see the format_test note above.
+    exit /b 1
+) else if errorlevel 1 (
+    echo [config_test] FAILED - the settings parser is wrong; see above.
+    exit /b 1
+)
+
 :: The central hook manager. Verifies a three-deep chain by DECODING the
 :: instructions it emitted - call order, the prologue captured once and exactly,
 :: and each Original pointing where it should. It cannot execute PowerPC; the

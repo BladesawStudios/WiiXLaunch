@@ -90,6 +90,10 @@ bash tools/mathtest/build.sh
 # that wants the tiled layout.
 bash tools/nvn_swizzle_test/build.sh
 
+# mod_config.h. Hand-written settings files, and the ways they go wrong:
+# prefix keys, CRLF, words where numbers go, no trailing newline.
+bash tools/config_test/build.sh
+
 # The central hook manager: a three-deep chain verified by decoding the
 # instructions it emitted. Construction, not execution - the boot proves that.
 bash tools/hook_test/build.sh

@@ -68,3 +68,7 @@ compile_commands.json
 tools/nvn_swizzle_test/nvn_swizzle_test.exe
 tools/nvn_swizzle_test/nvn_swizzle_test
 tools/nvn_swizzle_test/*.obj
+
+tools/config_test/config_test.exe
+tools/config_test/config_test
+tools/config_test/*.obj
