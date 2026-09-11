@@ -533,6 +533,38 @@ def build(args):
             % (args.entry, entry_offset, payload_size))
 
     undefined = ppc_relocs.read_undefined_symbols(readelf, args.elf)
+
+    # EVERY undefined symbol, not just the ones a fixed-up relocation points at.
+    #
+    # The check further down catches an undefined symbol reached through a
+    # relocation this writer RESOLVES - ADDR32 on PowerPC, ABS64 on AArch64.
+    # A CALL is neither: a branch relocation is PC-relative, needs no runtime
+    # fixup, and is therefore never looked at. So a module could call a function
+    # that does not exist and be packed without complaint, and the call would
+    # go wherever --unresolved-symbols=ignore-all left it. Which is address 0.
+    #
+    # Measured: AIPuppet was packed with an undefined AIPuppet::Init(), 16
+    # imports, and a cheerful summary - because its second translation unit had
+    # never been compiled and nothing here was looking.
+    #
+    # The link is -nostdlib with libgcc, and imports are the only thing allowed
+    # to stay undefined, so the rule is simply: anything undefined that is not
+    # an import is a bug.
+    stray = sorted(n for n in undefined if not n.startswith("wiixl_import__"))
+    if stray:
+        raise SystemExit(
+            "[wxlm] %s references %d symbol(s) it does not define and that are "
+            "not imports:\n%s"
+            "  A module links with -nostdlib and resolves host functions ONLY "
+            "through\n"
+            "  wiixl_import__<surface>__<Symbol>. An ordinary undefined symbol "
+            "means a\n"
+            "  translation unit was never compiled - check `sources` in "
+            "mod.json - or that\n"
+            "  the mod is calling something it expected the host to provide.\n"
+            % (os.path.basename(args.elf), len(stray),
+               "".join("    %s\n" % n for n in stray)))
+
     if machine == MACHINE_AARCH64:
         relocs, discovered = read_relocations_aarch64(
             readelf, args.elf, payload, payload_size, undefined)

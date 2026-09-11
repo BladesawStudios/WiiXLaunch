@@ -120,7 +120,8 @@ MANIFEST = "mod.json"
 # not.
 MANIFEST_KEYS = {
     "id":          "module id; also the output filename and resource directory",
-    "entry":       "translation unit to compile (default mod.cpp)",
+    "entry":       "translation unit with WiiXLaunch_ModEntry (default mod.cpp)",
+    "sources":     "further .cpp files to compile, relative to the mod",
     "phase":       "when the loader calls the entry point (default load)",
     "heapRequest": "bytes of arena this module needs; omit for best effort",
     "include":     "list of extra include directories, relative to the mod",
@@ -360,6 +361,11 @@ def main():
     # Lists ACCUMULATE rather than override: a manifest listing what the mod
     # needs and a command line adding one more are not in conflict.
     includes_cfg = list(manifest.get("include", [])) + list(args.include)
+    # A mod of any size has more than one .cpp. This built exactly the entry
+    # file until a 2,000-line mod arrived in two translation units, linked
+    # cleanly because imports are allowed to stay undefined, and packed a call
+    # to a function that was never compiled.
+    sources_cfg = list(manifest.get("sources", []))
     requires_cfg = list(manifest.get("require", [])) + list(args.requires)
 
     if not mod_id:
@@ -382,6 +388,15 @@ def main():
             "  host's own resources), and the loader refuses them by name at load.\n"
             % mod_id)
         return 1
+
+    extra_cpp = []
+    for rel in sources_cfg:
+        path = rel if os.path.isabs(rel) else os.path.join(source, rel)
+        if not os.path.exists(path):
+            sys.stderr.write("[build_mod] mod.json lists a source that does not "
+                             "exist: %s\n" % path)
+            return 1
+        extra_cpp.append(path)
 
     mod_cpp = os.path.join(source, entry_file)
     if not os.path.exists(mod_cpp):
@@ -448,7 +463,7 @@ def main():
         cmd += ["-I", inc]
     cmd += ["-nostartfiles", "-nostdlib", "-T", linker, "-Wl,-q",
             "-Wl,--unresolved-symbols=ignore-all",
-            mod_cpp, "-lgcc", "-o", elf]
+            mod_cpp] + extra_cpp + ["-lgcc", "-o", elf]
 
     # Before compiling, so the editor is configured even if the code does not
     # build yet - which is exactly when you most want the editor working.
