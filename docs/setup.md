@@ -270,6 +270,49 @@ active target into headers under `build/generated/include/` and platform config
 under `build/generated/switch/`. These are regenerated every build — edit the
 target file, not the generated ones.
 
+### Which build of the game is this?
+
+Every offset in a host is written against one build, and a host that starts on
+the wrong one installs hooks at addresses that mean something else. The
+`identity` block is how a host can tell:
+
+```json
+"identity": {
+  "switch": { "offset": "0x1000",     "length": 4096 },
+  "wiiu":   { "address": "0x02000030", "length": 4096 },
+  "known": [
+    { "name": "1.5.0", "platform": "switch", "fingerprint": "0x1A2B3C4D" }
+  ]
+}
+```
+
+The host CRCs that slice of the running game and matches the result against
+`known`. **A build's bytes are the least ambiguous name it has** — there is no
+version string that works on all three platforms (Switch's `nn::oe` has no
+binding in the vendored exlaunch, a Wii U title version can be shared by a
+re-release, and Cemu has no notion of one), but every platform has the game's
+own code.
+
+Switch declares an **offset** and Wii U an **address**, for the same reason
+every other pair in this project is split that way: an NSO is relocated on every
+launch, so no constant here could name an address in one.
+
+**The first boot on a new build is the enrolment step.** It logs what it
+computed:
+
+```
+Game: build 0x1A2B3C4D is NOT ONE THIS HOST KNOWS (crc32 over 4096 B at 0x...)
+```
+
+Paste that into `known` with a name and rebuild. There is deliberately no
+guessing: an unrecognised build is reported as unrecognised, because "probably
+1.5.0" is the assumption that corrupts a save three hours later. A target with
+no `identity` block says *that* instead, which is a different state and reads
+differently.
+
+Mods see this through `wiixl.version` and can carry offsets per build — see
+[Writing a mod](writing-mods.md#one-mod-several-game-versions).
+
 ### When the loader runs (Switch)
 
 `switch.load_point` decides when modules are loaded, and the right answer is a

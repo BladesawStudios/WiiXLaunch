@@ -23,6 +23,7 @@
     "wiixl.mem": "v1.0",
     "wiixl.net": "v1.2",
     "wiixl.patch": "v1.0",
-    "wiixl.time": "v1.0"
+    "wiixl.time": "v1.0",
+    "wiixl.version": "v1.0"
   }
 }

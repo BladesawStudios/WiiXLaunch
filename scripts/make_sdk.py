@@ -20,6 +20,7 @@ A .wxlm needs three scripts and a set of headers. That is the whole dependency:
         include/wiixlaunch/mod_math.h    sqrt, sin, cos
         include/wiixlaunch/patch_decl.hpp  WIIXL_DECLARE_PATCH
         include/wiixlaunch/mod_config.h  key = value settings
+        include/wiixlaunch/mod_version.h offsets per game build
         sdk.json                 which host this was cut from
         README.md
 
@@ -92,7 +93,11 @@ HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h"),
            # A key = value file in the module own directory, so a limit a
            # user is meant to choose is not baked into the binary. The mod
            # this came from shipped two whole payloads to offer one switch.
-           os.path.join("wiixlaunch", "mod_config.h")]
+           os.path.join("wiixlaunch", "mod_config.h"),
+           # One mod, several game versions. A mod holding raw offsets is
+           # holding them for ONE build, and had no way to ask which build it
+           # got - so the only outcomes were right by luck or silently wrong.
+           os.path.join("wiixlaunch", "mod_version.h")]
 IMPORTS = os.path.join("include", "wiixlaunch", "imports")
 
 # A module built with the SDK is refused by a host whose surfaces have moved on

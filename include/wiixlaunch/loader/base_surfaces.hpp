@@ -10,6 +10,7 @@
 //   wiixl.time   the clock, monotonic and wall
 //   wiixl.mem    the coreinit heaps - NOT the module arena
 //   wiixl.call   resolving a game function's address
+//   wiixl.version  which build of the game is underneath
 //   wiixl.patch  writing to game code at runtime
 //
 // wiixl.net lives in its own header because it is far larger than these four
@@ -24,6 +25,7 @@
 #include <wiixlaunch/call.hpp>
 #include <wiixlaunch/patch.hpp>
 #include <wiixlaunch/patches.hpp>
+#include <wiixlaunch/game_version.hpp>
 
 #include <cstdint>
 
@@ -175,6 +177,69 @@ inline bool Register() {
 }
 
 } // namespace WiiXLaunch::MemSurface
+
+
+// ===========================================================================
+// wiixl.version - which build of the game is underneath.
+//
+// A mod carrying its own offsets is carrying them for ONE build. Until now it
+// had no way to ask which build it got, so the only options were to be right by
+// luck or to be silently wrong. This is the missing question.
+//
+// Name() is the name the HOST enrolled this build under, and it is null when the
+// host does not recognise it. That null is the useful part: it means nobody has
+// checked this build, so a mod holding raw offsets should refuse rather than
+// apply them. See include/wiixlaunch/mod_version.h, which turns that into a
+// table lookup with a named refusal.
+//
+// Fingerprint() is always available where the target declares an identity slice,
+// recognised or not, so a log or a bug report can name the build exactly.
+// ===========================================================================
+namespace WiiXLaunch::VersionSurface {
+
+constexpr const char* kName = "wiixl.version";
+constexpr uint16_t kVersionMajor = 1;
+constexpr uint16_t kVersionMinor = 0;
+
+namespace impl {
+
+extern "C" inline uint32_t VrFingerprint() {
+    return GameVersion::Fingerprint();
+}
+
+// Null when unrecognised. NOT "unknown" as a string - a mod comparing names
+// would match a build called "unknown" against every build nobody has enrolled,
+// which is precisely the guess this whole mechanism exists to avoid.
+extern "C" inline const char* VrName() {
+    return GameVersion::Name();
+}
+
+// Whether this host can fingerprint at all. "No identity slice declared" and
+// "declared, and this build is not one I know" are different answers, and a mod
+// deciding what to do about its offsets needs to tell them apart.
+extern "C" inline uint32_t VrConfigured() {
+    return GameVersion::Configured() ? 1u : 0u;
+}
+
+inline const Surface::Symbol kSymbols[] = {
+    WIIXL_SURFACE_SYMBOL("Fingerprint", &VrFingerprint),
+    WIIXL_SURFACE_SYMBOL("Name",        &VrName),
+    WIIXL_SURFACE_SYMBOL("Configured",  &VrConfigured),
+};
+
+} // namespace impl
+
+inline bool Register() {
+    Surface::Registration reg{};
+    reg.name = kName;
+    reg.versionMajor = kVersionMajor;
+    reg.versionMinor = kVersionMinor;
+    reg.symbols = impl::kSymbols;
+    reg.symbolCount = static_cast<uint32_t>(sizeof(impl::kSymbols) / sizeof(impl::kSymbols[0]));
+    return Surface::Register(reg);
+}
+
+} // namespace WiiXLaunch::VersionSurface
 
 
 // ===========================================================================
@@ -377,6 +442,7 @@ inline void RegisterAll() {
     MemSurface::Register();
     CallSurface::Register();
     PatchSurface::Register();
+    VersionSurface::Register();
 }
 
 } // namespace WiiXLaunch::BaseSurfaces

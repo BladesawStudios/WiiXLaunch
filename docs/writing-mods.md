@@ -228,7 +228,7 @@ Surface:   botw.player v1.1 (17 symbols)
 ...
 ```
 
-The base publishes six:
+The base publishes seven:
 
 | surface | what it is for |
 |---|---|
@@ -238,6 +238,7 @@ The base publishes six:
 | `wiixl.mem` | the game's own expanded heap |
 | `wiixl.call` | resolving a target address, the image base |
 | `wiixl.patch` | writing bytes with an origin check |
+| `wiixl.version` | which build of the game is underneath |
 
 The BotW module publishes eighteen - `botw.player`, `botw.actor`, `botw.gfx`,
 `botw.gui`, `botw.vfx`, `botw.flyt`, `botw.region`, `botw.camera`,
@@ -249,6 +250,51 @@ has one per surface, listing every symbol with its real signature and the versio
 it came from. For *why* a symbol behaves as it does, read the surface itself in
 `vendor/wiixlaunch-botw/include/wiixlaunch/botw/surfaces/*.hpp`; the comments
 above each function are the contract.
+
+### One mod, several game versions
+
+A mod that resolves raw offsets — which is every mod for a game with no
+WiiXLaunch module — is written against **one build**. Point it at another and
+the addresses still resolve, still install, and mean something else. Nothing
+crashes at the mistake; something else does later, somewhere unrelated.
+
+`<wiixlaunch/mod_version.h>` turns that into a refusal:
+
+```cpp
+#include <wiixlaunch/mod_version.h>
+
+static constexpr WiiXLaunch::BuildOffset kRoomCap[] = {
+    { "1.2.1", 0x01B299EC },
+    { "1.2.0", 0x01B28A40 },
+};
+static const WiiXLaunch::VersionedOffset g_RoomCap("roomCap", kRoomCap);
+
+uintptr_t addr = g_RoomCap.Resolve();   // 0, and one log line, on anything else
+```
+
+The names are the ones **the host** enrolled, not names the mod invents — a mod
+does not get to decide which build it is on. The host fingerprints the running
+game by CRC-ing a slice of its code and matching that against the
+`identity.known` list in its target file; see
+[Setting Up](setup.md#which-build-of-the-game-is-this).
+
+An unmatched build applies nothing, and the log says which of three things
+happened, because they want three different fixes:
+
+```
+version: roomCap - this host cannot fingerprint the game ...
+version: roomCap - the host does not recognise this build (0x1A2B3C4D) ...
+version: roomCap has no row for build "1.2.0" (2 known) ...
+```
+
+The first is a target with no identity slice declared; the second is a build
+nobody has enrolled yet; the third is an enrolled build *this* mod was never
+written for. Only the third is your problem.
+
+**This narrows the window, it does not close it.** A declared patch still names
+its origin bytes and the host still reads a patch back after writing it. A
+version table is the cheapest check and the coarsest, and it is not a reason to
+skip the others.
 
 ### Settings, in a file beside your module
 

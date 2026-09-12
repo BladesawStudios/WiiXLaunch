@@ -48,7 +48,7 @@ sites, which is a handful of lines and says plainly which one is running.
 
 ## What this SDK was cut from
 
-24 surfaces:
+25 surfaces:
 
 | surface | version |
 |---|---|
@@ -76,6 +76,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `wiixl.net` | v1.2 |
 | `wiixl.patch` | v1.0 |
 | `wiixl.time` | v1.0 |
+| `wiixl.version` | v1.0 |
 
 A host publishes these or later minors. Your mod names what it needs and the
 loader refuses it by name if the host cannot provide it, which is the point of

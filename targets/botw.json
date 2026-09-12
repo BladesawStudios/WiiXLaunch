@@ -12,6 +12,18 @@
     "inline_pool_size": "0x10000",
     "log_buffer_size": 512
   },
+  "identity": {
+    "//": "The slice the host CRCs to name this build. Switch is an offset from the module base (an NSO moves every launch); Wii U is an address. Both land inside .text - 0x02000030 is a real instruction, see examples/patch_mod. Enrol a build by pasting the fingerprint the boot log prints into `known`.",
+    "switch": {
+      "offset": "0x1000",
+      "length": 4096
+    },
+    "wiiu": {
+      "address": "0x02000030",
+      "length": 4096
+    },
+    "known": []
+  },
   "switch": {
     "title_id": "01007EF00011E000",
     "title_id_range_min": "0x0100000000010000",

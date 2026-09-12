@@ -1,5 +1,6 @@
 #include <wiixlaunch.hpp>
 #include <wiixlaunch/loader/load_point.hpp>
+#include <wiixlaunch/game_version.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/net_surface.hpp>
 #include <wiixlaunch/loader/base_surfaces.hpp>
@@ -98,6 +99,14 @@ extern "C" void WiiXLaunch_Init() {
 #endif
 
     WIIXL_LOG("WiiXLaunch: init OK");
+
+    // BEFORE ANY HOOK OR PATCH. Every offset below this line was written
+    // against one build of the game, and this is the only thing that says
+    // which build is actually running. It does not refuse - a host that
+    // stopped dead on an unenrolled build would be unusable the day a game
+    // updates - but it puts the answer in the log above every address that
+    // depends on it.
+    WiiXLaunch::GameVersion::Detect();
 
     // --- STAGE 2: the surface registry --------------------------------------
     //
