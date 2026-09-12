@@ -71,8 +71,8 @@
 
 namespace WiiXLaunch::Hooks {
 
-constexpr uint32_t kMaxSites = 32;
-constexpr uint32_t kMaxLinks = 64;
+constexpr uint32_t kMaxSites = 256;
+constexpr uint32_t kMaxLinks = 256;
 constexpr uint32_t kOwnerLen = 17;
 
 // A long jump on this platform is exactly four instructions, and the prologue
