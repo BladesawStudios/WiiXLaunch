@@ -105,6 +105,27 @@ def lz4_block(src, out_size):
     return bytes(dst)
 
 
+def nso_build_id(path):
+    """The NSO's build id: 32 bytes of moduleId at 0x40, first 20 meaningful.
+
+    RECORDED AS EVIDENCE, not used as the identity. It cannot be the identity,
+    because it is not reachable at runtime - the header holding it is never
+    mapped and the mapped image carries no .note.gnu.build-id. But it is exactly
+    what a loader prints, so a row carrying one can be checked against a boot log
+    by anybody, later, without this tool or these files.
+
+    This exists because a name is not evidence. Eleven builds were enrolled from
+    the names of the folders they sat in, and one of those folders was wrong: the
+    directory called "130" holds 1.2.1, which was only caught by matching these
+    ids against the build ids Ryujinx printed for the update it loaded.
+    """
+    with open(path, "rb") as f:
+        head = f.read(0x60)
+    if head[:4] != b"NSO0":
+        return None
+    return head[0x40:0x54].hex().upper()
+
+
 def nso_rodata(path):
     """The decompressed .rodata segment of an NSO.
 
@@ -242,6 +263,10 @@ def main():
             "nothing to fingerprint. The host would report 'cannot fingerprint' "
             "on this platform too." % (args.target, platform))
 
+    build_id = None
+    if args.nso:
+        build_id = nso_build_id(args.nso)
+
     if args.fingerprint:
         # NO DUMP, BUT A RUNNING GAME. The boot log prints the fingerprint of
         # whatever is underneath, and that is a perfectly good source - it is
@@ -270,6 +295,8 @@ def main():
         fp = crc32(blob)
     print("[enrol] %s %s: %s" % (args.target, platform, where))
     print("[enrol] fingerprint 0x%08X over %d bytes" % (fp, length))
+    if build_id:
+        print("[enrol] build id  %s" % build_id)
 
     # A sanity note the caller can act on: read-only data that is all one byte
     # is not identifying anything.
@@ -298,13 +325,24 @@ def main():
                 "[enrol] this exact build is already enrolled as '%s'. Enrolling "
                 "it twice under two names would make which one a mod matches "
                 "depend on table order." % row.get("name"))
+        if build_id and row.get("build_id") == build_id:
+            raise SystemExit(
+                "[enrol] '%s' is already enrolled with this build id (%s) but a "
+                "different fingerprint. Same binary, two fingerprints, means the "
+                "slice moved between enrolments - re-enrol everything."
+                % (row.get("name"), build_id))
 
     if args.dry_run:
         print("[enrol] --dry-run: nothing written")
         return 0
 
-    known.append({"name": args.name, "platform": platform,
-                  "fingerprint": "0x%08X" % fp})
+    row = {"name": args.name, "platform": platform,
+           "fingerprint": "0x%08X" % fp}
+    if build_id:
+        # The one field in here that can be checked against a boot log by
+        # somebody who has neither this tool nor the dump.
+        row["build_id"] = build_id
+    known.append(row)
     ident["known"] = known
     doc["identity"] = ident
     io.open(tpath, "w", encoding="utf-8", newline="\n").write(

@@ -297,18 +297,38 @@ Switch declares an **offset** and Wii U an **address**, for the same reason
 every other pair in this project is split that way: an NSO is relocated on every
 launch, so no constant here could name an address in one.
 
-**The first boot on a new build is the enrolment step.** It logs what it
-computed:
+**Enrol a build from its dump, not by hand.** The bytes being hashed are
+read-only data, so they are the same bytes that sit in the dump on disk:
 
-```
-Game: build 0x1A2B3C4D is NOT ONE THIS HOST KNOWS (crc32 over 4096 B at 0x...)
+```bash
+python scripts/enrol_build.py --target totk --name 1.2.1 --nso <dump>/exefs/main
+python scripts/enrol_build.py --target botw --name v208  --rpx <path>/U-King.rpx
 ```
 
-Paste that into `known` with a name and rebuild. There is deliberately no
-guessing: an unrecognised build is reported as unrecognised, because "probably
-1.5.0" is the assumption that corrupts a save three hours later. A target with
-no `identity` block says *that* instead, which is a different state and reads
-differently.
+It decompresses the NSO or RPX, computes the fingerprint the host will compute
+at boot, and writes the row. Pointed at a directory of dumps it enrols a whole
+version history in one pass. **The slice comes from the target file**, never
+restated in the tool, so the two cannot disagree about which bytes are hashed.
+
+For a build you can run but have no dump of, the boot log prints the number and
+`--fingerprint 0x… --platform switch` takes it directly.
+
+Each row also records the dump's **build id** — the thing a loader prints. That
+is the evidence: a name is whatever somebody typed, and enrolling eleven builds
+from the names of the folders they sat in is exactly how a wrong one gets in. A
+build id can be checked against a boot log by anyone, later, with neither this
+tool nor the dumps.
+
+There is deliberately no guessing at runtime: an unrecognised build is reported
+as unrecognised, because "probably 1.5.0" is the assumption that corrupts a save
+three hours later. A target with no `identity` block says *that* instead, which
+is a different state and reads differently.
+
+**Pick the offset against the smallest build you intend to support.** TOTK
+1.0.0-1.3.0 carry ~23.6 MB of read-only data and 1.4.0-1.4.3 only ~10.1 MB, so
+an offset chosen against the larger ones is past the end on every 1.4.x - the
+host bounds-checks and reports "cannot fingerprint", which is the right failure
+but still a build that can never be enrolled.
 
 Mods see this through `wiixl.version` and can carry offsets per build — see
 [Writing a mod](writing-mods.md#one-mod-several-game-versions).
