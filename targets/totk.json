@@ -13,9 +13,10 @@
     "log_buffer_size": 512
   },
   "identity": {
-    "//": "The slice the host CRCs to name this build. READ-ONLY DATA, never .text - .text is what mods rewrite, so a fingerprint over it would identify the installed mod set as much as the build. Switch declares no address: the host asks exlaunch where the module's read-only data is, and `offset` is measured from there. Enrol a build by pasting the fingerprint the boot log prints into `known`.",
+    "//": "As botw.json - read-only data, never .text. Switch only; there is no Wii U Tears of the Kingdom.",
+    "//switch": "0xC00000 from the start of read-only data. TOTK's .rodata.1 runs module+0x36D9B4B..0x41A9F9B and the RO segment starts at module+0x2B1A000, so this sits 0x40455 inside it with several megabytes of margin either side. RANGE verified from the section table; the bytes there have not been read, unlike botw.json's two. If the first boot fingerprints and the number is stable across runs, it is fine - and Slice() bounds-checks it against the section either way, so a wrong offset reports `cannot fingerprint` rather than hashing whatever followed.",
     "switch": {
-      "offset": "0x20000",
+      "offset": "0xC00000",
       "length": 4096
     },
     "known": []

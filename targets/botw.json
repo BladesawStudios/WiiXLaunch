@@ -13,14 +13,16 @@
     "log_buffer_size": 512
   },
   "identity": {
-    "//": "As totk.json. The Wii U and Cemu entry is DELIBERATELY UNSET: the host cannot find its own read-only data on those platforms, so the address has to be declared - and it must point into the RPX's .rodata, which nobody has looked up yet. It previously pointed at 0x02000030, which is in .text and is the exact address examples/patch_mod patches. An unset slice makes the host say it cannot fingerprint, which is true; a wrong one would have it report a number that changes with the mods installed.",
+    "//": "The slice the host CRCs to name this build. READ-ONLY DATA, never .text - .text is what mods rewrite, so a fingerprint over it would identify the installed mod set as much as the build. Enrol a build by pasting the fingerprint the boot log prints into `known`.",
+    "//switch": "Offset from where exlaunch says read-only data starts, not from the module base - the host asks rather than making this file carry an address. 0x600000 lands in .rodata.1 string constants; read at 0x7101e03000 in the v1.5.0 main it is UTF-8 text and `ssao_is_depth_full`. A smaller offset would land in .rela.dyn, which begins only 0x50 bytes into the RO segment.",
     "switch": {
-      "offset": "0x20000",
+      "offset": "0x600000",
       "length": 4096
     },
+    "//wiiu": "An ADDRESS, because the host cannot find its own image bounds on Wii U or Cemu - the same reason Patches::InGameImage returns true instead of checking. .rodata is 0x10000000-0x10462BBB in the v208 RPX; 0x10200000 holds GameData flag names (IsGet_Item_InsectGet_K ...), which are ASCII, differ per build, and carry no relocated pointers. The RPX was confirmed to be v208 first: 0x02000030 holds 7C 9E 23 78 and 0x02000034 holds 7C 7F 1B 79, the two instructions examples/patch_mod documents.",
     "wiiu": {
-      "address": "0x0",
-      "length": 0
+      "address": "0x10200000",
+      "length": 4096
     },
     "known": []
   },
