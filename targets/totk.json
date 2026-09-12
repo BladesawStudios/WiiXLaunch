@@ -19,7 +19,13 @@
       "offset": "0xC00000",
       "length": 4096
     },
-    "known": []
+    "known": [
+      {
+        "name": "1.2.1",
+        "platform": "switch",
+        "fingerprint": "0x7E787235"
+      }
+    ]
   },
   "modules": [],
   "patches": {
