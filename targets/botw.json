@@ -24,7 +24,18 @@
       "address": "0x10200000",
       "length": 4096
     },
-    "known": []
+    "known": [
+      {
+        "name": "1.5.0",
+        "platform": "switch",
+        "fingerprint": "0xA982D2BC"
+      },
+      {
+        "name": "v208",
+        "platform": "wiiu",
+        "fingerprint": "0xB8FC33E3"
+      }
+    ]
   },
   "switch": {
     "title_id": "01007EF00011E000",

@@ -159,7 +159,18 @@ def rpx_bytes_at(path, addr, length):
             ">IIII", blob, base + 8)
         if sh_addr == 0 or sh_size == 0:
             continue
-        if not (sh_addr <= addr and addr + length <= sh_addr + sh_size):
+
+        # sh_size IS THE FILE SIZE, and for a compressed section that is not
+        # how much address space it covers. BotW's .rodata is 0x14DCAD bytes in
+        # the RPX and 0x462BBB in memory, so testing containment against
+        # sh_size rejects three quarters of the section - which is exactly how
+        # this announced itself: "no section contains 0x10200000", for an
+        # address sitting comfortably inside .rodata.
+        mem_size = sh_size
+        if sh_flags & SHF_RPL_ZLIB:
+            mem_size = struct.unpack_from(">I", blob, sh_off)[0]
+
+        if not (sh_addr <= addr and addr + length <= sh_addr + mem_size):
             continue
 
         data = blob[sh_off:sh_off + sh_size]
@@ -190,12 +201,22 @@ def main():
     ap.add_argument("--name", required=True, help="what to call this build, e.g. 1.2.1")
     ap.add_argument("--nso", help="path to a Switch main NSO")
     ap.add_argument("--rpx", help="path to a Wii U RPX")
+    ap.add_argument("--fingerprint",
+                    help="a fingerprint the host already printed, for a build "
+                         "you can run but have no dump of")
+    ap.add_argument("--platform", choices=("switch", "wiiu"),
+                    help="required with --fingerprint")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the fingerprint, write nothing")
     args = ap.parse_args()
 
-    if bool(args.nso) == bool(args.rpx):
-        raise SystemExit("[enrol] pass exactly one of --nso or --rpx")
+    sources = [bool(args.nso), bool(args.rpx), bool(args.fingerprint)]
+    if sum(sources) != 1:
+        raise SystemExit("[enrol] pass exactly one of --nso, --rpx or --fingerprint")
+    if args.fingerprint and not args.platform:
+        raise SystemExit(
+            "[enrol] --fingerprint needs --platform: the number alone does not "
+            "say which of the target's two tables it belongs in")
 
     tpath = os.path.join(ROOT, "targets", args.target + ".json")
     if not os.path.isfile(tpath):
@@ -203,7 +224,10 @@ def main():
     doc = json.loads(io.open(tpath, encoding="utf-8").read())
 
     ident = doc.get("identity") or {}
-    platform = "switch" if args.nso else "wiiu"
+    if args.fingerprint:
+        platform = args.platform
+    else:
+        platform = "switch" if args.nso else "wiiu"
     slice_cfg = ident.get(platform) or {}
 
     def num(v):
@@ -218,7 +242,16 @@ def main():
             "nothing to fingerprint. The host would report 'cannot fingerprint' "
             "on this platform too." % (args.target, platform))
 
-    if args.nso:
+    if args.fingerprint:
+        # NO DUMP, BUT A RUNNING GAME. The boot log prints the fingerprint of
+        # whatever is underneath, and that is a perfectly good source - it is
+        # the same number, measured at the other end. The blob checks below are
+        # skipped because there is nothing to inspect, so this is the one path
+        # that takes the caller's word for it.
+        fp = num(args.fingerprint) & 0xFFFFFFFF
+        blob = None
+        where = "taken from a boot log, not computed"
+    elif args.nso:
         offset = num(slice_cfg.get("offset"))
         rodata = nso_rodata(args.nso)
         if offset + length > len(rodata):
@@ -233,13 +266,14 @@ def main():
         blob = rpx_bytes_at(args.rpx, addr, length)
         where = "0x%08X in %s" % (addr, os.path.basename(args.rpx))
 
-    fp = crc32(blob)
+    if blob is not None:
+        fp = crc32(blob)
     print("[enrol] %s %s: %s" % (args.target, platform, where))
     print("[enrol] fingerprint 0x%08X over %d bytes" % (fp, length))
 
     # A sanity note the caller can act on: read-only data that is all one byte
     # is not identifying anything.
-    if len(set(blob)) <= 2:
+    if blob is not None and len(set(blob)) <= 2:
         print("[enrol] WARNING: that slice has %d distinct byte value(s). It "
               "will not distinguish builds - move the offset."
               % len(set(blob)))
