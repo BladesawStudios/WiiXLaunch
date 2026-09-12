@@ -13,14 +13,14 @@
     "log_buffer_size": 512
   },
   "identity": {
-    "//": "The slice the host CRCs to name this build. Switch is an offset from the module base (an NSO moves every launch); Wii U is an address. Both land inside .text - 0x02000030 is a real instruction, see examples/patch_mod. Enrol a build by pasting the fingerprint the boot log prints into `known`.",
+    "//": "As totk.json. The Wii U and Cemu entry is DELIBERATELY UNSET: the host cannot find its own read-only data on those platforms, so the address has to be declared - and it must point into the RPX's .rodata, which nobody has looked up yet. It previously pointed at 0x02000030, which is in .text and is the exact address examples/patch_mod patches. An unset slice makes the host say it cannot fingerprint, which is true; a wrong one would have it report a number that changes with the mods installed.",
     "switch": {
-      "offset": "0x1000",
+      "offset": "0x20000",
       "length": 4096
     },
     "wiiu": {
-      "address": "0x02000030",
-      "length": 4096
+      "address": "0x0",
+      "length": 0
     },
     "known": []
   },

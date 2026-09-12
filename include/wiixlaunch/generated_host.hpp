@@ -38,10 +38,10 @@ namespace WiiXLaunch::Host {
     // this target has been told the answer for. Length 0 means this target
     // declares no identity, which the host reports rather than guessing past.
     // See include/wiixlaunch/game_version.hpp.
-    constexpr uint32_t IdentitySwitchOffset = 0x00001000;
+    constexpr uint32_t IdentitySwitchOffset = 0x00020000;
     constexpr uint32_t IdentitySwitchLength = 4096;
-    constexpr uint32_t IdentityWiiuAddress  = 0x02000030;
-    constexpr uint32_t IdentityWiiuLength   = 4096;
+    constexpr uint32_t IdentityWiiuAddress  = 0x00000000;
+    constexpr uint32_t IdentityWiiuLength   = 0;
 
     struct KnownBuild { uint32_t fingerprint; const char* name; };
 

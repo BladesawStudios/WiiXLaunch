@@ -7,24 +7,40 @@
 // begins installing hooks at addresses that mean something else - not a crash
 // at the point of the mistake, but arbitrary behaviour some time later.
 //
-// WHY A FINGERPRINT AND NOT A VERSION STRING. There is no version string to be
-// had that works everywhere. Switch has nn::oe::GetDisplayVersion, which the
-// vendored exlaunch has no binding for and which reports what the title claims
-// rather than what the code is; Wii U has a title version that a re-release can
-// share; Cemu has no notion of one at all. What all three DO have is the game's
-// own code, and a build's bytes are the least ambiguous name it has.
+// WHY A FINGERPRINT, AND NOT ONE OF THE THINGS THAT LOOK EASIER.
+//
+// A BUILD ID would be ideal - exact, produced by the toolchain, and immune to
+// patching because it lives outside the image a mod rewrites. It is not
+// reachable: the NSO header holding it is never mapped, TOTK's main carries no
+// .note.gnu.build-id section, and exlaunch exposes nothing. Checked, not
+// assumed.
+//
+// nn::oe::GetDisplayVersion IS exported - confirmed in nnSdk's .dynstr as
+// _ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE, writing 16 bytes. Two
+// reasons it is not the identity. It reports what the title's metadata CLAIMS,
+// so a repack or a rebuilt update can say "1.2.1" over different code; and it
+// does not return a Result, it aborts through diag::detail when the underlying
+// IApplicationFunctions call fails - which on an emulator that stubs am is a
+// dead process at boot. It belongs as a LABEL, fetched lazily and opt-in, never
+// as the thing offsets are selected by.
+//
+// Wii U has a title version a re-release can share. Cemu has no notion of one.
+// What every platform does have is the game's own bytes, and those are the
+// least ambiguous name a build has.
 //
 // So the host CRCs a slice of the running game and reports the number. A build
 // nobody has seen before still gets an identity - it just has no NAME yet, and
 // naming it is a line in the target file rather than a code change:
 //
 //     "identity": {
-//         "switch": { "offset": "0x1000",     "length": 4096 },
-//         "wiiu":   { "address": "0x02000000", "length": 4096 },
+//         "switch": { "offset": "0x20000", "length": 4096 },
 //         "known": [
 //             { "name": "1.5.0", "platform": "switch", "fingerprint": "0x1A2B3C4D" }
 //         ]
 //     }
+//
+// The Switch entry has no address in it: `offset` is measured from wherever
+// exlaunch says the module's read-only data begins. See Slice below.
 //
 // THE FIRST BOOT ON A NEW BUILD IS THE ENROLMENT STEP. It logs the fingerprint
 // it computed; you paste that into `known` with a name. There is deliberately no
@@ -57,16 +73,41 @@ inline bool g_Configured = false;
 // The slice this platform hashes, as an absolute address and a length, or
 // (0, 0) if this target has not declared one.
 //
-// On Switch the target declares an OFFSET, because an NSO is relocated to a
-// different base every launch and no constant in a json file could name an
-// address there. On Wii U and Cemu it declares an address, because that is what
-// the platform gives you and what every other offset in those targets already
-// means. The same split as everything else that spans these two worlds.
+// READ-ONLY DATA, NOT CODE. The first version of this hashed .text, which is
+// exactly wrong: .text is the region mods exist to rewrite. A fingerprint taken
+// over it does not identify the BUILD, it identifies the build plus whatever
+// mods are installed - so enrolling one would bake in a mod set, and adding a
+// mod would look like the game changing version. It was worse than theoretical
+// here: the declared slice began at 0x02000030, which is the exact address
+// examples/patch_mod writes to. Only the ordering of init and module load kept
+// that from mattering.
+//
+// Cemu makes the point again from the other side - graphic packs patch code as
+// a matter of course, and the recompiler treats .text as its own working
+// surface. Read-only data differs per build and nothing patches it.
+//
+// SWITCH DOES NOT DECLARE A LOCATION, because it does not have to. exlaunch
+// already knows where the main module's read-only data is, so the host asks
+// rather than making a target carry a number somebody has to look up per game
+// and get right. Wii U and Cemu have no equivalent - the host does not know its
+// own image bounds there, which is why Patches::InGameImage returns true rather
+// than checking - so those still declare an address.
 inline void Slice(uintptr_t* addr, uint32_t* length) {
 #if WIIXL_SWITCH
     *length = Host::IdentitySwitchLength;
     if (*length == 0) { *addr = 0; return; }
-    *addr = exl::util::modules::GetTargetStart() + Host::IdentitySwitchOffset;
+
+    const exl::util::Range& ro = exl::util::GetMainModuleInfo().m_Rodata;
+    // IdentitySwitchOffset is an offset INTO read-only data, not into the
+    // module, so a target can move the window off anything it finds unstable
+    // without having to know where rodata starts.
+    const uintptr_t start = ro.m_Start + Host::IdentitySwitchOffset;
+    if (start < ro.m_Start || (start + *length) > ro.GetEnd()) {
+        *addr = 0;
+        *length = 0;
+        return;
+    }
+    *addr = start;
 #else
     *length = Host::IdentityWiiuLength;
     *addr = (*length == 0) ? 0 : Host::IdentityWiiuAddress;
@@ -111,9 +152,8 @@ inline void Detect() {
 
     if (addr == 0 || length == 0) {
         impl::g_Configured = false;
-        WIIXL_LOG("Game: this target declares no identity slice, so the build "
-                  "cannot be fingerprinted - every offset here is trusted, not "
-                  "checked");
+        WIIXL_LOG("Game: no usable identity slice, so the build cannot be "
+                  "fingerprinted - every offset here is trusted, not checked");
         return;
     }
 
