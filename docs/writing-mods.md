@@ -313,13 +313,13 @@ directory:
 #include <wiixlaunch/mod_config.h>
 
 WiiXLaunch::Config cfg;
-cfg.Load("config.txt");                         // scoped to YOUR directory
+cfg.Load("config.ini");                         // scoped to YOUR directory
 int rooms = cfg.GetIntClamped("rooms", 45, 16, 128);
 bool loud = cfg.GetBool("verbose", false);
 ```
 
-`Load` goes through the scoped read, so `config.txt` means
-`mods/<your id>/config.txt` and nothing else. Put the file in your mod's `data/`
+`Load` goes through the scoped read, so `config.ini` means
+`mods/<your id>/config.ini` and nothing else. Put the file in your mod's `data/`
 directory and `build_mod.py` stages it next to the `.wxlm`.
 
 Three things about the parser, because settings files are written by hand by

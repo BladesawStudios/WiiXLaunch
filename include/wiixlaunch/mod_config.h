@@ -22,7 +22,7 @@
 // differently.
 //
 //     Config cfg;
-//     cfg.Load("config.txt");                  // absent is fine
+//     cfg.Load("config.ini");                  // absent is fine
 //     int rooms = cfg.GetInt("rooms", 45);     // clamped by the caller
 //
 // FORMAT. One setting per line, `key = value`. Blank lines are skipped; `#`,
@@ -31,6 +31,13 @@
 // negative. `true`/`false`/`yes`/`no`/`on`/`off` parse as booleans, as do 1 and
 // 0. Keys are matched case-sensitively, because a key that works in two
 // spellings is two keys to document.
+//
+// NO SECTIONS, AND IT SAYS SO. The convention is `config.ini`, and an .ini
+// extension invites `[Section]` headers - but a key here is matched across the
+// whole file, so two sections holding the same key would silently resolve to
+// whichever came first. That is the shape of bug this file exists to prevent,
+// so a section header is reported at load rather than skipped quietly. Keys are
+// file-wide; name them so they do not collide.
 
 #include <wiixlaunch/mod_log.h>
 // The buffer below is a zero-initialised 2 KB array, which GCC clears with a
@@ -88,6 +95,7 @@ public:
         m_Buf[m_Size] = '\0';
         m_Loaded = true;
         WIIXL_LOG("config: %s loaded (%u bytes)", path, m_Size);
+        WarnOnSections(path);
         return true;
     }
 
@@ -177,6 +185,39 @@ private:
 
         out = neg ? -acc : acc;
         return true;
+    }
+
+    // A SECTION HEADER IS NOT A SCOPE HERE, so it must not pass unremarked.
+    //
+    // Find() matches a key across the whole file and returns the first hit, so
+    // a file written as
+    //
+    //     [rooms]
+    //     limit = 45
+    //     [parts]
+    //     limit = 60
+    //
+    // resolves `limit` to 45 for both, silently. Calling the file .ini is what
+    // invites that shape, so the cost of the name is this check: one pass at
+    // load, and a line naming the first section found. Not a refusal - a
+    // decorative `[Settings]` header above a flat list is harmless and common,
+    // and refusing the whole file over it would be worse than the problem.
+    void WarnOnSections(const char* path) const {
+        const char* at = m_Buf;
+        while (*at) {
+            while (*at && IsSpace(*at) && *at != '\n') ++at;
+            if (*at == '[') {
+                const char* end = at;
+                while (*end && *end != '\n' && *end != ']') ++end;
+                WIIXL_LOG("config: %s has a section header %.*s] - this reader "
+                          "has no sections, so keys are matched across the whole "
+                          "file and the FIRST one wins", path,
+                          static_cast<int>(end - at), at);
+                return;
+            }
+            while (*at && *at != '\n') ++at;
+            if (*at == '\n') ++at;
+        }
     }
 
     // Returns a pointer at the first character of the value, or null.

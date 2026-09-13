@@ -395,7 +395,7 @@ title**:
 ```
 sd:/WiiXLaunch/mods/0100F2C0115B6000/        one game's modules
     houselimit.wxlm
-    houselimit/config.txt
+    houselimit/config.ini
 sd:/WiiXLaunch/mods/01007EF00011E000/        another game's
 ```
 

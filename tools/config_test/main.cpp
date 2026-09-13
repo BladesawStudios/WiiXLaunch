@@ -187,6 +187,27 @@ int main() {
         Eq("oversize file reads nothing", c.GetInt("rooms", 45), 45);
     }
 
+    // --- .ini section headers -----------------------------------------------
+    //
+    // The convention is config.ini, and that extension invites [Section]
+    // headers. They are not scopes: a key is matched across the whole file and
+    // the first hit wins. Load() says so in the log; what is asserted here is
+    // the behaviour the warning describes, because a warning nobody reads
+    // beside a parser that does something else is worse than either alone.
+    {
+        auto c = Load("[General]\nrooms = 60\n");
+        Eq("a decorative section does not break the key after it",
+           c.GetInt("rooms", 45), 60);
+        Eq("the section line is not itself a key", c.GetInt("General", 7), 7);
+    }
+    {
+        // The shape the warning exists for: same key, two sections. FIRST wins,
+        // which is why the log has to say the sections were not scopes.
+        auto c = Load("[rooms]\nlimit = 45\n[parts]\nlimit = 60\n");
+        Eq("duplicate key across sections resolves to the first",
+           c.GetInt("limit", 0), 45);
+    }
+
     std::printf("[config_test] %d checks, %d failures\n", g_Checks, g_Fail);
     if (g_Checks < 30) {
         std::printf("[config_test] DISARMED: only %d checks ran\n", g_Checks);
