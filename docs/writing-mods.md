@@ -39,7 +39,7 @@ A mod is a directory with a `mod.cpp` in it. Nothing else is required, though
 one more file is worth having from the start:
 
 ```
-E:\...\My Mods\hello_mod\
+hello_mod/
     mod.cpp
     mod.json      what the mod IS - see section 3
 ```
@@ -67,18 +67,24 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
 With `{"id": "hello"}` in `mod.json`, build it:
 
 ```
-python scripts\build_mod.py --source "E:\...\My Mods\hello_mod"
+python scripts/build_mod.py --source path/to/hello_mod
 ```
 
 The id is the module's name everywhere: the output `hello.wxlm`, its resource
 directory, and the name in every log line it causes. It may not start with `_`
 (that namespace is the host's).
 
-Deploy it by dropping `hello.wxlm` next to the others:
+Deploy it by dropping `hello.wxlm` next to the others. Where that is depends on
+the platform, because only one of them has storage the game does not own:
 
 ```
-<graphic pack>\content\WiiXLaunch\mods\hello.wxlm
+Wii U / Cemu   <graphic pack>/content/WiiXLaunch/mods/hello.wxlm
+Switch         sd:/WiiXLaunch/mods/<TITLE ID>/hello.wxlm
 ```
+
+The Switch path is per title on purpose - one SD card serves every game, and a
+flat directory would offer your mod to all of them. See
+[the module loader](loader.md#where-that-directory-is-per-platform).
 
 Boot, and the log should read (these are the real numbers - this example was
 built to get them):
@@ -176,8 +182,9 @@ a declaration nothing references costs nothing. Only what you bind becomes an
 undefined reference, which is what `wxlm.py` turns into an import. A mod that
 includes `wiixl_core.h`, `botw_player.h` and `botw_actor.h` - 66 declared
 symbols - and binds three, packs as **3 imports and 2 required surfaces**;
-`botw.actor` is not even required, because nothing bound from it. That is
-measured, not asserted: see the commit that added the generator.
+`botw.actor` is not even required, because nothing bound from it. Those are
+measured numbers, not an estimate - build the mod and `wxlm.py` prints the
+import and surface counts it wrote.
 
 ### The naming convention underneath
 

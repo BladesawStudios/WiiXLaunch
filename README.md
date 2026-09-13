@@ -16,6 +16,7 @@ See [overview.md](docs/overview.md) for detailed documentation.
 * **One file per game (`targets/<game>.json`)**: Project settings, memory sizes, Switch NPDM permissions and Wii U title IDs, per target. One checkout builds a host for any of them - `build_switch.bat totk`.
 * **ExLaunch Compatibility**: Support for function replacement, trampolines, and raw memory patching (`CodePatch::Nop`).
 * **Game Modules (`vendor/wiixlaunch-botw`)**: Pre-reverse engineered API methods for easy executable modding.
+* **Distributable compiled mods (`.wxlm`)**: Ship a mod as a binary somebody drops on their SD card, with no source and no rebuild. Several load side by side, each named in the log, each refused by name if the host cannot give it what it asked for. See [Writing a mod](docs/writing-mods.md).
 
 ---
 
@@ -85,7 +86,7 @@ cmake --build build/cemu
 To package your compiled binaries into SD card and emulator folder structures:
 
 ```bash
-python scripts/deploy.py
+python scripts/deploy.py --target botw
 ```
 
 This creates the output in `deploy/`:
