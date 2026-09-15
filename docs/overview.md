@@ -34,27 +34,48 @@ other people to install, you want the second: see
 
 ## Where to go next
 
+* [Setting Up](setup.md) - installing the toolchains, getting the SDK, writing a
+  `targets/<game>.json`, building, verifying and deploying for each platform.
 * [Writing a mod](writing-mods.md) - the `.wxlm` path end to end: the three
   layers, imports, picking a tick, arming, and the freestanding rules.
-* [Setting Up](setup.md) - installing the toolchains, writing a `targets/<game>.json`, building, verifying and deploying for each platform.
-* [Hooks](hooks.md) - writing `WIIXL_HOOK_DEFINE_TRAMPOLINE` hooks, finding offsets, raw memory patches.
-* [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on each platform.
-* [Cemu code cave relocation](cemu-relocation.md) - how the payload finds its own load address, and why it has to.
-* [The module loader](loader.md) - how compiled mods are loaded, the per-platform load point, and what is and is not initialised when your code first runs.
-* [wiixl.net](net.md) - TCP for mods: why a socket is tracked and owned rather than handed over as a raw descriptor, and **the static-import rule** - what base may and may not link against, which applies to every surface, not just this one.
-* [Modules](modules.md) - optional, game-specific APIs (e.g. [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)) added as submodules on top of the base framework.
-* [Graphics Injection](graphics-injection.md) - drawing your own textures and meshes into a game's render loop via `BotW::NVN` (Switch) and `BotW::GX2` (Wii U/Cemu).
+* [Hooks](hooks.md) - writing `WIIXL_HOOK_DEFINE_TRAMPOLINE` hooks, chaining
+  several on one function, finding offsets, checked and unchecked patches.
+* [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on
+  each platform.
+* [The module loader](loader.md) - how compiled mods are loaded, the per-platform
+  load point, the arena, load order, declared patches, module resources and
+  per-frame ticks.
+* [Modules](modules.md) - game-specific APIs (e.g.
+  [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)) added as
+  submodules on top of the base framework, and the standing engineering rules
+  this project holds itself to.
+* [wiixl.net](net.md) - TCP for mods: why a socket is tracked and owned rather
+  than handed over as a raw descriptor, and **the static-import rule** - what
+  base may and may not link against, which applies to every surface, not just
+  this one.
+* [Cemu code cave relocation](cemu-relocation.md) - how the payload finds its own
+  load address, and why it has to.
+* [Graphics Injection](graphics-injection.md) - drawing your own textures and
+  meshes into a game's render loop via `BotW::NVN` (Switch) and `BotW::GX2`
+  (Wii U/Cemu).
 
 ## Layout
 
 * `src/` - the HOST. Starts at `WiiXLaunch_Init()` in `main.cpp`. This is also
   where a host-built mod lives; a `.wxlm` does not go here.
 * `include/wiixlaunch/` - the framework itself.
-* `vendor/` - exlaunch, wut, WUPS, libfunctionpatcher (git submodules).
-* `scripts/` - config generation and packaging.
-* `tools/` - host-side developer tools (see [Debugging](debugging.md)).
-* `targets/<game>.json` - one file per GAME, describing the host build for it: name, title IDs, memory sizes, which game module to compile in. A `.wxlm` needs none of it - see [Writing a mod](writing-mods.md).
-
-## Graphics injection R&D
-
-This project is a sandbox for the in-game UI/graphics-pipeline injection work described in [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)'s TODO.md - see [Graphics Injection](graphics-injection.md) for the current API and how it works on each platform.
+* `sdk/` - the committed mod SDK: generated import headers, the freestanding
+  runtime and `build_mod.py`. Everything a `.wxlm` author needs, and nothing
+  else.
+* `examples/` - six working `.wxlm` mods, built by `test.bat` for both
+  architectures.
+* `targets/<game>.json` - one file per GAME, describing the host build for it:
+  name, title IDs, memory sizes, which game module to compile in. A `.wxlm`
+  needs none of it - see [Writing a mod](writing-mods.md).
+* `vendor/` - exlaunch, wut, WUPS, libfunctionpatcher, libnotifications and the
+  game modules (git submodules).
+* `scripts/` - config generation, the `.wxlm` writer, packaging and the test
+  gates.
+* `tools/` - host-side developer tools and test binaries (see
+  [Debugging](debugging.md)).
+* `docs/` - this documentation.

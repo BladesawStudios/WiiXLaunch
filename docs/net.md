@@ -1,5 +1,7 @@
 # wiixl.net — sockets that belong to somebody
 
+[« Back to overview](overview.md)
+
 `wiixl.net` is the first surface where a mod holds a resource with a
 **lifetime**. Hooks and patches are install-once and the host owns the result
 forever. A socket is not like that: a mod that opens one and never closes it
@@ -171,7 +173,8 @@ There is **one thread**. Mods run inside a tick, on the thread drawing the game,
 so a blocking socket call is not slow — it is a **frozen game**, on whatever
 schedule a remote client feels like.
 
-Leaving this to the mod does not work, and that is not a guess. `d_net` set
+Leaving this to the mod does not work, and that is not a guess. `d_net` (the
+`wiixl.net` sample, `examples/net_mod`) set
 `SO_NONBLOCK` on its **listener** and nothing on the sockets `accept` handed
 back — **accepted sockets do not inherit it**. The first `recv` on one stopped
 the game dead the moment anything connected. The mod's own comment said

@@ -2,7 +2,7 @@
 
 [« Back to overview](overview.md)
 
-This is the [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw) module's `NVN` and `GX2` namespaces: drawing your own textures and meshes directly into Breath of the Wild's render loop, on top of the game's own frame. It's the reason this repo exists.
+This is the [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw) module's `NVN` and `GX2` namespaces: drawing your own textures and meshes directly into Breath of the Wild's render loop, on top of the game's own frame. This is the host-built API; a `.wxlm` reaches the same functionality through the `botw.gfx` and `botw.gui` surfaces (see [Writing a mod](writing-mods.md)).
 
 ```cpp
 #include <wiixlaunch/botw/botw.hpp>   // host-built only; a .wxlm uses botw.gfx
@@ -41,16 +41,16 @@ NVN::OnInitialized([]() {
 NVN::TextureHandle t = NVN::CreateTexture(g_MyTextureBytes, kMyTextureSize);
 
 // Wii U/Cemu: read a packaged file off disk.
-GX2::TextureHandle t = GX2::LoadTexture("WiiXLaunch/mytexture.bin");
+GX2::TextureHandle t = GX2::LoadTexture("WiiXLaunch/mods/_host/mytexture.bin");
 ```
 
 `NVN::CreateTexture(packagedData, packagedSize, minFilter = Linear, magFilter = Linear, wrapMode = ClampToEdge)` expects Nintendo's own "packaged texture data" container format (a fixed header directly in front of GPU-ready, already-swizzled pixel bytes), not raw RGBA8. You don't write this by hand: see [Packaging your own assets](#packaging-your-own-assets) below. There's no `NVN::LoadTexture` that reads from disk; Switch textures are baked into the binary at compile time as a `.hpp` array and passed straight to `CreateTexture`.
 
 `GX2::CreateTexture(rgbaBytes, size, width, height, format = 0)` takes plain raw RGBA8 bytes plus explicit dimensions, and does its own GX2 micro-tiling of them into a proper surface at runtime. You'd normally reach this through `GX2::LoadTexture` rather than calling it directly:
 
-`GX2::LoadTexture(path, maxFileSize = 1MB)` reads a file packaged by `scripts/pack_resources.py` (see below) off disk via `FS::ReadFile`, then calls `CreateTexture` for you. `path` is resolved relative to the Cemu graphic pack's `content/` folder, e.g. `"WiiXLaunch/logo.bin"` resolves to `content/WiiXLaunch/logo.bin`.
+`GX2::LoadTexture(path, maxFileSize = 1MB)` reads a file packaged by `scripts/pack_resources.py` (see below) off disk via `FS::ReadFile`, then calls `CreateTexture` for you. `path` is resolved relative to the Cemu graphic pack's `content/` folder, e.g. `"WiiXLaunch/mods/_host/logo.bin"` resolves to `content/WiiXLaunch/mods/_host/logo.bin`. The host's own resources live under the reserved `_host` id - see [Module resources](loader.md#module-resources).
 
-Both platforms cap you at 16 live textures at once (`NVN`'s and `GX2`'s static texture pools are both fixed-size, no heap allocation involved).
+Texture pools are fixed-size, with no heap allocation involved: 16 live textures on `NVN`, 64 on `GX2`.
 
 ## Meshes
 
@@ -71,7 +71,7 @@ NVN::DrawSprite(cmdBuf, dstTexture, textureHandle, x, y, width, height, r = 1, g
 NVN::DrawMesh(cmdBuf, dstTexture, vertices, vertexCount);
 ```
 
-`DrawSprite` draws a real alpha-blended textured quad. `x`/`y`/`width`/`height` are in the same coordinate space the game's own UI draws in, roughly -1 to 1 across the screen (see `main.cpp`'s template, which places its logo at `x = -0.92, y = 0.50, width = 0.225, height = 0.40`, a small badge in the upper-left). `r, g, b, a` tint the sprite (`1, 1, 1, 1` is untinted, full alpha).
+`DrawSprite` draws a real alpha-blended textured quad. `x`/`y`/`width`/`height` are in the same coordinate space the game's own UI draws in, roughly -1 to 1 across the screen (see `src/main.cpp`, which places the host's logo at `x = -0.92, y = 0.50, width = 0.225, height = 0.40`, a small badge in the upper-left). `r, g, b, a` tint the sprite (`1, 1, 1, 1` is untinted, full alpha).
 
 `DrawMesh` draws a real depth-tested triangle list. Both `NVN` and `GX2` build their own private depth texture on first use rather than reusing one of the game's, since neither has a reliably reachable live depth buffer to borrow.
 
@@ -84,7 +84,7 @@ NVN::DrawMesh(cmdBuf, dstTexture, vertices, vertexCount);
 ## Limits
 
 * 16 draw callbacks, 16 init callbacks, per namespace.
-* 16 live textures at once, per namespace.
+* 16 live textures on `NVN`, 64 on `GX2`.
 * Sprites are written into a ring buffer of fixed-size slots (so many `DrawSprite` calls in the same frame are safe), but the ring does wrap - drawing more unique sprites in a single frame than the ring has slots for would overwrite one still in flight. In practice you won't hit this unless you're doing something unusual.
 * Mesh vertex data shares one bump-allocated arena per namespace (sized with headroom over any mesh this project has actually pushed through it). A single mesh larger than the whole arena will fail to draw; `WIIXL_LOG`/`BotW::OSLog` calls inside `DrawMesh`'s pipeline setup will tell you if a shader or buffer failed to initialize.
 
@@ -118,11 +118,11 @@ src/resources/logo.png
 src/resources/fish.obj
 ```
 
-`python scripts/deploy.py` runs `scripts/pack_resources.py` automatically, which converts each file into a packaged `.bin` and copies it into the Cemu graphic pack's `content/WiiXLaunch/` folder. After deploying, load them with:
+`python scripts/deploy.py` runs `scripts/pack_resources.py` automatically, which converts each file into a packaged `.bin` and copies it into the Cemu graphic pack's `content/WiiXLaunch/mods/_host/` folder. After deploying, load them with:
 
 ```cpp
-auto texture = GX2::LoadTexture("WiiXLaunch/logo.bin");
-auto mesh = GX2::LoadMesh("WiiXLaunch/fish.bin");
+auto texture = GX2::LoadTexture("WiiXLaunch/mods/_host/logo.bin");
+auto mesh = GX2::LoadMesh("WiiXLaunch/mods/_host/fish.bin");
 ```
 
 If you'd rather have a GX2 texture compiled in instead of loaded from disk, `vendor/wiixlaunch-botw/tools/pack_texture_gx2.py <image> <Name> --out include/` produces a header for `GX2::CreateTexture` the same way `pack_texture_nvn.py` does for `NVN::CreateTexture`.

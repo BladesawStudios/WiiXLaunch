@@ -46,11 +46,12 @@ looks at `$DEVKITPPC` first, then `C:\devkitPro\devkitPPC` and
 
 ## 3. Get the SDK
 
-The SDK is `sdk/` in the WiiXLaunch repository. It is 33 text files. Download
-that folder — from a release, from the repo's web interface, or by cloning:
+The SDK is `sdk/` in the WiiXLaunch repository: a folder of plain text files,
+nothing compiled. Download that folder from a release, from the repository's
+web interface, or by cloning:
 
 ```
-git clone <repo>
+git clone https://github.com/TKVSC-Team/WiiXLaunch
 ```
 
 You do not need the submodules, a toolchain, or to build anything. Copy `sdk/`
@@ -201,7 +202,7 @@ host for all three platforms.
 ## Getting the source
 
 ```bash
-git clone --recurse-submodules <your-fork-url>
+git clone --recurse-submodules https://github.com/TKVSC-Team/WiiXLaunch
 ```
 
 Already cloned without it:
@@ -417,23 +418,21 @@ python scripts/make_sdk.py --host
 
 ## Known gaps
 
-* **The host is not published.** `sdk/` is committed and can be downloaded
-  directly, but the host graphic pack is still cut by building this repo. It is
-  a self-contained folder and could be attached to a release; nobody has.
-* **Cemu is the only platform that has run.** The Switch and Wii U hosts build
-  every time and have never been executed. A mod targets surfaces rather than a
-  platform, so it should follow — but nothing has demonstrated that.
-* **Wii U has never been run.** It enumerates, reserves an arena from the
-  default heap, flushes caches and loads from `ON_APPLICATION_START` — and no
-  one has executed any of that. It needs Aroma on real hardware to verify;
-  Cemu cannot run WUPS plugins, so the Cemu target proves nothing about it.
-  Treat it as untested rather than as working. Cemu and Switch have both
-  loaded modules for real.
+* **The host is not published as a release yet.** `sdk/` is committed and can
+  be downloaded directly, but the host graphic pack is still cut by building
+  this repo (`python scripts/make_sdk.py --host`). It is a self-contained folder
+  and belongs on a release page.
+* **Wii U has never been run.** The Wii U host builds every time. It enumerates
+  its mods directory, reserves an arena from the default heap, flushes caches
+  and loads from `ON_APPLICATION_START` — and none of that has been executed.
+  It needs Aroma on real hardware to verify; Cemu cannot run WUPS plugins, so
+  the Cemu target proves nothing about it. Treat it as untested rather than as
+  working. Cemu and Switch have both loaded and run modules for real.
 * **The Switch host has no hook-probe target**, so `wiixl.core:HookProbeTarget`
   returns null there and the two-module hook-collision demo reports "not
   hooking" instead of running. Loading, relocation, imports, `.init_array` and
   arena accounting are all exercised on that platform; hook chaining is not.
 * **A Switch mod is built separately**: `--target switch` produces an AArch64
-  module in `build/switch/`, and a mod is compiled once per architecture. The
-  Wii U and Cemu module is the same file — a `.wxlm` names surfaces, and
+  module in `build/switch-mods/`, and a mod is compiled once per architecture.
+  The Wii U and Cemu module is the same file — a `.wxlm` names surfaces, and
   neither the code nor the format knows which of those two is running it.

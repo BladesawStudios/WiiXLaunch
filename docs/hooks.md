@@ -27,11 +27,9 @@ extern "C" void WiiXLaunch_Init() {   // the HOST's entry; a .wxlm uses WiiXLaun
 }
 ```
 
-`Callback`'s signature must exactly match the target function's (return type, argument types, calling convention). `Orig(...)` calls the original function
+`Callback`'s signature must exactly match the target function's (return type, argument types, calling convention). `Orig(...)` calls the original function: call it, skip it, or call it with different arguments, depending on what the hook is for.
 
-(call it, don't call it, or call it with different arguments, depending on what you want the hook to do.)
-
-`Install(switchOffset, wiiuOffset)` takes both offsets and picks the right one for the platform being built. see [Finding offsets](#finding-offsets) below. On Cemu, the Wii U offset is reused obv.
+`Install(switchOffset, wiiuOffset)` takes both offsets and picks the right one for the platform being built; see [Finding offsets](#finding-offsets) below. Cemu runs the Wii U binary, so it reuses the Wii U offset.
 
 `WIIXL_HOOK_DEFINE_REPLACE` is also available with the same interface, for hooks that don't need `Orig()` at all.
 
@@ -347,7 +345,7 @@ WIIXL_HOOK_DEFINE_TRAMPOLINE(MyCameraHook), public MyCameraLogic {
 
 That keeps the part you actually care about (what the hook does) written once, while the part that has to differ (how you reach into each platform's version of the struct to get there), stays isolated and easy to audit per platform.
 
-## List of Hooks and CodePatch types:
+## Reference: hook forms and `CodePatch`
 
 ### WIIXL_HOOK_DEFINE_TRAMPOLINE(name)
 
@@ -394,7 +392,7 @@ This is the only hook form that lets you target different title IDs than the pro
 
 ### WIIXL_OFFSET(switchOffset, wiiuOffset)
 
-The plain macro all three hook forms use internally to pick the right offset for the platform being compiled: `switchOffset` on Switch, `wiiuOffset` everywhere else (Wii U and Cemu share the same binary offsets obv). Usable standalone if you need a platform-correct address outside of a hook:
+The plain macro all three hook forms use internally to pick the right offset for the platform being compiled: `switchOffset` on Switch, `wiiuOffset` everywhere else (Wii U and Cemu run the same binary, so they share offsets). Usable standalone if you need a platform-correct address outside of a hook:
 
 ```cpp
 constexpr auto offset = WIIXL_OFFSET(0x00885bd0, 0x02d908b4);
@@ -447,4 +445,4 @@ WiiXLaunch::CodePatch::Nop(offset);
 
 ### CpuContext
 
-[`context.hpp`](../include/wiixlaunch/context.hpp) defines a `WiiXLaunch::CpuContext` struct for raw register access (`GetArg`/`SetArg` per platform). It's not wired into any hook path yet on Switch, Wii U, or Cemu (nothing constructs one or passes it to a callback.) I haven't found a reason to implement it yet, if I do, I will, or maybe you could make a PR lol.
+[`context.hpp`](../include/wiixlaunch/context.hpp) defines a `WiiXLaunch::CpuContext` struct for raw register access (`GetArg`/`SetArg` per platform). It is not wired into any hook path yet on any platform: nothing constructs one or passes it to a callback. It is reserved for a register-level hook form that has not been needed so far. Contributions welcome.

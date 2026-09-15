@@ -29,7 +29,7 @@ recovered from the instruction (each is half an address, and `HA` folds in a
 sign-extension carry) so those entries carry the relocation's resolved
 `S+Addend` instead.
 
-**The bootstrap** (`WiiXLaunch_Cemu_Init`, in `src/main.cpp`) works out where it
+**The bootstrap** (`WiiXLaunch_Cemu_Init`, in `src/cemu/bootstrap.cpp`) works out where it
 is before touching anything:
 
 ```asm

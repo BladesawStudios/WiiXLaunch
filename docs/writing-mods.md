@@ -1,11 +1,14 @@
 # Writing a mod
 
-This is the guide for the thing WiiXLaunch became. It used to be a template you
-copied and built on; now it is a host with a versioned ABI, and a mod is a
-separate compiled binary that asks the host for what it needs by name.
+[« Back to overview](overview.md)
 
-If you have read `docs/loader.md` this repeats a little of it on purpose - that
-document explains how the loader works, this one explains how to use it.
+WiiXLaunch is a host with a versioned ABI, and a mod is a separate compiled
+binary that asks the host for what it needs by name. This is the guide to
+writing one.
+
+If you have read [the module loader](loader.md) this repeats a little of it on
+purpose - that document explains how the loader works, this one explains how to
+use it.
 
 ---
 
@@ -229,7 +232,7 @@ written out.
 Ask the host. Every boot logs the full registry at the load point:
 
 ```
-Surface: 24 surface(s) registered on this host:
+Surface: 25 surface(s) registered on this host:
 Surface:   wiixl.core v1.5 (17 symbols)
 Surface:   botw.player v1.1 (17 symbols)
 ...
@@ -363,9 +366,9 @@ Rules of thumb:
   an input injector, anything holding state it has to release - use
   `botw.input:RegisterFrame`.
 
-That last one is not a hypothetical. The API mod was pumped from the player tick
-and was therefore dead on the title screen, which is precisely when you need it
-to undo whatever left you there.
+That last one is not hypothetical. An HTTP-server mod was once pumped from the
+player tick and was therefore dead on the title screen, which is precisely when
+you need it to undo whatever left you there.
 
 All three are attributed multi-slot registries: several mods can register, the
 host records which is which, and a callback that hangs is named in the log
@@ -417,9 +420,8 @@ branches to address zero.**
 - **No libc.** No `printf`, `strlen`, `malloc`, `memcpy`. Nothing.
 - **GCC synthesises `memcpy`/`memset`/`memmove`/`memcmp` anyway** for struct
   assignment and array init. You must define them yourself, or you get a jump to
-  0 at runtime with no build error. The API mod keeps them in
-  `include/wiixlaunch/api/mod_log.hpp`; copy that file into a new mod as a
-  starting point.
+  0 at runtime with no build error. `<wiixlaunch/mod_runtime.h>` in the SDK
+  defines all four; include it.
 - **Static constructors do run.** The loader executes `.init_array`. (The *host
   payload* has no crt0 and cannot; a mod is different, because the loader does it
   for you.)
@@ -440,8 +442,8 @@ what you asked for.**
   refused by name at load, with the reason in the log, rather than calling
   something that no longer means what it did.
 
-This is why the API mod requires `botw.map v1.0` and happily runs against a host
-publishing v1.1. When you add to a surface, append to the symbol table and bump
+A mod that requires `botw.map v1.0` runs unchanged against a host publishing
+v1.1. When you add to a surface, append to the symbol table and bump
 the minor - never insert, never reorder.
 
 ---
@@ -468,15 +470,14 @@ wraps b_second. Rename to reorder.
 
 ## 11. Shipping a mod to other people
 
-Everything above assumes you have this repo. A mod author does not need it.
+Everything above assumes you have this repo. A mod author does not need it: the
+SDK is committed at `sdk/` and refreshed from the surface tables with
 
 ```
-python scripts/make_sdk.py build/sdk
+python scripts/make_sdk.py
 ```
 
-cuts a self-contained SDK - no submodules, no game headers, no host source.
-`make_sdk` prints how many files it wrote, so that number lives in one place
-rather than here as well:
+It is self-contained - no submodules, no game headers, no host source:
 
 ```
 sdk/
@@ -533,11 +534,11 @@ this project while the gates read green.
 
 ## Where to go next
 
-- `docs/loader.md` - the `.wxlm` format, load sequence, phases, refusals
-- `docs/modules.md` - the standing rules, and why each one exists
-- `docs/hooks.md` - chaining, trampolines, the conflict report
-- `docs/net.md` - sockets, the static-import rule
-- `examples/` - six working mods, smallest first: `hook_mod_a`, `sample_mod`,
-  `patch_mod`, `player_mod`, `net_mod`
-- The API mod (`BotW_API_wxlm`) - the largest real one: 201 imports, nine
-  surfaces, an HTTP server pumped from the input frame
+- [The module loader](loader.md) - the `.wxlm` format, load sequence, phases,
+  refusals
+- [Modules](modules.md) - the standing rules, and why each one exists
+- [Hooks](hooks.md) - chaining, trampolines, the conflict report
+- [wiixl.net](net.md) - sockets, the static-import rule
+- `examples/` - six working mods: `sample_mod` (the smallest), `hook_mod_a` and
+  `hook_mod_b` (the hook-collision pair), `patch_mod`, `player_mod` and
+  `net_mod` (an HTTP server pumped from the input frame)

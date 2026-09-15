@@ -26,6 +26,7 @@ silently does nothing.
 |---|---|---|
 | Cemu | Entry hook `0x03098928` is already late enough | **Measured** |
 | Wii U (Aroma) | `ON_APPLICATION_START` | **Implemented, never run** |
+| Switch | `exl_main`, in the subsdk before the game (or `fs_ready`, per target) | **Measured** |
 
 Each platform answers two questions differently, and both answers are load
 point code rather than anything the loader knows:
@@ -39,14 +40,15 @@ point code rather than anything the loader knows:
 Switch is the only one needing `Arena::SetWriteAlias`, because Horizon is the
 only one of the three that refuses to make an address both writable and
 executable.
-| Switch | `exl_main`, in the subsdk before the game | **Measured** |
 
 Only Cemu needs a **game module** to nominate its load point, and only because
 the load point there is an address inside the game — knowledge base cannot
 have. Wii U is handed a lifecycle event and the Switch runs this subsdk before
 the game's own main, so on both the host drives the loader itself
 (`src/wiiu_plugin.cpp`, `src/switch_entry.cpp`) and module loading does not
-depend on a game module being installed.
+depend on a game module being installed. Which Switch entry is used is a
+per-target choice (`switch.load_point`), because it depends on the game's SDK
+version — see [Setting Up](setup.md#when-the-loader-runs-switch).
 
 On Cemu, `WiiXLaunch::LoadPoint::Probe` reported `FS-USABLE` at the entry hook
 itself: `FSAddClient`, `FSOpenFile`, `FSReadFile`, `FSReadFileWithPos` and
