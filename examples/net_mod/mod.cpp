@@ -11,7 +11,7 @@
 // rather than a comment claiming it.
 //
 // Everything the loader writes at runtime is volatile, for the reason in
-// docs/modules.md: without it the compiler folds the import pointers into
+// docs/framework/modules.md: without it the compiler folds the import pointers into
 // direct branches and the demonstration stops demonstrating anything.
 
 #include <cstdint>

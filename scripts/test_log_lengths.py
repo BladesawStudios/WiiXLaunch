@@ -35,7 +35,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(HERE)
 
 # A floor, so a scan that stops finding calls fails instead of passing over
-# nothing. Fourth rule in docs/modules.md: a checker that examines zero things
+# nothing. Fourth rule in docs/framework/modules.md: a checker that examines zero things
 # reports success exactly like one that examined everything.
 EXPECTED_MIN_CALLS = 150
 

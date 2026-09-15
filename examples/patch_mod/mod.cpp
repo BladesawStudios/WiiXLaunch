@@ -54,7 +54,7 @@
 // code does not necessarily change behaviour until the block is re-translated.
 // It does not matter here, because the change is inert either way and the host
 // verifies by reading MEMORY back rather than by observing behaviour. It does
-// matter for a real patch mod, and docs/loader.md says so.
+// matter for a real patch mod, and docs/framework/loader.md says so.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>

@@ -40,7 +40,7 @@ extern uint32_t wiixl_import__wiixl_patch__WriteUnchecked(uintptr_t addr, const 
 
 // Reads bytes back out of game memory, which is how a mod verifies its own
 // write rather than trusting the return value. The sixth rule in
-// docs/modules.md, made available to mods.
+// docs/framework/modules.md, made available to mods.
 extern uint32_t wiixl_import__wiixl_patch__Read(uintptr_t addr, void* out, uint32_t size);
 }
 
@@ -54,7 +54,7 @@ inline constexpr unsigned kVersionMinor = 0;
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
 // into a direct branch and emits a relocation kind that cannot reach a host
-// address - the module fails to relocate. See docs/modules.md.
+// address - the module fails to relocate. See docs/framework/modules.md.
 #define WXL_USE_wiixl_patch(sym) \
     inline decltype(&wiixl_import__wiixl_patch__##sym) volatile sym = \
         &wiixl_import__wiixl_patch__##sym

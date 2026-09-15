@@ -90,7 +90,7 @@ python3 scripts/make_sdk.py --check --verify
 # be exercised on a console. NOT WIRED IN UNTIL 2026-09-04 - written, passing
 # when run by hand, and never called by a build script, so it could not fail at
 # all. A gate nothing invokes is the limit case of the fourth rule in
-# docs/modules.md, and the one thing a gate cannot detect about itself.
+# docs/framework/modules.md, and the one thing a gate cannot detect about itself.
 bash tools/format_test/build.sh
 
 # sqrt, sin and cos for modules: a .wxlm has no libm, so mod_math.h writes them

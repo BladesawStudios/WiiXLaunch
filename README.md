@@ -12,8 +12,8 @@ Full documentation starts at [docs/overview.md](docs/overview.md).
 
 ## Features
 
-* **One C++ codebase, three platforms.** Hooks and memory patches are written once with ExLaunch-style syntax (`WIIXL_HOOK_DEFINE_TRAMPOLINE`, `Orig(...)`) and dispatched to the right mechanism at compile time.
-* **Distributable compiled mods (`.wxlm`).** A mod is a relocatable binary that names the *surfaces* it needs (`wiixl.core`, `botw.player`) and contains no game offsets. The host resolves them at load, several mods load together, each is named in the log, and each is refused by name if the host cannot give it what it asked for. See [Writing a mod](docs/writing-mods.md).
+* **One C++ codebase, three platforms.** Host-built hooks and memory patches are written once with ExLaunch-style syntax (`WIIXL_HOOK_DEFINE_TRAMPOLINE`, `Orig(...)`) and dispatched to the right mechanism at compile time.
+* **Distributable compiled mods (`.wxlm`).** A mod is a relocatable binary that names the *surfaces* it needs (`wiixl.core`, `botw.player`) and contains no game offsets. The host resolves them at load, several mods load together, each is named in the log, and each is refused by name if the host cannot give it what it asked for. See [SDK: Getting started](docs/sdk/getting-started.md).
 * **A committed SDK (`sdk/`).** Everything a mod author needs to build a `.wxlm`: generated import headers with real signatures, the freestanding runtime, and the build script. No framework checkout, no submodules.
 * **One file per game (`targets/<game>.json`).** Project settings, memory sizes, Switch NPDM permissions and Wii U title IDs, per target. One checkout builds a host for any of them: `build_switch.bat totk`.
 * **Game modules (`vendor/wiixlaunch-*`).** Game-specific knowledge promoted into a high-level API and published as versioned surfaces. The first is [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw) for Breath of the Wild.
@@ -68,7 +68,9 @@ python sdk/scripts/build_mod.py --source hello_mod
 
 ## Building
 
-Two different jobs. [Setting Up](docs/setup.md) walks through both.
+Two different jobs. [SDK: Getting started](docs/sdk/getting-started.md) covers
+writing a mod; [Framework: Setup](docs/framework/setup.md) covers building the
+host itself.
 
 **Writing a mod** needs Python 3, devkitPPC (and devkitA64 for Switch) and the `sdk/` folder. About fifteen minutes.
 
@@ -121,7 +123,7 @@ python scripts/make_sdk.py --host
 | Switch | yes | yes (under Ryujinx) |
 | Wii U | yes | **not yet** - needs Aroma on real hardware |
 
-See [Known gaps](docs/setup.md#known-gaps).
+See [Known gaps](docs/framework/setup.md#known-gaps).
 
 ---
 

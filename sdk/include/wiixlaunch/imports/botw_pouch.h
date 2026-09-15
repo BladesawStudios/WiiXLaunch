@@ -88,7 +88,7 @@ inline constexpr unsigned kVersionMinor = 1;
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
 // into a direct branch and emits a relocation kind that cannot reach a host
-// address - the module fails to relocate. See docs/modules.md.
+// address - the module fails to relocate. See docs/framework/modules.md.
 #define WXL_USE_botw_pouch(sym) \
     inline decltype(&wiixl_import__botw_pouch__##sym) volatile sym = \
         &wiixl_import__botw_pouch__##sym

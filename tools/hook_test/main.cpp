@@ -34,7 +34,7 @@ static int g_checks = 0;
 static int g_failures = 0;
 
 // A floor, so a suite that shrinks cannot report success over what is left of
-// itself. See the fourth rule in docs/modules.md.
+// itself. See the fourth rule in docs/framework/modules.md.
 static const int kExpectedChecks = 90;
 
 // Section bookkeeping: how many checks each block contributed.
@@ -127,7 +127,7 @@ static void FillPrologue() {
 //
 // The obvious test would be to assert IsPcRelativeBranch(insn) equals
 // (opcode is 16 or 18) && AA == 0. That is the implementation restated, and by
-// the third rule in docs/modules.md it can only confirm what the code already
+// the third rule in docs/framework/modules.md it can only confirm what the code already
 // believes.
 //
 // So the property is re-derived from what the ISA says a branch DOES. PowerPC
@@ -251,7 +251,7 @@ int main() {
     // Unbuffered, because this binary can crash. With block-buffered stdout
     // a segfault discards everything printed so far, so the run looks like a
     // program that produced no output at all - which says nothing about where
-    // it got to. Documented in docs/modules.md; it applies to every test
+    // it got to. Documented in docs/framework/modules.md; it applies to every test
     // binary here, not only the one where it was first noticed.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 

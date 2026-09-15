@@ -70,7 +70,7 @@ enum class Endian : uint8_t {
     Big    = 1,
 };
 
-// When the mod's entry point runs. See docs/loader.md for what is and is not
+// When the mod's entry point runs. See docs/framework/loader.md for what is and is not
 // initialised at each - a mod asking for Load must not touch game state.
 enum class Phase : uint8_t {
     Load     = 0,  // right after ingestion, at the load point

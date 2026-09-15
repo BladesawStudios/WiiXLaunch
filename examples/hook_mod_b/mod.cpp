@@ -6,8 +6,8 @@
 // directory enumeration and nothing else.
 //
 // The filenames decide the order. Load order is lexical by filename
-// (docs/loader.md), load order is hook install order, and hook install order is
-// call order (docs/hooks.md). "a_first.wxlm" sorts before "b_second.wxlm", so
+// (docs/framework/loader.md), load order is hook install order, and hook install order is
+// call order (docs/framework/hooks.md). "a_first.wxlm" sorts before "b_second.wxlm", so
 // this one runs SECOND, and the boot log should read:
 //
 //   HookProbe: a_first ran (before Original)
@@ -21,7 +21,7 @@
 // each line names which mod it came from so it is obvious which.
 //
 // Everything the loader writes at runtime is volatile, for the reason in
-// docs/modules.md: without it the compiler folds the import pointers into
+// docs/framework/modules.md: without it the compiler folds the import pointers into
 // direct branches and the test stops testing anything.
 
 #include <cstdint>

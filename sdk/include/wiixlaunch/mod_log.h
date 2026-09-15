@@ -31,7 +31,7 @@ namespace WiiXLaunch::ModLog {
 
 constexpr uint32_t kLineMax = 512;
 
-// volatile for the reason in docs/modules.md: the loader writes this pointer at
+// volatile for the reason in docs/framework/modules.md: the loader writes this pointer at
 // relocation time, and without volatile the compiler folds it into a direct
 // branch that cannot reach a host address.
 using LogFn = void (*)(const char*);

@@ -163,7 +163,7 @@ ON_APPLICATION_START() {
     WiiXLaunch::Surface::LogRegistered();
 
     // Lexical filename order, which is also hook priority - a specification
-    // rather than an enumeration artefact. See docs/loader.md.
+    // rather than an enumeration artefact. See docs/framework/loader.md.
     const uint32_t loaded = WiiXLaunch::Loader::LoadAll("WiiXLaunch/mods");
 
     // Declared patches are applied during the loads above; they are verified

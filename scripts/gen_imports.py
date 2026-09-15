@@ -347,7 +347,7 @@ def render(surface, major, minor, symbols, callback_types):
 
     lines.append("// VOLATILE is not style. Without it the compiler folds the indirect call\n"
                  "// into a direct branch and emits a relocation kind that cannot reach a host\n"
-                 "// address - the module fails to relocate. See docs/modules.md.\n")
+                 "// address - the module fails to relocate. See docs/framework/modules.md.\n")
     lines.append("#define WXL_USE_%s(sym) \\\n"
                  "    inline decltype(&wiixl_import__%s__##sym) volatile sym = \\\n"
                  "        &wiixl_import__%s__##sym\n" % (flat, flat, flat))

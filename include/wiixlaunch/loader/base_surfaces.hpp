@@ -402,7 +402,7 @@ extern "C" inline uint32_t PtWriteUnchecked(uintptr_t addr, const void* data, ui
 
 // Reads bytes back out of game memory, which is how a mod verifies its own
 // write rather than trusting the return value. The sixth rule in
-// docs/modules.md, made available to mods.
+// docs/framework/modules.md, made available to mods.
 extern "C" inline uint32_t PtRead(uintptr_t addr, void* out, uint32_t size) {
     if (!addr || !out || size == 0) return 0;
     const uint8_t* src = reinterpret_cast<const uint8_t*>(addr);

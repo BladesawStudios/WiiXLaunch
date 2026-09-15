@@ -154,7 +154,7 @@ def main():
             "\n[test_host] THE HOST IS NOT COMPLETE WITHOUT src/main.cpp\n\n"
             + "\n".join(failures) + "\n\n"
             "  main.cpp becomes a .wxlm at stage 4, so anything the host needs must not\n"
-            "  come from it. See docs/loader.md.\n\n")
+            "  come from it. See docs/framework/loader.md.\n\n")
         return 1
 
     # Say WHAT was checked, not just that it passed. A count that can visibly

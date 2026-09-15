@@ -418,7 +418,7 @@ def main():
 
     gxx = find_gxx(target)
     if gxx is None:
-        # No gate exits 0 on a missing tool - see docs/modules.md.
+        # No gate exits 0 on a missing tool - see docs/framework/modules.md.
         sys.stderr.write(
             "\n[build_mod] SETUP PROBLEM - not a broken source tree.\n"
             "  %sg++ was not found. Set %s, or install %s.\n\n"

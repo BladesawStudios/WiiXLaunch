@@ -464,7 +464,7 @@ def pack_header(phase, abi_version, mod_id, ver_major, ver_minor, ver_patch,
     The gate used to read only this module CONSTANTS - HEADER_SIZE, MAGIC, the
     entry sizes - and never asked the writer to emit a byte, so a writer whose
     packing returned b"" passed it cleanly. See the fourth rule in
-    docs/modules.md.
+    docs/framework/modules.md.
     """
     return struct.pack(
         header_format(byte_order_for(machine)),

@@ -144,7 +144,7 @@ public:
 
 private:
     using ReadFn = int32_t (*)(const char*, void*, uint32_t);
-    // volatile for the reason in docs/modules.md: the loader writes this pointer
+    // volatile for the reason in docs/framework/modules.md: the loader writes this pointer
     // at relocation time, and without volatile the compiler folds it into a
     // direct branch that cannot reach a host address.
     static inline ReadFn volatile g_Read = &wiixl_import__wiixl_core__ModReadFile;

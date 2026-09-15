@@ -71,7 +71,7 @@ namespace WiiXLaunch {
 // A direct call emits a branch relocation that reaches at most 128 MB and
 // cannot name an arbitrary host address; the loader patches POINTERS. The
 // generated headers ship a WXL_USE_* macro that binds one correctly, so use it
-// rather than writing the declaration out. See docs/modules.md.
+// rather than writing the declaration out. See docs/framework/modules.md.
 namespace VerImports {
 WXL_USE_wiixl_call(ResolveTarget);
 WXL_USE_wiixl_version(Fingerprint);

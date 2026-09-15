@@ -55,7 +55,7 @@
 //                     allocating, through wiixl.core's HeapGranted.
 //
 // The distinction is opt-in on the module's side: stating a number means being
-// held to it. Both paths are written out in docs/loader.md, with the log format
+// held to it. Both paths are written out in docs/framework/loader.md, with the log format
 // shown literally, and both are exercised by tools/loader_fuzz.
 // ---------------------------------------------------------------------------
 
@@ -444,7 +444,7 @@ inline Grant Acquire(const char* owner, uint32_t request, uint32_t floor,
     // granted-vs-requested on EVERY module, always, including the best-effort
     // path where "requested" is the interesting half of the answer. When a mod
     // misbehaves in-game this is the first line worth having, and it costs
-    // nothing to print. The exact wording is reproduced in docs/loader.md so a
+    // nothing to print. The exact wording is reproduced in docs/framework/loader.md so a
     // bug report can be matched against it.
     if (s.stated) {
         WIIXL_LOG("Arena: %s granted=%u (%u KB) requested=%u (%u KB) at %p - stated "

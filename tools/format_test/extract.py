@@ -52,7 +52,7 @@ def main():
     # "succeed" - producing a header that compiles and a test suite that
     # exercises less than it claims to. A too-short body, or one missing the
     # helpers FormatText dispatches to, means the markers no longer describe the
-    # file. See the fourth rule in docs/modules.md.
+    # file. See the fourth rule in docs/framework/modules.md.
     required = ("FormatText", "AppendChar", "AppendStr", "AppendUInt",
                 "AppendInt", "AppendFloat")
     missing = [n for n in required if n not in body]

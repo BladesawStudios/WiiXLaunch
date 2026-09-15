@@ -26,7 +26,7 @@
 //
 // `used` because nothing in C++ ever references these records: the section is
 // read by a Python script and the entries are consumed by the host. That is
-// exactly the case the first rule in docs/modules.md exists for - without
+// exactly the case the first rule in docs/framework/modules.md exists for - without
 // `used` the compiler emits nothing and the mod ships with no patches at all,
 // silently.
 

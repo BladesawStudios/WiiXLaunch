@@ -203,7 +203,7 @@ inline uint32_t g_SiteCount = 0;
 
 // THE PROLOGUE DECODER'S OWN LIVENESS. "We refused nothing" and "the decoder
 // never ran" look identical in a log, and that ambiguity is the whole failure
-// class docs/modules.md rule four is about. These count what was actually
+// class docs/framework/modules.md rule four is about. These count what was actually
 // examined, so the number can visibly drop to zero.
 inline uint32_t g_PrologueWordsDecoded = 0;
 inline uint32_t g_PrologueRelativeFound = 0;
@@ -214,7 +214,7 @@ inline uint32_t g_LinkCount = 0;
 // Executable scratch for trampolines.
 //
 // On Cemu this comes from the backend's trampoline pool, which stays a host
-// static for the reasons in docs/loader.md - it is per-payload state, not a
+// static for the reasons in docs/framework/loader.md - it is per-payload state, not a
 // sharing problem, and once main.cpp is a .wxlm there is exactly one payload.
 // On the host test it is ordinary memory: nothing is executed there, only
 // decoded.

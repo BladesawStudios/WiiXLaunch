@@ -356,7 +356,7 @@ inline void Probe(const char* where,
     WIIXL_LOG("[LP:%s] ===== probe start =====", where);
 
     // FOUR SELF-REPORTED VERDICTS WITH NOTHING ASSERTING ALL FOUR APPEARED is
-    // the fourth rule (docs/modules.md) one level up: a probe that ends early
+    // the fourth rule (docs/framework/modules.md) one level up: a probe that ends early
     // used to print a reason and simply stop, and a log MISSING three lines
     // reads like a log that passed. So the questions start at NOT-RUN, every
     // early exit falls through to a single summary, and the summary counts.
@@ -573,7 +573,7 @@ inline void Probe(const char* where,
 // FS is genuinely not ready early, which is exactly what the other two
 // platforms may turn out to be.
 //
-// See docs/loader.md for what is and is not initialised at each phase.
+// See docs/framework/loader.md for what is and is not initialised at each phase.
 // ---------------------------------------------------------------------------
 
 } // namespace WiiXLaunch::LoadPoint

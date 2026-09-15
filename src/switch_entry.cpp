@@ -99,7 +99,7 @@ static void RunLoader() {
     WiiXLaunch::Surface::LogRegistered();
 
     // Lexical filename order, which is also hook priority - a specification
-    // rather than an enumeration artefact. See docs/loader.md.
+    // rather than an enumeration artefact. See docs/framework/loader.md.
     // PER-TITLE FIRST, SHARED AS A FALLBACK.
     //
     // sd:/WiiXLaunch/mods is one directory for every game on the card. Cemu's

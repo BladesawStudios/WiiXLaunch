@@ -9,7 +9,7 @@
 // SEVERAL MODULES. LoadAll enumerates a directory and loads every .wxlm in it,
 // in lexical filename order, each into its own bounded arena grant and each
 // attributed by mod id when it installs a hook. That order is a specification,
-// not an enumeration artefact - see LoadAll and docs/loader.md.
+// not an enumeration artefact - see LoadAll and docs/framework/loader.md.
 //
 // ORDER OF OPERATIONS, and it is the order for a reason:
 //
@@ -145,7 +145,7 @@ inline void CopyName(char* dst, const char* src) {
 // Byte-wise ascending. Deliberately NOT case-insensitive and not locale-aware:
 // the order has to be predictable from the bytes of a filename on any host, and
 // "predictable" beats "friendly" when it is the user's only lever over which
-// mod runs first. Uppercase sorts before lowercase; docs/loader.md says so.
+// mod runs first. Uppercase sorts before lowercase; docs/framework/loader.md says so.
 inline bool NameLess(const char* a, const char* b) {
     for (uint32_t i = 0; i < kMaxNameLen; ++i) {
         const unsigned char ca = static_cast<unsigned char>(a[i]);
@@ -674,7 +674,7 @@ inline Reject LoadFrom(Reader& file) {
     // POISON BEFORE PLACING, so that "the loader zeroed my .bss" is a claim the
     // module can actually test.
     //
-    // THE FOURTH RULE (docs/modules.md). The sample module checks its .bss is
+    // THE FOURTH RULE (docs/framework/modules.md). The sample module checks its .bss is
     // zero and reports success - but freshly carved arena memory is very often
     // already zero, so that check passed whether or not the zeroing step below
     // ran. Delete the memset and the module would still have said "bss was
@@ -892,7 +892,7 @@ inline Reject LoadFrom(Reader& file) {
             // 64-bit, which MSVC rightly warns about. Widening explicitly says
             // the narrowing is understood rather than accidental - and it is a
             // standing question for Switch, where a game address does not fit
-            // in 32 bits at all. See docs/loader.md on declared patches.
+            // in 32 bits at all. See docs/framework/loader.md on declared patches.
             WIIXL_LOG("[loader:%s] declared patch %u at %p not applied (host test)",
                       id, i,
                       reinterpret_cast<void*>(static_cast<uintptr_t>(pe.targetAddr)));
@@ -948,7 +948,7 @@ inline Reject LoadFrom(Reader& file) {
 inline void RunPhase(Wxlm::Phase phase) {
     // IN LOAD ORDER, and that is a specification, not an implementation
     // detail. Entry order determines hook install order, and hook install
-    // order determines call order (docs/hooks.md). So this walks the array
+    // order determines call order (docs/framework/hooks.md). So this walks the array
     // forwards, and the array is filled in the order LoadAll established.
     for (uint32_t i = 0; i < impl::g_ModuleCount; ++i) {
         LoadedModule& m = impl::g_Modules[i];
@@ -1278,7 +1278,7 @@ inline Reject Load(const char* path) {
 //
 // This is a specification, not an accident, and it has to be one: load order
 // determines hook install order, which determines the order mods see a call
-// (docs/hooks.md). It is the user's only lever over which mod acts first, so it
+// (docs/framework/hooks.md). It is the user's only lever over which mod acts first, so it
 // has to be something they can rely on and predict from the filenames they can
 // see, rather than whatever order the filesystem happens to return.
 //

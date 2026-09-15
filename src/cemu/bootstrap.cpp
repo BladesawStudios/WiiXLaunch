@@ -142,7 +142,7 @@ void WiiXLaunch_Cemu_Relocate(uint32_t base, uint32_t tableOffset, uint32_t coun
 // The default WiiXLaunch_Init, used when the project does not define one.
 //
 // A WEAK DEFINITION, which is a different thing from the undefined weak
-// symbols docs/cemu-relocation.md warns about. The hazard there is taking the
+// symbols docs/framework/cemu-relocation.md warns about. The hazard there is taking the
 // ADDRESS of an absent weak symbol: it links as 0 and the relocator rebases it
 // into g_CodeCaveBase, so a null check passes. Nothing takes an address here -
 // the bootstrap calls the name, and the linker picks the project's strong

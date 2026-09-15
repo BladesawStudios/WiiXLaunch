@@ -23,7 +23,7 @@ static int g_checks = 0;
 // How many check() calls must run. If someone deletes a block of cases - or an
 // #if swallows one - the count drops and this fails, instead of reporting
 // success over a smaller suite. Raise it when cases are added; never lower it
-// to make a build go green. See the fourth rule in docs/modules.md.
+// to make a build go green. See the fourth rule in docs/framework/modules.md.
 static const int kExpectedChecks = 25;
 
 // Per-section floors as well as the total. A floor on an aggregate does not
@@ -85,7 +85,7 @@ int main() {
     // Unbuffered, because this binary can crash. With block-buffered stdout
     // a segfault discards everything printed so far, so the run looks like a
     // program that produced no output at all - which says nothing about where
-    // it got to. Documented in docs/modules.md; it applies to every test
+    // it got to. Documented in docs/framework/modules.md; it applies to every test
     // binary here, not only the one where it was first noticed.
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 

@@ -256,7 +256,7 @@ static int g_Accepted = 0, g_Rejected = 0;
 // looks exactly like a check that passes.
 static int g_ValueChecks = 0;
 
-// How many cases must run. The dead-hook incident (docs/modules.md, fourth
+// How many cases must run. The dead-hook incident (docs/framework/modules.md, fourth
 // rule) was invisible partly because THE CASE COUNT DID NOT MOVE - there was no
 // number that a disarmed suite would have changed. This is that number. Raise
 // it when cases are added; never lower it to make a build go green.
@@ -1317,7 +1317,7 @@ int main() {
 
     // FLOORS. A suite that shrinks silently reports success over whatever is
     // left of itself, and a floor on the TOTAL does not constrain the split -
-    // see the fourth rule in docs/modules.md.
+    // see the fourth rule in docs/framework/modules.md.
     if (g_Cases < kExpectedCases) {
         std::printf("LOADER FUZZ DISARMED: %d cases ran, expected at least %d.\n"
                     "Cases were removed, or a block stopped being reached.\n",

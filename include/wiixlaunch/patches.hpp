@@ -68,7 +68,7 @@ constexpr uint32_t kOwnerLen = 17;
 // fixes: a malformed record is a build problem, an origin mismatch is a
 // game-version problem, a hooked window is a mod-interaction problem. A caller
 // that gets `false` cannot tell them apart, and neither can a test - see the
-// log-string rule in docs/modules.md.
+// log-string rule in docs/framework/modules.md.
 enum class Result : uint32_t {
     Ok = 0,
     BadSize,          // size is 0, or larger than kMaxPatchBytes

@@ -36,14 +36,14 @@
 //   - an empty path, or one too long to resolve
 //
 // The refusals are a VALUE and not a log string, so a test can assert which one
-// happened - see the log-string rule in docs/modules.md. And they are checked
+// happened - see the log-string rule in docs/framework/modules.md. And they are checked
 // on the path the mod supplied, BEFORE any concatenation, so there is no window
 // in which a joined string has to be re-parsed to find out whether it escaped.
 //
 // GAME MODULES ARE NOT MODS. wiixlaunch-botw is compiled into the payload, so
 // it is host code and uses the game-content path exactly as the host does. The
 // scoped call is for .wxlm modules, which are the only things with an id and a
-// directory. docs/modules.md states the distinction.
+// directory. docs/framework/modules.md states the distinction.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>

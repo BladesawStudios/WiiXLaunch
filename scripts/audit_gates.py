@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Asserts every build gate is actually WIRED IN and that its result is checked.
 
-This is the fourth rule (docs/modules.md) applied to the build scripts:
+This is the fourth rule (docs/framework/modules.md) applied to the build scripts:
 
     Every check must be able to fail. Where a check could pass because the
     thing it watches never ran, pair it with a positive assertion that the
@@ -333,7 +333,7 @@ def main():
             + "\n".join(failures) + "\n\n"
             "  Each gate self-checks its own liveness; this checks the one thing a\n"
             "  gate cannot check about itself - that something calls it, and that a\n"
-            "  failure is fatal. See the fourth rule in docs/modules.md.\n\n")
+            "  failure is fatal. See the fourth rule in docs/framework/modules.md.\n\n")
         return 1
 
     print("[audit_gates] %d gate invocations across %d build scripts, %d exit codes "
