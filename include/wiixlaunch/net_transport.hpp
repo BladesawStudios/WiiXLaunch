@@ -1,35 +1,22 @@
 #pragma once
 
-// WiiXLaunch::Net::Transport - raw, untracked, platform TCP.
+// WiiXLaunch::Net::Transport - raw, untracked, platform TCP. Knows how to
+// open a socket on each platform and nothing about who asked; ownership,
+// quotas, and attribution live one level up in net.hpp, the only caller.
 //
-// This layer knows how to open a socket on each platform and NOTHING about who
-// asked. Ownership, quotas, handle validity and attribution all live one level
-// up in net.hpp, which is the only thing that should call this.
-//
-// The split exists because those are genuinely different problems: the platform
-// question is "how do I reach nsysnet from here", and it has three completely
-// different answers; the ownership question is "which mod holds this and what
-// happens when it doesn't close it", and it has ONE answer that must not be
-// written three times.
-//
-//   Wii U (Aroma): wut's socket headers, backed by nsysnet.rpl. The plugin is a
-//                  real module with its own import table, so this is ordinary
-//                  linking and none of the Cemu problem applies.
+//   Wii U (Aroma): wut's socket headers, backed by nsysnet.rpl. Ordinary
+//                  linking; the plugin is a real module.
 //   Cemu:          nsysnet resolved at runtime through coreinit's dynamic
-//                  loader - see cemu/cemu_dynload.hpp for why NOT through a
-//                  static import shim table like every other backend here.
-//   Switch:        no implementation. Supported is false, wiixl.net is never
-//                  registered, and a mod that declares it required is refused
-//                  BY NAME at load rather than loading and silently doing
-//                  nothing.
-//   Host test:     an installable fake, so tools/net_test can drive the
-//                  ownership logic - including file-descriptor REUSE, which is
-//                  the case the generation counter exists for and which no real
-//                  platform will reproduce on demand.
+//                  loader, not a static import shim (see cemu_dynload.hpp).
+//   Switch:        no implementation. Supported is false, wiixl.net is
+//                  never registered, and a mod requiring it is refused by
+//                  name at load.
+//   Host test:     an installable fake, so tools/net_test can drive
+//                  ownership logic including file-descriptor reuse, which
+//                  no real platform reproduces on demand.
 //
-// Everything here is non-blocking by design: these calls run inside a tick, on
-// the game thread, so anything that can block is anything that can freeze the
-// game.
+// Everything here is non-blocking by design: these calls run on the game
+// thread, so anything that can block is anything that can freeze the game.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -42,24 +29,20 @@
 #elif WIIXL_WIIU
 #include <sys/socket.h>
 #include <netinet/in.h>
-// socket_lib_init(), and RPLWRAP(socketclose) - the raw nsysnet export. wut
-// steers you at close() instead, but libwut.a does not define close(): that
-// path relies on newlib devoptab wiring that is not present here, so closing a
-// socket through it links against a stub rather than nsysnet. Calling the
-// export directly is both correct and identical to what the Cemu path does.
+// RPLWRAP(socketclose): the raw nsysnet export. wut's close() relies on
+// newlib devoptab wiring not present here and would link against a stub.
 #include <nsysnet/_socket.h>
 #endif
 
 namespace WiiXLaunch::Net::Transport {
 
-// Can this build open a socket AT ALL? Compile-time, and it is what decides
-// whether wiixl.net is registered - so a Switch mod's dependency on it fails at
-// load, by name, rather than at the first send.
+// Can this build open a socket at all? Compile-time, and decides whether
+// wiixl.net is registered, so a Switch mod's dependency fails at load, by
+// name.
 constexpr bool Supported = !WIIXL_SWITCH;
 
-// nsysnet socket constants. Values taken from wut's include/sys/socket.h and
-// include/netinet/in.h; spelled out rather than #if'd so all platforms provably
-// agree on them, and because the Cemu build is bare metal with no SDK headers.
+// nsysnet socket constants (from wut's socket.h/netinet/in.h), spelled out
+// rather than #if'd since the Cemu build has no SDK headers.
 constexpr int32_t kAfInet      = 2;
 constexpr int32_t kSockStream  = 1;
 constexpr int32_t kIpProtoTcp  = 6;
@@ -76,18 +59,15 @@ constexpr int32_t kShutRead      = 0;
 constexpr int32_t kShutWrite     = 1;
 constexpr int32_t kShutReadWrite = 2;
 
-// The Wii U and Cemu are both big-endian PowerPC, so host order already IS
-// network order and this is the identity. Written out anyway so the intent
-// survives on the little-endian host test, where it is NOT the identity and
-// where getting it wrong would silently pass.
+// Wii U and Cemu are big-endian, so host order already is network order;
+// written out anyway so it's still correct on the little-endian host test.
 inline uint16_t Htons(uint16_t v) {
     if constexpr (IsBigEndian) return v;
     else return static_cast<uint16_t>((v << 8) | (v >> 8));
 }
 
-// Byte-identical to wut's struct sockaddr_in (no BSD sin_len byte), so the
-// Wii U path can cast this straight to struct sockaddr* and every platform
-// shares one definition.
+// Byte-identical to wut's sockaddr_in (no BSD sin_len byte), so the Wii U
+// path can cast this straight to struct sockaddr*.
 struct SockAddrIn {
     uint16_t family;
     uint16_t port;
@@ -96,18 +76,11 @@ struct SockAddrIn {
 };
 static_assert(sizeof(SockAddrIn) == 16, "must match nsysnet's 16-byte sockaddr_in");
 
-// ---------------------------------------------------------------------------
-// The host-test seam.
-//
-// net.hpp's whole job is ownership, and ownership bugs are only observable when
-// descriptors are REUSED - mod A closes fd 5, mod B opens and receives fd 5,
-// and A's stale handle must not reach B's socket. No real platform will do that
-// on cue, so the host test installs a fake that does it deliberately.
-//
-// This is a seam, not a mock of convenience: on every real target these
-// function pointers do not exist and the calls below compile straight to the
+// The host-test seam: ownership bugs are only observable when descriptors
+// are reused, which no real platform will do on cue, so the host test
+// installs a fake that does it deliberately. On every real target these
+// function pointers don't exist and calls compile straight to the
 // platform's own.
-// ---------------------------------------------------------------------------
 #if WIIXL_HOST
 
 struct HostOps {
@@ -154,13 +127,8 @@ using FnSocketLastErr = int32_t (*)();
 using FnShutdown      = int32_t (*)(int32_t fd, int32_t how);
 
 // The whole nsysnet entry table, resolved once through the dynamic loader.
-//
-// One struct rather than ten globals so "did resolution happen" is a single
-// question with a single answer. g_Resolved is set even on FAILURE, so a host
-// with no nsysnet does not re-attempt an OSDynLoad_Acquire every frame - and
-// g_Acquired records which of the two failures it was, because "the RPL is not
-// there" and "the RPL is there but an export is missing" are different problems
-// with the same symptom.
+// g_Resolved is set even on failure, so a host with no nsysnet doesn't
+// re-attempt OSDynLoad_Acquire every frame.
 struct NsysnetTable {
     FnSocketLibInit socket_lib_init;
     FnSocket        socket;
@@ -172,15 +140,7 @@ struct NsysnetTable {
     FnSetSockOpt    setsockopt;
     FnGetSockOpt    getsockopt;
     FnSocketClose   socketclose;
-    // Why the last call failed. Without it every transport refusal collapses
-    // into one PLATFORM-ERROR, which says a call failed and nothing about which
-    // of a dozen reasons it was - "the port is in use" and "the address family
-    // is wrong" want completely different responses from whoever reads the log.
     FnSocketLastErr socketlasterr;
-    // Half-close. A server that sends a reply and immediately close()s while
-    // unread request bytes are still in the receive buffer gets an RST, not a
-    // FIN - and the client loses the reply it was about to read. shutdown(WRITE)
-    // is how you say "I am done sending" without discarding anything.
     FnShutdown      shutdown;
 };
 
@@ -207,8 +167,8 @@ inline const NsysnetTable* Nsysnet() {
     }
     g_Acquired = true;
 
-    // Each export by name, and ALL of them must resolve. A partially resolved
-    // table is worse than none: it would open sockets it cannot close.
+    // Every export must resolve; a partially resolved table would open
+    // sockets it cannot close.
     void** slots[] = {
         reinterpret_cast<void**>(&g_Nsysnet.socket_lib_init),
         reinterpret_cast<void**>(&g_Nsysnet.socket),
@@ -251,12 +211,9 @@ inline const NsysnetTable* Nsysnet() {
 
 } // namespace impl
 
-// True when this build can reach a socket implementation RIGHT NOW.
-//
-// Distinct from Supported: Supported is "this platform has sockets at all" and
-// is a compile-time fact; Available is "they are reachable here" and on Cemu
-// depends on whether the title's process can load nsysnet. A mod sees the
-// difference as a missing surface versus an Unavailable result.
+// True when this build can reach a socket implementation right now.
+// Distinct from Supported (a compile-time fact): on Cemu, Available
+// depends on whether the title's process can load nsysnet.
 inline bool Available() {
 #if WIIXL_CEMU
     return impl::Nsysnet() != nullptr;
@@ -269,10 +226,9 @@ inline bool Available() {
 #endif
 }
 
-// Brings the socket library up. Idempotent.
-//
-// Deliberately not called at host init: on Wii U the plugin loads before the
-// title's network stack is up, so this happens lazily on first use.
+// Brings the socket library up. Idempotent, and lazy rather than called at
+// host init: on Wii U the plugin loads before the title's network stack is
+// up.
 inline bool Init() {
     if (impl::g_LibInitialized) return true;
     if (!Available()) return false;
@@ -293,8 +249,8 @@ inline bool Init() {
     return true;
 }
 
-// Only for the host test, which runs many independent cases in one process and
-// must not carry "the library is already up" from one fake backend to the next.
+// Only for the host test, so "the library is already up" doesn't carry
+// from one fake backend to the next.
 inline void ResetForTest() {
     impl::g_LibInitialized = false;
 }
@@ -327,9 +283,8 @@ inline bool SetOptInt(int fd, int32_t level, int32_t option, int32_t value) {
 #endif
 }
 
-// Reads an int option back. Returns false when the platform cannot answer -
-// which is NOT the same as "the option is off", and callers must not treat it
-// that way.
+// Reads an int option back. False means the platform couldn't answer, not
+// "the option is off" - callers must not conflate the two.
 inline bool GetOptInt(int fd, int32_t level, int32_t option, int32_t* out) {
     if (fd < 0 || !out || !Available()) return false;
 #if WIIXL_CEMU
@@ -347,9 +302,8 @@ inline bool GetOptInt(int fd, int32_t level, int32_t option, int32_t* out) {
 #endif
 }
 
-// SO_NONBLOCK is the whole reason this layer is usable from a tick: nsysnet has
-// no fcntl(), so this option is the only way to stop accept()/recv()/send()
-// from parking the game thread on a slow or idle client.
+// nsysnet has no fcntl(); this is the only way to stop accept()/recv()/
+// send() from parking the game thread on a slow or idle client.
 inline bool SetNonBlocking(int fd) {
     return SetOptInt(fd, kSolSocket, kSoNonBlock, 1);
 }
@@ -361,10 +315,6 @@ inline bool SetReuseAddr(int fd) {
 inline bool Bind(int fd, uint16_t port) {
     if (fd < 0 || !Available()) return false;
 
-// The address is built only where it is passed to something. Hoisting it above
-// the #if left it unused on Switch and on the host, and devkitA64 builds this
-// tree with -Werror, so "harmless" was a build failure on one target out of
-// three - which is the whole reason every change here builds all three.
 #if WIIXL_CEMU || WIIXL_WIIU
     SockAddrIn addr = {};
     addr.family = kAfInet;
@@ -398,10 +348,9 @@ inline bool Listen(int fd, int32_t backlog) {
 #endif
 }
 
-// A connected descriptor, or negative when nothing is pending. On a
-// non-blocking listener "nothing pending" and "real error" both surface as -1;
-// callers treat both the same way (try again next frame), so no errno plumbing
-// is needed here.
+// A connected descriptor, or negative when nothing is pending. Callers
+// treat "nothing pending" and "real error" the same way (try again next
+// frame).
 inline int Accept(int fd) {
     if (fd < 0 || !Available()) return kInvalidFd;
 #if WIIXL_CEMU
@@ -447,8 +396,7 @@ inline int Send(int fd, const void* buf, uint32_t len) {
 #endif
 }
 
-// Half-closes one direction. See the shutdown field above for why a server
-// needs this and cannot substitute Close.
+// Half-closes one direction.
 inline bool Shutdown(int fd, int32_t how) {
     if (fd < 0 || !Available()) return false;
 #if WIIXL_CEMU
@@ -474,13 +422,9 @@ inline void Close(int fd) {
 #endif
 }
 
-// The platform's own reason for the last failure, or 0 if it cannot say.
-//
-// Not interpreted here: these are nsysnet's error numbers and this layer has no
-// business pretending to know all of them. It is reported verbatim so a log line
-// carries something specific enough to act on. The common ones on Cemu, which
-// forwards to the host stack: 9 EBADF, 13 EACCES, 22 EINVAL, 48 EADDRINUSE,
-// 49 EADDRNOTAVAIL.
+// The platform's own reason for the last failure, or 0. Reported verbatim,
+// not interpreted: common ones on Cemu are 9 EBADF, 13 EACCES, 22 EINVAL,
+// 48 EADDRINUSE, 49 EADDRNOTAVAIL.
 inline int32_t LastError() {
 #if WIIXL_CEMU
     const impl::NsysnetTable* net = impl::Nsysnet();
@@ -495,9 +439,8 @@ inline int32_t LastError() {
 #endif
 }
 
-// This interface's IPv4 address in host order, or 0 if it could not be read.
-// Worth logging on real hardware - it is the address you have to curl, and the
-// console does not otherwise tell you what it is.
+// This interface's IPv4 address in host order, or 0 if it couldn't be
+// read.
 inline uint32_t LocalIp(int fd) {
     if (fd < 0 || !Available()) return 0;
 #if WIIXL_CEMU

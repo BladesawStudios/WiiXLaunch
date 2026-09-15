@@ -1,82 +1,22 @@
 #pragma once
 
-// WiiXLaunch::Net - sockets that belong to somebody.
+// WiiXLaunch::Net - sockets that belong to somebody. A mod holding a socket
+// holds a resource with a lifetime, unlike a hook or patch, so the host
+// tracks sockets and hands out its own generation-counted handles rather
+// than raw descriptors (a raw descriptor would let a use-after-close on a
+// recycled fd land on another mod's live connection).
 //
-// This is the first surface where a mod holds a resource with a LIFETIME. Hooks
-// and patches are install-once and the host owns the result forever; a socket is
-// different. A mod that opens one and never closes it holds a coreinit handle
-// for the whole session, and "the game runs out of sockets after an hour" is
-// exactly the kind of report with no owner attached that everything else in this
-// framework exists to prevent.
+// Every socket is forced non-blocking, since mods run on the game's own
+// thread and a blocking call would freeze the game; a socket that won't go
+// non-blocking is closed rather than returned. Per-module quotas
+// (kMaxPerModule of kMaxSockets) contain a leak to its own owner instead of
+// starving whichever mod asks next.
 //
-// So the host tracks them, and hands out its own handles rather than raw
-// descriptors.
-//
-// ---------------------------------------------------------------------------
-// WHY NOT RAW DESCRIPTORS.
-//
-// Not for tidiness. A raw descriptor makes USE-AFTER-CLOSE into silent
-// cross-mod corruption:
-//
-//   mod A closes fd 5
-//   mod B opens a socket and the OS hands it fd 5 - descriptors are reused,
-//     that is what they do
-//   mod A, holding a stale 5, sends its response down mod B's connection
-//
-// Nothing crashes. B's client gets A's data, intermittently, and the bug looks
-// like it lives in the host. A handle carries a GENERATION alongside the slot
-// index, the generation moves every time the slot is reused, and A's stale
-// handle comes back StaleHandle instead of reaching B's socket. The same
-// argument as generation-counted actor handles, for the same reason.
-//
-// ---------------------------------------------------------------------------
-// EVERY SOCKET IS NON-BLOCKING, AND A MOD CANNOT CHOOSE OTHERWISE.
-//
-// There is one thread here. Mods run inside a tick, on the thread drawing the
-// game, so a blocking socket call is not slow - it is a frozen game, and the
-// freeze happens on whatever schedule a remote client feels like.
-//
-// Leaving this to the mod does not work, and this is not a guess. d_net set
-// SO_NONBLOCK on its LISTENER and not on the sockets accept() handed back,
-// because accepted sockets do not inherit it - the very next recv() blocked the
-// game thread and the game hung the moment anything connected. The mod's own
-// comment said "non-blocking, so nothing pending is the ordinary answer every
-// frame" while the code did the opposite on the socket that mattered.
-//
-// So the HOST sets it, on every socket it hands out, and a socket that refuses
-// to go non-blocking is closed rather than returned: no networking at all is a
-// better outcome than a game that freezes when someone connects.
-
-// ---------------------------------------------------------------------------
-// WHY PER-MODULE QUOTAS. This is fault isolation, not accounting.
-//
-// Without per-module attribution the only cap that can exist is a global one,
-// and a global cap means the mod that leaks exhausts the pool while the mods
-// that get REFUSED are whichever ones happened to ask next. The failure lands
-// on innocent modules and names none of them.
-//
-// With a per-module cap the leak is contained to its owner: the leaking mod hits
-// kMaxPerModule, is refused BY NAME, and every other mod keeps working.
-//
-// ---------------------------------------------------------------------------
-// WHAT THIS DOES NOT BUY, said plainly rather than left to be discovered.
-//
-// Tracking buys attribution and containment. It does NOT buy recovery, and
-// there are three cases that have to be told apart:
-//
-//   A leak within a session - CONTAINED. The quota stops it at kMaxPerModule
-//   and LogState names who is holding what.
-//
-//   A hang inside a tick - ATTRIBUTION ONLY. Nothing reclaims anything, because
-//   nothing runs; the game is frozen. What you get is Tick's in-flight record
-//   naming the module, and this module's socket count next to it. That is the
-//   honest limit, and no amount of tracking changes it.
-//
-//   Shutdown - THE PROCESS OWNS THE HANDLES. There is no module-unload path in
-//   this system, so a host-side "close everything on the way out" would be a
-//   function with no caller, which this project treats as worse than nothing.
-//   When unload or a tick watchdog exists, CloseAllFor is what it will call;
-//   until then the only caller is a module closing its own sockets.
+// Tracking buys attribution and containment, not recovery: a leak within a
+// session is contained by the quota, a hang inside a tick can only be
+// attributed (nothing runs to reclaim it), and at shutdown the process
+// owns the handles (there is no module-unload path). See
+// docs/framework/net.md for the full reasoning.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -87,27 +27,18 @@
 
 namespace WiiXLaunch::Net {
 
-// The host's whole budget, and one module's share of it.
-//
-// 24 and 8 are chosen against the only real consumer: an HTTP server needs one
-// listener plus its concurrent connections, which is 5 for the API server. 8
-// leaves a module room to be a server and something else; 24 lets three such
-// modules coexist and still refuses a runaway before nsysnet's own limits turn
-// into game-wide failures.
+// The host's whole budget, and one module's share of it. 8 per module
+// leaves room to be a server and something else; 24 total lets three such
+// modules coexist.
 constexpr uint32_t kMaxSockets    = 24;
 constexpr uint32_t kMaxPerModule  = 8;
 constexpr uint32_t kOwnerLen      = 17;
 
-// A host handle, never a descriptor. 0 is never valid, so a zeroed struct in a
-// mod's .bss cannot accidentally name a socket.
+// A host handle, never a descriptor. 0 is never valid, so a zeroed struct
+// in a mod's .bss can't accidentally name a socket.
 //
 //   bits  0..15   slot index + 1
 //   bits 16..31   generation, incremented every time the slot is reused
-//
-// The generation is 16 bits, so a slot would have to be recycled 65536 times
-// before a stale handle could alias a live one. That is a BOUND, not an
-// impossibility - worth saying, because a comment claiming impossibility here
-// would be false.
 using Handle = uint32_t;
 constexpr Handle kInvalidHandle = 0;
 
@@ -142,10 +73,9 @@ inline const char* ResultName(Result r) {
     return "?";
 }
 
-// Byte results for Recv/Send, which have to return a COUNT and still be able to
-// say what went wrong. Non-negative is a byte count; every negative value is a
-// distinct named reason, so a mod can tell "try again next frame" from "your
-// handle is stale" without reading the host log.
+// Byte results for Recv/Send: non-negative is a byte count, every negative
+// value is a distinct named reason, so a mod can tell "try again next
+// frame" from "your handle is stale" without reading the host log.
 constexpr int32_t kIoWouldBlock   = -1;   // or a transient error; retry
 constexpr int32_t kIoBadHandle    = -2;
 constexpr int32_t kIoStaleHandle  = -3;
@@ -184,18 +114,10 @@ inline bool SameOwner(const char* a, const char* b) {
     return true;
 }
 
-// Sets non-blocking AND CHECKS IT TOOK.
-//
-// setsockopt returning 0 is the report; the socket still being blocking is the
-// damage, and those are not the same thing. If a platform ever accepted the
-// option and ignored it, every check that watched the return value would pass
-// and the game would freeze on the first connection - which is exactly the
-// shape of the bug this whole function exists because of.
-//
-// The readback is best-effort on purpose: a platform that cannot ANSWER
-// "is this socket non-blocking" tells us nothing, and turning "cannot tell"
-// into "refuse" would disable networking on a host where it works fine. Only a
-// readback that succeeds AND says blocking is treated as a failure.
+// Sets non-blocking and checks it took: setsockopt returning 0 is the
+// report, the socket still being blocking is the damage. The readback is
+// best-effort - a platform that can't answer tells us nothing - so only a
+// readback that succeeds and says "blocking" is treated as a failure.
 inline bool ForceNonBlocking(int fd) {
     if (!Transport::SetNonBlocking(fd)) return false;
 
@@ -256,12 +178,10 @@ inline uint32_t CountFor(const char* owner) {
     return n;
 }
 
-// Resolves a handle for the CURRENT module.
-//
-// Three distinct refusals, and they must stay distinct: BadHandle is "that was
-// never a socket", StaleHandle is "it was yours and you closed it", NotOwner is
-// "it is live and it is somebody else's". Collapsing them into one failure would
-// make the use-after-close case indistinguishable from a typo.
+// Resolves a handle for the current module. BadHandle ("never a socket"),
+// StaleHandle ("yours, and closed"), and NotOwner ("live, and somebody
+// else's") stay distinct so use-after-close isn't indistinguishable from a
+// typo.
 inline Result Resolve(Handle h, Slot** out) {
     const char* owner = ModContext::Current();
     if (!owner || owner[0] == '\0') return Result::NoModule;
@@ -278,10 +198,8 @@ inline Result Resolve(Handle h, Slot** out) {
     return Result::Ok;
 }
 
-// Opens a TCP socket, charged to the calling module.
-//
-// The owner is not a parameter, for the same reason it is not one in Hooks or
-// Tick: identity is what the host observes, never what a module claims.
+// Opens a TCP socket, charged to the calling module. No owner parameter,
+// same as Hooks and Tick: identity is what the host observes.
 inline Result Open(Handle* outHandle) {
     if (!outHandle) return Result::BadArgument;
     *outHandle = kInvalidHandle;
@@ -325,8 +243,7 @@ inline Result Open(Handle* outHandle) {
         return Result::PlatformError;
     }
 
-    // Before the mod ever sees it. See the banner: a blocking socket on the
-    // game thread is a frozen game, so one that will not go non-blocking is
+    // Before the mod ever sees it: a socket that won't go non-blocking is
     // closed rather than handed over.
     if (!impl::ForceNonBlocking(fd)) {
         Transport::Close(fd);
@@ -342,8 +259,8 @@ inline Result Open(Handle* outHandle) {
     s.listener = false;
     s.bytesIn = 0;
     s.bytesOut = 0;
-    // Moved on every ACQUISITION, so a handle from the previous life of this
-    // slot can never match the current one.
+    // Moved on every acquisition, so a handle from this slot's previous
+    // life can never match the current one.
     ++s.generation;
     impl::CopyOwner(s.owner, owner);
     ++impl::g_Opened;
@@ -381,11 +298,9 @@ inline Result Adopt(int fd, const char* owner, Handle* outHandle) {
 
 } // namespace impl
 
-// Already true of every socket this surface hands out - Open and Accept both
-// set it before the mod sees the handle. Kept because removing a symbol is a
-// major bump, and harmless: asking for what is already the case.
-//
-// There is deliberately NO way to ask for a blocking socket. See the banner.
+// Already true of every socket this surface hands out (Open and Accept
+// both set it first); kept as a no-op since removing a symbol is a major
+// bump. There is no way to ask for a blocking socket.
 inline Result SetNonBlocking(Handle h) {
     Slot* s = nullptr;
     const Result r = Resolve(h, &s);
@@ -406,9 +321,6 @@ inline Result Bind(Handle h, uint16_t port) {
     if (r != Result::Ok) return r;
     if (Transport::Bind(s->fd, port)) return Result::Ok;
 
-    // The one refusal that is almost never a bug in the mod. A port already in
-    // use is the ordinary case, and PLATFORM-ERROR on its own sent the reader
-    // looking at the wrong thing entirely.
     WIIXL_LOG("Net: %s could not bind port %u - platform error %d. A port already "
               "held by another process is the usual cause.",
               s->owner, port, Transport::LastError());
@@ -428,12 +340,10 @@ inline Result Listen(Handle h, uint32_t backlog) {
     return Result::Ok;
 }
 
-// Takes a pending connection, charged to the SAME module as the listener.
-//
-// This is the real leak vector - a server that accepts every frame and forgets
-// to close - so an accepted socket goes through the quota exactly like an opened
-// one. Returns Ok with *outHandle set, or PlatformError when nothing is pending,
-// which on a non-blocking listener is the ordinary case every frame.
+// Takes a pending connection, charged to the same module as the listener,
+// through the same quota an Open goes through. Returns PlatformError when
+// nothing is pending, the ordinary case every frame on a non-blocking
+// listener.
 inline Result Accept(Handle listener, Handle* outHandle) {
     if (!outHandle) return Result::BadArgument;
     *outHandle = kInvalidHandle;
@@ -445,9 +355,7 @@ inline Result Accept(Handle listener, Handle* outHandle) {
     const int fd = Transport::Accept(s->fd);
     if (fd < 0) return Result::PlatformError;
 
-    // ACCEPTED SOCKETS DO NOT INHERIT SO_NONBLOCK from the listener. That is
-    // the whole bug: a non-blocking listener producing blocking connections,
-    // and the first recv on one freezing the game.
+    // Accepted sockets do not inherit SO_NONBLOCK from the listener.
     if (!impl::ForceNonBlocking(fd)) {
         Transport::Close(fd);
         WIIXL_LOG("Net: %s accepted a connection that would not go non-blocking "
@@ -459,10 +367,8 @@ inline Result Accept(Handle listener, Handle* outHandle) {
 
     const Result adopted = impl::Adopt(fd, s->owner, outHandle);
     if (adopted != Result::Ok) {
-        // Refused for a quota or slot reason, so the host closes what it just
-        // accepted rather than leaking a descriptor it declined to track. The
-        // alternative - hand it over untracked - is precisely the failure this
-        // whole layer exists to prevent.
+        // Refused for a quota or slot reason: close what was just accepted
+        // rather than leaving it untracked.
         Transport::Close(fd);
         WIIXL_LOG("Net: %s accepted a connection and then dropped it - %s. The "
                   "descriptor was closed rather than left untracked.",
@@ -510,13 +416,9 @@ inline int32_t Send(Handle h, const void* buffer, uint32_t size) {
     return static_cast<int32_t>(n);
 }
 
-// Half-close, so a reply is not thrown away by the close that follows it.
-//
-// A server that sends and immediately closes, while the client's request is
-// still sitting unread in the receive buffer, gets an RST rather than a FIN -
-// and the client loses the reply. That is not a hypothetical: it is exactly
-// what the d_net sample did on its first working boot. Requests were served,
-// the log said so, and curl reported "connection reset by peer" every time.
+// Half-close, so a reply isn't thrown away by the close that follows it: a
+// close with unread bytes still in the receive buffer sends an RST, not a
+// FIN, and the client loses the reply.
 inline Result Shutdown(Handle h, uint32_t how) {
     if (how > static_cast<uint32_t>(Transport::kShutReadWrite)) return Result::BadArgument;
 
@@ -533,9 +435,8 @@ inline uint32_t LocalIp(Handle h) {
     return Transport::LocalIp(s->fd);
 }
 
-// Releases the slot. The generation has already moved by the time anything can
-// ask again, so the caller's handle is StaleHandle from here on - including for
-// the module that owned it, which is the point.
+// Releases the slot. The generation has already moved by the time anything
+// can ask again, so the caller's own handle is StaleHandle from here on.
 inline Result Close(Handle h) {
     Slot* s = nullptr;
     const Result r = Resolve(h, &s);
@@ -550,12 +451,8 @@ inline Result Close(Handle h) {
     return Result::Ok;
 }
 
-// Everything one module holds. Returns how many were closed.
-//
-// The only caller today is a module resetting itself through wiixl.net. When
-// module unload or a tick watchdog exists, this is what they will call - and
-// until one of them does, this file does not pretend the host reclaims anything
-// on its own.
+// Everything one module holds. Returns how many were closed. The only
+// caller today is a module resetting itself through wiixl.net.
 inline uint32_t CloseAllFor(const char* owner) {
     if (!owner || owner[0] == '\0') return 0;
 
@@ -574,9 +471,7 @@ inline uint32_t CloseAllFor(const char* owner) {
     return closed;
 }
 
-// Who holds what. Printed at the load point and worth printing again next to a
-// hang report: "module X is in flight" plus "module X holds 8 sockets" is a much
-// more specific starting point than either line alone.
+// Who holds what.
 inline void LogState() {
     if constexpr (!Transport::Supported) {
         WIIXL_LOG("Net: not supported on this platform - wiixl.net is not "

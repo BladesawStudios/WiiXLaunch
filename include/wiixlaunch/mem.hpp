@@ -12,39 +12,25 @@
 
 // WiiXLaunch::Mem - allocating from coreinit's base heaps.
 //
-// The Cemu payload's built-in heap is the tail of its own code cave, ending at
-// the end of Cemu's code-cave area (0x01C00000). That is under 4 MB, shared
-// with every other graphic pack, and it is easy for a mod to run out: two
-// 1024x1024 font sheets and a render target will do it.
+// The Cemu payload's built-in heap is under 4 MB and shared with every
+// other graphic pack; easy for a mod to exhaust. coreinit's base heaps
+// (MEMGetBaseHeapHandle, MEMAllocFromExpHeapEx) are ordinary exports
+// present in every Wii U title, reached through the `import.coreinit.<Name>`
+// shims in src/cemu/cemu_mem.asm.
 //
-// coreinit's base heaps are the way out, and they need no game-specific
-// knowledge - MEMGetBaseHeapHandle and MEMAllocFromExpHeapEx are ordinary
-// coreinit exports present in every Wii U title, reached through the
-// `import.coreinit.<Name>` shims in src/cemu/cemu_mem.asm. That is why this is
-// in the base framework: a game's own allocator address could not live here,
-// but coreinit's exports can.
-//
-// Install with UseCoreinitHeap(), which picks a heap with room and hands it to
-// Arena::SetHostProvider. Call it once the game is up - from a graphics
-// initialisation callback, not from a module entry point, since the base heaps
-// do not exist that early.
-//
-// This moves the HOST's allocations only. A loaded mod's grant stays in the
-// code cave whatever is installed here, because a grant holds relocated code
-// that gets executed and the cave is the only region this project has
-// established is executable. See the HostProvider comment in
-// wiixlaunch/loader/arena.hpp.
+// Install with UseCoreinitHeap(), which picks a heap with room and hands it
+// to Arena::SetHostProvider. Call once the game is up (from a graphics
+// init callback), since the base heaps don't exist at module-entry time.
+// This moves only the host's allocations; a loaded mod's grant stays in the
+// code cave, the only region established as executable (see the
+// HostProvider comment in wiixlaunch/loader/arena.hpp).
 
 #if WIIXL_CEMU
 extern "C" {
     // Patched by scripts/deploy.py with the offset of
-    // wiixlaunch_cemu_mem_shim_table; 0 in the compiled ELF, so a zero here
-    // means "deploy has not run" and the shims must not be called.
-    // `used` because nothing in C++ may reference this: deploy.py writes it
-    // and the paired src/cemu/*.asm table reads through it, neither of which
-    // the compiler can see. Without it an inline variable no translation unit
-    // odr-uses is never emitted, the symbol is absent from the ELF, deploy.py
-    // has nothing to patch, and the shim table ships unreachable.
+    // wiixlaunch_cemu_mem_shim_table; 0 means deploy hasn't run and the
+    // shims must not be called. `used`: neither deploy.py's write nor the
+    // paired asm table's read is visible to the compiler.
     __attribute__((section(".data"), used)) inline uint32_t g_CemuMemShimTableOffset = 0;
 }
 #endif
@@ -119,10 +105,9 @@ inline void FreeToExpHeap(void* heap, void* block) {
     reinterpret_cast<impl::FnFreeToExpHeap>(fn)(heap, block);
 }
 
-// The provider handed to Arena::SetHostProvider. Allocations are never freed,
-// matching the arena - but these come out of the GAME's heap, so host code that
-// allocates in a loop exhausts the game rather than itself. Allocate at load,
-// not per frame.
+// The provider handed to Arena::SetHostProvider. These come out of the
+// game's own heap, so host code that allocates in a loop exhausts the game;
+// allocate at load, not per frame.
 inline void* CoreinitProvider(size_t size, size_t align) {
     return AllocFromExpHeap(impl::g_Heap, static_cast<uint32_t>(size),
                             static_cast<int32_t>(align ? align : 256));
@@ -131,16 +116,11 @@ inline void* CoreinitProvider(size_t size, size_t align) {
 // Which base heap is in use, or nullptr for the arena itself.
 inline void* CurrentHeap() { return impl::g_Heap; }
 
-// Point every later Arena::AllocHost at a coreinit base heap.
-//
-// Tries MEM2 first (much larger), then MEM1, and takes the first with at least
-// `needBytes` allocatable - a heap that exists but is full is no use, and
-// finding that out here is better than at the first texture. Returns the heap
-// it installed, or nullptr if none qualified, in which case the built-in heap
-// is left in place and nothing changes.
-//
-// Call once the game is running. `report` receives one line per heap examined,
-// so a caller with a logger can say what was found; pass nullptr for silence.
+// Points every later Arena::AllocHost at a coreinit base heap. Tries MEM2
+// first, then MEM1, taking the first with at least `needBytes` allocatable.
+// Returns the heap installed, or nullptr (leaving the built-in heap in
+// place) if none qualified. `report` gets one line per heap examined; pass
+// nullptr for silence.
 using ReportFn = void (*)(const char* what, uint32_t type, void* heap, uint32_t allocatable);
 
 inline void* UseCoreinitHeap(uint32_t needBytes = 1u << 20, ReportFn report = nullptr) {

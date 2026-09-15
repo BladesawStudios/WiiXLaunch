@@ -66,11 +66,8 @@
 
 #endif
 
-// WHO OWNS A HOOK. Every install is attributed, because the entire point of a
-// central registry is that when two things hook one address the log can name
-// both. Define this before including the header to claim a name - a game module
-// uses its own, and the loader passes a mod id when it installs a .wxlm's
-// declared hooks. "host" is the honest default for the framework itself.
+// Define before including this header to claim an owner name for attribution
+// in the conflict log. "host" is the default for the framework itself.
 #ifndef WIIXL_HOOK_OWNER
 #define WIIXL_HOOK_OWNER "host"
 #endif
@@ -83,41 +80,28 @@
 
 namespace WiiXLaunch::impl {
 
-    // EVERY hook goes through here, on every platform. That is what makes the
-    // registry central rather than advisory: there is no second path that
-    // installs a hook without being recorded.
+    // Every hook goes through here on every platform, so nothing installs
+    // without being recorded. Cemu's WiiXLaunch::Hooks owns the chain end to
+    // end; on Switch and Wii U, exlaunch and WUPS build their own
+    // trampolines and the manager only records ownership for the conflict
+    // report.
     //
-    // The chain itself is built differently per platform, and honestly so:
-    //
-    //   Cemu   WiiXLaunch::Hooks owns it end to end - it captures the prologue
-    //          once, emits every jump, and chains by construction.
-    //   Switch exlaunch installs and builds its own trampoline. Wii U, WUPS.
-    //          Those are not ours to reimplement, so the manager records the
-    //          ownership and reports conflicts, and the platform does the
-    //          patching. Conflict reporting is identical everywhere; only the
-    //          chaining mechanism differs.
-    //
-    // Recording on all three is the point. "Two mods hooked this address" is a
-    // diagnosis a user needs whatever they are playing on.
-    // Templated on the callback and Original types rather than taking void*.
-    // The Switch backend deduces its hook signature from the function pointer
-    // it is handed, so erasing the types here fails to compile there - the
-    // typed pointers have to survive all the way to the platform call. Only
-    // the Cemu path, which speaks in raw addresses, casts them away.
+    // Templated on the callback and Original types rather than void*: the
+    // Switch backend deduces its hook signature from the function pointer,
+    // so erasing the type here would fail to compile there. Only the Cemu
+    // path, which speaks in raw addresses, casts them away.
     template <typename Cb, typename Orig>
     inline void InstallVia(uptr target, Cb callback, Orig* originalOut,
                            const char* fallbackOwner) {
-        // A hook installed while a module's entry is running belongs to that
-        // module, whatever the translation unit that compiled the call thought.
-        // WIIXL_HOOK_OWNER is a build-time name and cannot know which .wxlm is
-        // executing; the loader does.
+        // A hook installed while a module's entry is running belongs to
+        // that module; WIIXL_HOOK_OWNER is a build-time name and can't know
+        // which .wxlm is executing.
         const char* owner = ::WiiXLaunch::Hooks::CurrentOwner();
         if (!owner) owner = fallbackOwner;
 #if WIIXL_CEMU
-        // A payload callback is linked at 0 and lives in the code cave, so its
-        // compile-time address has to be biased by where the payload landed.
-        // This was in Backend::InstallHook; it belongs wherever the payload's
-        // own addresses are turned into real ones.
+        // A payload callback is linked at 0 and lives in the code cave, so
+        // its compile-time address needs biasing by where the payload
+        // landed.
         uptr cb = reinterpret_cast<uptr>(reinterpret_cast<void*>(callback));
         if (cb < 0x01000000u) cb += ::WiiXLaunch::Backend::g_CodeCaveBase;
 
@@ -125,8 +109,6 @@ namespace WiiXLaunch::impl {
         ::WiiXLaunch::Hooks::InstallHook(target, cb, owner, &original);
         if (originalOut) *originalOut = reinterpret_cast<Orig>(original);
 #else
-        // The platform installs; the manager records, so the conflict report
-        // exists here too.
         ::WiiXLaunch::Hooks::Note(
             target, reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(callback)), owner);
 #if WIIXL_SWITCH

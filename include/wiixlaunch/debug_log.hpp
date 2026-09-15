@@ -1,8 +1,8 @@
 #pragma once
 
 #include "platform.hpp"
-// The formatter is its own header so a module can have it too - a .wxlm cannot
-// include this file. tools/format_test checks that header.
+// The formatter is its own header so a module can have it too - a .wxlm
+// cannot include this file.
 #include <wiixlaunch/format.hpp>
 #include <cstdint>
 #include <cstdarg>
@@ -13,10 +13,6 @@
 #elif WIIXL_WIIU
 #include <notifications/notifications.h>
 #elif WIIXL_CEMU
-// The coreinit OSReport shim table. This is base-framework plumbing: it used
-// to live in the BotW module and get pulled in with __has_include, which meant
-// the framework's own logger only reached Cemu's log window when someone
-// happened to have vendored a game module. OSReport is coreinit, not BotW.
 #include <wiixlaunch/cemu/cemu_logging.hpp>
 #endif
 
@@ -80,23 +76,15 @@ inline void DebugPrint(const char* fmt, ...) {
 #elif WIIXL_CEMU
     WriteRingEntry(text, len);
 
-    // Guard before resolving. CemuLoggingShimTable() is
-    // g_CodeCaveBase + g_CemuLoggingShimTableOffset and ResolveCemuLogging
-    // dereferences it unconditionally. Both values are zero until deploy.py
-    // patches the offset in and the bootstrap computes the base, so calling
-    // this before that happens reads through a null pointer and takes the
-    // process down. That is reachable two ways: a host build (tools/ws_test
-    // compiles this header as the Cemu target), and a log emitted before the
-    // codecave base is computed.
-    //
-    // The ring buffer above is written either way, so nothing is lost when
-    // this is skipped - tools that read the ring still see the entry.
+    // Guarded: CemuLoggingAvailable() is false until deploy.py patches the
+    // shim offset and the bootstrap computes the codecave base, and
+    // resolving before then would deref a null pointer. The ring buffer is
+    // written either way, so nothing is lost when this is skipped.
     if (WiiXLaunch::Backend::CemuLoggingAvailable()) {
         using OSReportFn = void (*)(const char*, ...);
         auto osReport = WiiXLaunch::Backend::ResolveCemuLogging<OSReportFn>(WiiXLaunch::Backend::CemuLogImport::OSReport);
         if (osReport) {
-            // Cemu's OSReport line-buffers and only flushes to the log on
-            // '\n', so the newline is not cosmetic.
+            // OSReport line-buffers and only flushes on '\n'.
             osReport("%s\n", text);
         }
     }

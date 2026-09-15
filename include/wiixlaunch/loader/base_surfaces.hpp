@@ -1,20 +1,16 @@
 #pragma once
 
-// The rest of BASE WiiXLaunch, reachable by mods.
+// The rest of base WiiXLaunch, reachable by mods. Each is its own surface
+// so a mod declares what it actually uses and a host missing one refuses
+// it by name rather than at the first call.
 //
-// wiixl.core carries what every mod needs: logging, arena memory, files, hooks,
-// ticks. These are the framework's other services, each its own surface so a
-// mod declares what it actually uses and a host missing one refuses it by name
-// rather than at the first call.
-//
-//   wiixl.time   the clock, monotonic and wall
-//   wiixl.mem    the coreinit heaps - NOT the module arena
-//   wiixl.call   resolving a game function's address
+//   wiixl.time     the clock, monotonic and wall
+//   wiixl.mem      the coreinit heaps, not the module arena
+//   wiixl.call     resolving a game function's address
 //   wiixl.version  which build of the game is underneath
-//   wiixl.patch  writing to game code at runtime
+//   wiixl.patch    writing to game code at runtime
 //
-// wiixl.net lives in its own header because it is far larger than these four
-// together and has a platform story of its own.
+// wiixl.net has its own header; it's larger and has its own platform story.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/loader/surface.hpp>
@@ -29,15 +25,10 @@
 
 #include <cstdint>
 
-// ===========================================================================
-// wiixl.time
-//
-// TWO CLOCKS, and they are not interchangeable. The monotonic tick counter
-// always moves forward and is what a mod should measure elapsed time with. The
-// wall clock is the console's RTC (or the host PC's, under Cemu) and can be
-// wrong, can jump, and on some hosts is not there at all - IsWallClockAvailable
-// says which, rather than leaving a mod to infer it from an implausible date.
-// ===========================================================================
+// wiixl.time: two clocks, not interchangeable. The monotonic tick counter
+// always moves forward and is what a mod should measure elapsed time with.
+// The wall clock is the console's RTC (or the host PC's, under Cemu), can
+// jump, and isn't available everywhere - IsWallClockAvailable says which.
 namespace WiiXLaunch::TimeSurface {
 
 constexpr const char* kName = "wiixl.time";
@@ -46,10 +37,8 @@ constexpr uint16_t kVersionMinor = 0;
 
 namespace impl {
 
-// int64 through two uint32s. A 64-bit value crosses this boundary perfectly
-// well by ABI, but every other entry in every surface is 32-bit, and one call
-// with a different width is one call whose calling convention has to be right
-// in a place nobody would think to check.
+// int64 through two uint32s, matching every other 32-bit surface entry
+// rather than being the one call with a different calling-convention width.
 extern "C" inline void TmGetMonotonicTicks(uint32_t* hi, uint32_t* lo) {
     const uint64_t t = static_cast<uint64_t>(Time::GetMonotonicTicks());
     if (hi) *hi = static_cast<uint32_t>(t >> 32);
@@ -64,8 +53,8 @@ extern "C" inline uint32_t TmIsWallClockAvailable() {
     return Time::IsWallClockAvailable() ? 1u : 0u;
 }
 
-// The calendar, flattened. CalendarTime is a struct of ten ints and must not
-// cross; the caller passes an int32[10] and the order is fixed here forever:
+// The calendar, flattened: a struct can't cross the surface boundary, so
+// the caller passes an int32[10] in this fixed order:
 // sec, min, hour, mday, mon, year, wday, yday, msec, usec.
 extern "C" inline uint32_t TmGetCalendarTime(int32_t* out10) {
     if (!out10) return 0;
@@ -77,8 +66,7 @@ extern "C" inline uint32_t TmGetCalendarTime(int32_t* out10) {
     return 1;
 }
 
-// "2026-09-05 12:39:29" into a caller-owned buffer, because a mod has no
-// formatter of its own and this is the one string every mod wants.
+// "2026-09-05 12:39:29" into a caller-owned buffer.
 extern "C" inline uint32_t TmFormatNow(char* out, uint32_t cap) {
     if (!out || cap == 0) return 0;
     out[0] = '\0';
@@ -108,19 +96,13 @@ inline bool Register() {
 } // namespace WiiXLaunch::TimeSurface
 
 
-// ===========================================================================
-// wiixl.mem - the coreinit heaps.
-//
-// NOT THE MODULE ARENA, and the difference matters enough to say twice.
-// wiixl.core's Alloc hands out bytes from this module's own grant: bounded,
-// attributed, never freed, and invisible to the game. This is the console's own
-// expanded heap - unbounded, unattributed, freeable, and visible to everything.
-//
-// A mod wants this only when something OUTSIDE the mod has to read the memory:
-// a buffer handed to a game function, a texture the GPU reads. For anything the
-// mod merely uses itself, the arena is the right answer and this is a way to
-// leak memory nothing will reclaim.
-// ===========================================================================
+// wiixl.mem: the coreinit heaps, not the module arena. wiixl.core's Alloc
+// hands out bytes from this module's own grant (bounded, attributed, never
+// freed, invisible to the game); this is the console's expanded heap
+// (unbounded, unattributed, freeable, visible to everything). Want this
+// only when something outside the mod has to read the memory - a buffer
+// handed to a game function, a GPU-read texture. Otherwise the arena is
+// the right answer and this leaks memory nothing reclaims.
 namespace WiiXLaunch::MemSurface {
 
 constexpr const char* kName = "wiixl.mem";
@@ -133,8 +115,8 @@ extern "C" inline uint32_t MemShimsAvailable() {
     return Mem::ShimsAvailable() ? 1u : 0u;
 }
 
-// heap: 0 MEM1, 1 MEM2, 2 FG - matching Mem::BaseHeap. Returned as an opaque
-// address; a mod passes it back and never dereferences it.
+// heap: 0 MEM1, 1 MEM2, 2 FG (matching Mem::BaseHeap). Returned as an
+// opaque address a mod passes back and never dereferences.
 extern "C" inline uintptr_t MemGetBaseHeapHandle(uint32_t heap) {
     return reinterpret_cast<uintptr_t>(
         Mem::GetBaseHeapHandle(static_cast<Mem::BaseHeap>(heap)));
@@ -179,22 +161,12 @@ inline bool Register() {
 } // namespace WiiXLaunch::MemSurface
 
 
-// ===========================================================================
-// wiixl.version - which build of the game is underneath.
-//
-// A mod carrying its own offsets is carrying them for ONE build. Until now it
-// had no way to ask which build it got, so the only options were to be right by
-// luck or to be silently wrong. This is the missing question.
-//
-// Name() is the name the HOST enrolled this build under, and it is null when the
-// host does not recognise it. That null is the useful part: it means nobody has
-// checked this build, so a mod holding raw offsets should refuse rather than
-// apply them. See include/wiixlaunch/mod_version.h, which turns that into a
-// table lookup with a named refusal.
-//
-// Fingerprint() is always available where the target declares an identity slice,
-// recognised or not, so a log or a bug report can name the build exactly.
-// ===========================================================================
+// wiixl.version: which build of the game is underneath. A mod carrying raw
+// offsets carries them for one build; Name() is what the host enrolled
+// this build as, null when unrecognised - the useful part, since it means
+// a mod holding raw offsets should refuse rather than apply them (see
+// include/wiixlaunch/mod_version.h). Fingerprint() is always available
+// where the target declares an identity slice, recognised or not.
 namespace WiiXLaunch::VersionSurface {
 
 constexpr const char* kName = "wiixl.version";
@@ -207,16 +179,14 @@ extern "C" inline uint32_t VrFingerprint() {
     return GameVersion::Fingerprint();
 }
 
-// Null when unrecognised. NOT "unknown" as a string - a mod comparing names
-// would match a build called "unknown" against every build nobody has enrolled,
-// which is precisely the guess this whole mechanism exists to avoid.
+// Null when unrecognised, not the string "unknown" - a literal name would
+// let a mod match against every unenrolled build.
 extern "C" inline const char* VrName() {
     return GameVersion::Name();
 }
 
-// Whether this host can fingerprint at all. "No identity slice declared" and
-// "declared, and this build is not one I know" are different answers, and a mod
-// deciding what to do about its offsets needs to tell them apart.
+// Whether this host can fingerprint at all, distinct from "it can, and
+// this build isn't one it knows."
 extern "C" inline uint32_t VrConfigured() {
     return GameVersion::Configured() ? 1u : 0u;
 }
@@ -242,20 +212,10 @@ inline bool Register() {
 } // namespace WiiXLaunch::VersionSurface
 
 
-// ===========================================================================
-// wiixl.call - where a game function lives.
-//
-// The module's GetTargetFunction is a template that returns a typed pointer; a
-// template cannot cross, so this returns the ADDRESS and the mod supplies the
-// type at its own call site. That is the honest split anyway - the host cannot
-// check a signature it was never told, and pretending to would be worse than
-// not offering.
-//
-// A mod calling a game function through this has taken on exactly what the
-// declared-patch origin check exists to prevent: an address baked into a binary
-// that nobody can rebuild. It is still much better than the alternative, since
-// the SWITCH/WII U SPLIT is resolved here rather than in the mod.
-// ===========================================================================
+// wiixl.call: where a game function lives. GetTargetFunction is a template
+// returning a typed pointer, which can't cross the surface boundary, so
+// this returns the address and the mod supplies the type at its own call
+// site - the host can't check a signature it was never told.
 namespace WiiXLaunch::CallSurface {
 
 constexpr const char* kName = "wiixl.call";
@@ -264,9 +224,8 @@ constexpr uint16_t kVersionMinor = 0;
 
 namespace impl {
 
-// One offset per platform, and the host picks. A mod that hard-coded the Wii U
-// address would be silently wrong on Switch; this way the wrong-platform case
-// cannot arise at the call site at all.
+// One offset per platform, and the host picks, so the wrong-platform case
+// can't arise at the call site.
 extern "C" inline uintptr_t ClResolveTarget(uintptr_t switchOffset, uintptr_t wiiuOffset) {
 #if WIIXL_SWITCH
     (void)wiiuOffset;
@@ -277,9 +236,8 @@ extern "C" inline uintptr_t ClResolveTarget(uintptr_t switchOffset, uintptr_t wi
 #endif
 }
 
-// Where the image starts, for a mod doing its own arithmetic. Same value
-// wiixl.core's ImageBase reports; here so a mod using wiixl.call does not have
-// to declare wiixl.core as well for one number.
+// Same value wiixl.core's ImageBase reports; here so a mod using
+// wiixl.call doesn't have to declare wiixl.core too for one number.
 extern "C" inline uintptr_t ClImageBase() {
     return ResolveTarget(0);
 }
@@ -304,27 +262,14 @@ inline bool Register() {
 } // namespace WiiXLaunch::CallSurface
 
 
-// ===========================================================================
-// wiixl.patch - writing to game code at runtime.
+// wiixl.patch: writing to game code at runtime, for what a declared patch
+// can't express - a patch applied and reverted while the game runs.
 //
-// A .wxlm can already DECLARE patches, which the loader applies before any
-// entry runs, with an origin check and a conflict report. That is the right way
-// and it stays the right way. This is for what declared patches cannot express:
-// a patch applied and reverted while the game runs - a toggle.
-//
-// THE ORIGIN CHECK COMES WITH IT. Write takes the bytes it expects to find and
-// refuses if they are not there, exactly as a declared patch does, because the
-// reason is the same: a mod built against another version of the game would
-// otherwise corrupt a function it has never seen. The refusal is a value and
-// the log names the mod.
-//
-// WriteUnchecked exists because some patches genuinely have no stable origin -
-// a site already patched by another mod, most obviously. It is named Unchecked
-// at every call site and the host logs the module that used it, the same
-// treatment as botw.player's raw-pointer hatch: from outside, memory corruption
-// caused by an unchecked write is indistinguishable from a host bug, and the
-// log is the only place that difference can be recorded.
-// ===========================================================================
+// Write takes the origin bytes it expects and refuses if they aren't
+// there, same as a declared patch and for the same reason. WriteUnchecked
+// exists for the rare site with no stable origin (already patched by
+// another mod), and is named Unchecked and logged by mod so a resulting
+// memory corruption isn't indistinguishable from a host bug.
 namespace WiiXLaunch::PatchSurface {
 
 constexpr const char* kName = "wiixl.patch";
@@ -367,22 +312,11 @@ inline bool OriginMatches(uintptr_t addr, const uint8_t* origin, uint32_t len) {
     return true;
 }
 
-// 1 on success. 0 when the bytes at the address are not what the caller said
-// they would be - which is the version guard doing its job, not a failure of
-// this call.
-// THROUGH THE PATCH REGISTRY, not past it.
-//
-// This used to verify the origin bytes and then write, recording nothing. So a
-// runtime patch got one of the four checks a DECLARED patch gets: it could land
-// inside the 16 bytes a hook displaced, or on top of another module's patch, or
-// into the module arena, and none of those were looked at - while the surface
-// sat next to Patches, which does all of them and names the other party.
-//
-// That gap is the reason a mod wanting a CONFIGURABLE patch had to choose
-// between the collision report and the config: a declared patch cannot depend on
-// a number read at runtime, and a runtime patch was unregistered. It no longer
-// is - Patches::ApplyAt checks and records, so two mods rewriting the same
-// instruction collide by name whichever way either of them wrote it.
+// 1 on success. 0 when the bytes at the address aren't what the caller
+// said - the version guard doing its job. Goes through Patches::ApplyAt
+// (not around it), so a runtime patch gets the same hooked-window and
+// patch-overlap checks a declared patch gets, and two mods rewriting the
+// same instruction collide by name either way.
 extern "C" inline uint32_t PtWrite(uintptr_t addr, const void* data, uint32_t size,
                                    const void* origin, uint32_t originSize) {
     if (!addr || !data || size == 0 || !origin || originSize != size) return 0;
@@ -400,9 +334,8 @@ extern "C" inline uint32_t PtWriteUnchecked(uintptr_t addr, const void* data, ui
     return 1;
 }
 
-// Reads bytes back out of game memory, which is how a mod verifies its own
-// write rather than trusting the return value. The sixth rule in
-// docs/framework/modules.md, made available to mods.
+// Reads bytes back out of game memory, so a mod can verify its own write
+// rather than trust the return value.
 extern "C" inline uint32_t PtRead(uintptr_t addr, void* out, uint32_t size) {
     if (!addr || !out || size == 0) return 0;
     const uint8_t* src = reinterpret_cast<const uint8_t*>(addr);
@@ -434,9 +367,8 @@ inline bool Register() {
 
 namespace WiiXLaunch::BaseSurfaces {
 
-// Everything in this header, registered together. Called by the host right
-// after wiixl.core, before any game module - these are base services and a game
-// module may perfectly well want them itself.
+// Everything in this header, registered together. Called by the host
+// right after wiixl.core, before any game module.
 inline void RegisterAll() {
     TimeSurface::Register();
     MemSurface::Register();

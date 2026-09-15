@@ -1,42 +1,20 @@
 #pragma once
 
-// WiiXLaunch::Tick - a per-frame callback for loaded modules.
+// WiiXLaunch::Tick - a per-frame callback for loaded modules. A .wxlm's
+// entry runs once, at a phase; this is the repeating call for a mod that
+// polls (an HTTP server, a watcher).
 //
-// A .wxlm gets its entry called once, at a phase, and nothing after. That is
-// enough for a mod that installs hooks and gets out of the way, and useless for
-// one that polls - an HTTP server, a watcher, anything that has to look at the
-// world repeatedly. This is the repeating call.
+// Base has no concept of a frame (that's a graphics idea, and graphics is
+// game-specific), so the source is nominated: a game module calls RunAll
+// from wherever a frame happens, and base owns the registry, ordering, and
+// attribution. A host with no game module has no tick, and LogState says so
+// rather than leaving a registered callback to silently never run.
 //
-// ---------------------------------------------------------------------------
-// BASE HAS NO CONCEPT OF A FRAME, so it does not invent one.
-//
-// A frame is a graphics idea and graphics is game-specific; base does not know
-// GX2 exists. So the SOURCE is nominated, exactly as the load point is: a game
-// module says "here is where a frame happens" and calls RunAll from it, and
-// base owns the registry, the ordering and the attribution.
-//
-// A host with no game module therefore has no tick. That is a legitimate state
-// and it is SAID rather than left to be inferred from silence - LogState
-// reports registered ticks with no source as a warning, because a mod that
-// registered a callback which will never run is a mod that does nothing, and
-// "does nothing quietly" is the hardest kind of broken to report.
-//
-// ---------------------------------------------------------------------------
-// A HANG IN A TICK MUST HAVE AN OWNER.
-//
-// A tick runs every frame. A mod that crashes or spins in one takes the game
-// with it, and the report that reaches you is "my game freezes with these mods
-// installed" with nothing narrowing it down. Registration order is not enough:
-// the log's last line is whatever was printed before the freeze, which is
-// usually from something else entirely.
-//
-// So the dispatcher writes who it is about to call into g_InFlight BEFORE
-// calling, and clears it after. If the game stops, that field still names the
-// module that was running. It carries a magic word so a memory dump or
-// tools/ring_log_reader can find it without a symbol table, and a sequence
-// counter that stops advancing - which distinguishes a hang inside a tick from
-// a game that stopped calling RunAll at all. Those are different problems and
-// they look identical from outside.
+// A hang in a tick must have an owner: the dispatcher writes who it's about
+// to call into g_InFlight before calling, and clears it after, so a frozen
+// game still names the module that was running. The sequence counter
+// distinguishes a hang inside a tick (frozen) from the game no longer
+// calling RunAll at all (advancing) - otherwise identical from outside.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -84,11 +62,8 @@ struct Entry {
     bool     inUse;
 };
 
-// What is running right now, findable without symbols.
-//
-// Deliberately a plain struct with a magic word rather than a set of separate
-// globals: a hang is diagnosed from a memory dump or a log reader, and one
-// contiguous, greppable record is worth more than tidiness.
+// What is running right now, findable without symbols in a memory dump or
+// log reader.
 struct InFlightRecord {
     uint32_t magic;              // kInFlightMagic
     uint32_t sequence;           // ++ on every dispatch; frozen means frozen
@@ -137,8 +112,8 @@ inline void ResetForTest() {
     impl::g_InFlight.owner[0] = '\0';
 }
 
-// A game module says where a frame happens. Base cannot know this and does not
-// guess - see the header comment.
+// A game module says where a frame happens; base cannot know and doesn't
+// guess.
 inline void NominateSource(const char* what) {
     impl::g_SourceName = what;
     WIIXL_LOG("Tick: frame source nominated by the game module: %s",
@@ -154,12 +129,8 @@ inline const Entry* At(uint32_t i) {
     return i < impl::g_Count ? &impl::g_Ticks[i] : nullptr;
 }
 
-// Registers the CURRENT module's tick.
-//
-// The owner is not a parameter. It comes from ModContext - whichever module the
-// host is running - so a mod cannot register a callback under another mod's
-// name and make a hang report point at the wrong one. Same rule as hook
-// attribution and probe tags; see the ABI discipline in loader/surface.hpp.
+// Registers the current module's tick. The owner comes from ModContext, not
+// a parameter, so a mod can't register under another mod's name.
 inline Register Add(TickFn fn) {
     const char* owner = ModContext::Current();
     if (!owner || owner[0] == '\0') {
@@ -197,12 +168,9 @@ inline Register Add(TickFn fn) {
     return Register::Ok;
 }
 
-// Calls every registered tick once, in registration order.
-//
-// Called by whatever the game module nominated. Registration order is load
-// order, which is lexical filename order - the same lever the user already has
-// over hook priority, so there is one answer to "which mod goes first" rather
-// than two.
+// Calls every registered tick once, in registration order (which is load
+// order, which is lexical filename order - the same lever as hook
+// priority).
 inline void RunAll() {
     impl::g_Dispatches++;
 
@@ -210,14 +178,11 @@ inline void RunAll() {
         Entry& e = impl::g_Ticks[i];
         if (!e.inUse || !e.fn) continue;
 
-        // BEFORE the call, so a hang leaves this behind pointing at the culprit.
+        // Before the call, so a hang leaves this pointing at the culprit.
         impl::g_InFlight.sequence++;
         impl::g_InFlight.depth++;
         impl::CopyOwner(impl::g_InFlight.owner, e.owner);
 
-        // A tick is this module running, so its identity and its arena apply -
-        // otherwise a file read or an allocation from inside a tick would be
-        // attributed to whoever ran last, or to nobody.
         Arena::SetCurrent(e.arena);
         ModContext::SetCurrent(e.owner);
 
@@ -250,14 +215,9 @@ inline void LogState() {
         WIIXL_LOG("Tick:   %u. %s", i + 1, impl::g_Ticks[i].owner);
     }
 
-    // A registered tick with nothing to drive it is a mod that will silently do
-    // nothing at all, which is the hardest kind of broken to report. Said here
-    // rather than left to be noticed.
     if (!impl::g_SourceName) {
         WIIXL_LOG("Tick: NO FRAME SOURCE - these callbacks will never run. Base has "
                   "no concept of a frame; a game module has to nominate one.");
-        WIIXL_LOG("Tick:   a host with no game module installed is expected to look "
-                  "exactly like this");
     }
 }
 

@@ -1,20 +1,13 @@
 #pragma once
 
 // WiiXLaunch::FS - reading and writing files from the title's filesystem.
-//
-// This is base-framework plumbing, not game knowledge. Every OS call below is
-// a coreinit FS export present in every Wii U title, reached with no
-// game-specific address: on Wii U by linking coreinit directly, on Cemu
-// through the `import.coreinit.<Name>` tail-call shims in src/cemu/cemu_fs.asm
-// (see wiixlaunch/cemu/cemu_fs.hpp for why that indirection exists at all).
-//
-// It lives in base because base depends on it: the module loader reads .wxlm
-// blobs off the filesystem at the load point, and the single FS client below
-// has to be owned by the host. Two mods each carrying their own copy would
-// mean two FSAddClient calls against two separate 0x1700-byte client buffers.
-//
-// Switch has no coreinit FS; every entry point here returns a clean failure on
-// that target rather than pretending to work.
+// Base-framework plumbing, not game knowledge: every OS call below is a
+// coreinit FS export present in every Wii U title, reached on Wii U by
+// linking coreinit directly and on Cemu through the
+// `import.coreinit.<Name>` shims in src/cemu/cemu_fs.asm. Owned by the
+// host as a single client (the module loader reads .wxlm blobs through it
+// too), so a mod does not carry its own. Switch has no coreinit FS; every
+// entry point here returns a clean failure there.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -31,17 +24,11 @@
 #elif WIIXL_SWITCH
 #include <nn/fs.hpp>
 
-// ONE BINDING EXLAUNCH DOES NOT SHIP, DECLARED HERE RATHER THAN THERE.
-//
-// vendor/exlaunch is upstream (shadowninja108/exlaunch), not a fork of ours,
-// so an edit inside it is an edit a clean clone does not have - the build
-// would fail for anyone else and pass here. A declaration costs nothing to
-// keep on our side: the symbol is resolved from nnSdk at load either way.
-//
-// SetFileSize(FileHandle, long) is confirmed present in the game's own
-// dynamic symbol table as _ZN2nn2fs11SetFileSizeENS0_10FileHandleEl. It is
-// what makes an overwrite shorter than the old file actually shorter; see
-// WriteFile below.
+// vendor/exlaunch is upstream and doesn't declare this binding, so it's
+// declared on our side rather than patching a vendored tree. Confirmed
+// present in the game's dynamic symbol table
+// (_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl); makes an overwrite shorter
+// than the old file actually shorter (see WriteFile below).
 namespace nn::fs {
 Result SetFileSize(FileHandle handle, s64 size);
 }
@@ -52,29 +39,17 @@ namespace WiiXLaunch::FS {
 
 namespace impl {
 
-// Static client and command block buffers to avoid heap allocation.
-//
-// There is exactly one of each, and they belong to the host. Anything needing
-// FS goes through this client rather than adding its own.
+// Static client and command block buffers to avoid heap allocation. One of
+// each, owned by the host; anything needing FS goes through this client.
 alignas(32) inline uint8_t g_FSClient[0x1700];
 alignas(32) inline uint8_t g_FSCmdBlock[0xA80];
 inline bool g_FSClientReady = false;
 
-// coreinit's FSReadFile family requires a 64-BYTE-ALIGNED destination buffer.
-// ReadAt has always said so in a comment; ReadFile did not, and did not check.
-//
-// The failure is quiet and it is not deterministic, which is the worst
-// combination. An unaligned buffer does not fault - the read simply transfers
-// nothing, or less than asked - so whether a mod's file read works depends on
-// where the compiler happened to put its stack buffer that build. Two example
-// mods doing the identical thing, `char buf[64]` on the stack, disagreed:
-// b_second read its greeting and a_first got zero bytes back for an 18-byte
-// file. Nothing in either mod was different; the stack offsets were.
-//
-// A mod cannot reasonably be expected to know this, and telling it to use
-// alignas(64) only moves the trap - it still bites whoever forgets. So an
-// unaligned destination is STAGED through this buffer instead: correct for any
-// caller, at the cost of one copy for the callers that need it.
+// coreinit's FSReadFile family requires a 64-byte-aligned destination
+// buffer; an unaligned one doesn't fault, it just silently transfers
+// nothing or less than asked, so whether a read works can depend on
+// incidental stack layout. An unaligned destination is staged through this
+// buffer instead, correct for any caller.
 constexpr uint32_t kFSBufferAlign = 64;
 alignas(kFSBufferAlign) inline uint8_t g_FSStaging[4096];
 
@@ -82,22 +57,15 @@ inline bool IsFSAligned(const void* p) {
     return (reinterpret_cast<uintptr_t>(p) & (kFSBufferAlign - 1)) == 0;
 }
 
-// How many times an unaligned read has been staged. Logged for the first few
-// only: it is worth knowing that a caller is paying for a copy, and not worth
-// one line a frame if something reads in a tick.
+// How many times an unaligned read has been staged. Logged for the first
+// few only, so it costs nothing if something reads every tick.
 inline uint32_t g_StagedReads = 0;
 
-// The path candidates a relative name is tried through, in order.
-//
-// ONE list, because a directory that resolves differently from the files inside
-// it is a bug with no symptom until something enumerates. That is exactly what
-// happened: the module loader opened "WiiXLaunch/mods" with a raw FSOpenDir
-// while every file open went through this list, so the loader reported the
-// directory missing three lines after the load-point probe had listed its
-// contents. Anything that opens a path resolves it here.
-//
-// `storage` supplies the buffers; `out` is filled with up to 4 candidates, the
-// first being the path exactly as given. Entries may be null - skip those.
+// The path candidates a relative name is tried through, in order. One
+// list, so a directory can't resolve differently from the files inside
+// it - anything that opens a path resolves it here. `storage` supplies
+// the buffers; `out` is filled with up to 4 candidates, the first being
+// the path exactly as given. Entries may be null; skip those.
 // Where a Switch host keeps its files. "sd" rather than something longer
 // because it appears in every path this builds.
 constexpr const char* kSwitchMount = "sd";
@@ -138,11 +106,8 @@ inline void Candidates(const char* path, char storage[3][256], const char* out[4
     out[0] = path;
     out[1] = out[2] = out[3] = nullptr;
 #if WIIXL_SWITCH
-    // A Switch has no /vol/content: the game's own files are in romfs and a
-    // host's files are on the SD card. Only the SD forms are offered, because
-    // a candidate that cannot exist is a line of log noise on every miss.
-    //
-    // out[0] stays the path as given so an absolute "sd:/..." still works.
+    // A Switch has no /vol/content: the game's files are in romfs, the
+    // host's are on the SD card, so only SD forms are offered.
     if (path && path[0] != '\0') {
         concat2(storage[0], 256, "sd:/", path);
         concat2(storage[1], 256, "sd:/atmosphere/contents/WiiXLaunch/", path);
@@ -186,22 +151,12 @@ inline bool EnsureFSClient() {
     g_FSClientReady = (status == 0);
     return g_FSClientReady;
 #elif WIIXL_SWITCH
-    // There is no client and no command block here; what has to happen once is
-    // the mount. nn::fs paths are "<mount>:/...", so nothing resolves until
-    // this has succeeded, and every candidate below is written against it.
-    //
-    // MountSdCardForDebug needs the process to have filesystem permission. A
-    // subsdk under Atmosphere normally does; a build that does not gets a
-    // non-zero Result here, and that is a permissions problem rather than a
-    // missing file - so it is logged as itself rather than becoming "not
-    // found" four candidate paths later.
+    // No client or command block here; what has to happen once is the
+    // mount. nn::fs paths are "<mount>:/...", so nothing resolves until
+    // this succeeds.
     if (g_FSClientReady) return true;
-    // nn::Result is a bare u32 in exlaunch's bindings - 0 is success. There is
-    // no IsSuccess() to call, and treating the value as a class compiles
-    // nowhere.
-    // Result is a global typedef in these bindings, not nn::Result - it is
-    // declared in nn_common.hpp outside any namespace. auto sidesteps the
-    // question of which spelling this vendored copy happens to use.
+    // `Result` is a bare u32 typedef in these bindings, not a class; auto
+    // sidesteps which spelling this vendored copy uses.
     const auto r = nn::fs::MountSdCardForDebug(kSwitchMount);
     g_FSClientReady = (r == 0);
     if (!g_FSClientReady) {
@@ -281,12 +236,8 @@ inline bool ReadFile(const char* path, void* outBuffer, size_t maxBufferSize, si
         return false;
     }
 
-    // MUST be the full 0x64 bytes coreinit's FSStat occupies (wut asserts that
-    // size). This was 96 bytes for a while, and FSGetStatFile duly wrote four
-    // bytes past the end of it - straight onto the adjacent stack slot, which
-    // the compiler had given to toRead. FSStat's tail is its `attributes` array
-    // and reads back as zeroes, so toRead became 0, FSReadFile was asked for
-    // zero bytes, and every read "succeeded" having transferred nothing.
+    // Must be the full 0x64 bytes coreinit's FSStat occupies (wut asserts
+    // this size); FSGetStatFile writes all of them.
     struct FsStatBuf {
         uint32_t flags;
         uint32_t mode;
@@ -433,16 +384,6 @@ inline bool ReadFile(const char* path, void* outBuffer, size_t maxBufferSize, si
     }
     return true;
 #elif WIIXL_SWITCH
-    // THIS BRANCH DID NOT EXIST. ReadFile went straight to "#else return false"
-    // on Switch, so wiixl.core:ReadFile, GameReadFile and ModReadFile all
-    // answered "no" to every question - silently, because a bare `return false`
-    // logs nothing. FS::File works there and always has, which is why the
-    // LOADER could read modules off the SD while a module could not read its
-    // own config file beside them.
-    //
-    // Found when a mod's config.txt came back as -1 and the mod fell back to
-    // its built-in defaults, which is exactly the failure the config system was
-    // built to avoid: a setting that is present, correct, and ignored.
     {
         char storage[3][256];
         const char* candidates[4];
@@ -543,11 +484,8 @@ inline bool WriteFile(const char* path, const void* buffer, size_t size, size_t*
                                  path, "w", &handle, FS_ERROR_FLAG_ALL);
     if (status != FS_STATUS_OK) return false;
 
-    // wut declares FSWriteFile's buffer as a non-const uint8_t* even though the
-    // call only reads from it, so the const has to come off somewhere. Doing it
-    // here keeps WriteFile's own signature honest (`const void* buffer`); before
-    // this, the mismatch made the whole header fail to compile on the Wii U
-    // target, which is why callers had to avoid including it at all.
+    // wut declares FSWriteFile's buffer as non-const uint8_t* though it only
+    // reads it; cast here to keep WriteFile's own signature honest.
     int32_t writtenBytes = FSWriteFile(reinterpret_cast<FSClient*>(impl::g_FSClient),
                                        reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
                                        const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(buffer)),
@@ -775,21 +713,10 @@ public:
                                         FS_ERROR_FLAG_ALL);
         return got > 0 ? static_cast<uint32_t>(got) : 0;
 #elif WIIXL_SWITCH
-        // THE FOUR-ARGUMENT OVERLOAD WITH THE SIZE, not the one with a
-        // bytesRead out-parameter.
-        //
-        // exlaunch declares both. The out-parameter one is
-        //   ReadFile(ulong* bytesRead, FileHandle, long position, void* buffer)
-        // which documents a `size` argument in its comment and does not have
-        // one in its signature - and nnSdk does not export it either. Calling
-        // it links, because a module resolves its imports at load; rtld then
-        // reports "Unresolved symbol _ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPv"
-        // and the call branches to address 0. That is what the first Switch
-        // boot that got this far actually did.
-        //
-        // This overload reads EXACTLY `size` bytes or fails - there is no short
-        // read to report, which is why it needs no out-parameter. Tail reads
-        // work because ReadAt has already clamped `size` against m_Size above.
+        // The four-argument overload with the size, not the one with a
+        // bytesRead out-parameter (that one is undeclared in nnSdk and
+        // branches to address 0 if called). Reads exactly `size` bytes or
+        // fails; ReadAt has already clamped `size` against m_Size above.
         nn::fs::FileHandle handle{m_Handle};
         if (nn::fs::ReadFile(handle, static_cast<long>(offset), buffer,
                              static_cast<unsigned long>(size)) != 0) {

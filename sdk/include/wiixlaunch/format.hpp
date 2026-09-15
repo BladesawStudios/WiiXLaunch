@@ -1,26 +1,16 @@
 #pragma once
 
-// WIIXL_LOG's formatter, and a mod's too.
-//
-// The Cemu payload has no crt0 and a .wxlm has no libc at all, so there is
-// no printf to call - this is it. It lived inside debug_log.hpp, which a
-// module cannot include: that header reaches for the ring buffer, coreinit's
-// OSReport and Aroma's notification module, none of which a module links
-// against.
-//
-// EXTRACTED RATHER THAN COPIED. A second implementation is a second thing to
-// get wrong, and the first one is already tested - tools/format_test checks
-// this code, 23 cases, added after a width specifier was found printing
-// itself literally and consuming no argument.
-//
-// Freestanding: <cstdint> and <cstdarg>, nothing else.
+// WIIXL_LOG's formatter, shared by the host and a mod's WIIXL_LOG. Neither
+// has a printf: the Cemu payload has no crt0, and a .wxlm has no libc.
+// Freestanding: <cstdint> and <cstdarg> only. tools/format_test covers this
+// with 23 cases.
 
 #include <cstdint>
 #include <cstdarg>
 
 namespace WiiXLaunch::Debug {
 
-// Libc-free formatter (no crt0 in Cemu); supports %s, %p, %d, %u, %x/%X, %f, %%.
+// Supports %s, %p, %d, %u, %x/%X, %f, %%.
 namespace impl {
 
 inline void AppendChar(char* buf, uint32_t& len, uint32_t cap, char c) {
@@ -99,15 +89,8 @@ inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list ar
             continue;
         }
 
-        // Minimum field width, with an optional leading-zero flag: %02X, %8d.
-        //
-        // These used to fall through to the default branch below, which emits
-        // the '%' and one following character literally and consumes no
-        // argument - so "%02X" printed as the four characters %02X and the
-        // value was silently dropped. Nothing crashed (an unconsumed vararg is
-        // harmless) and nothing complained; a hex dump just came out as format
-        // specifiers. Width applies to the integer conversions only; %s and %f
-        // ignore it.
+        // Minimum field width, optional leading-zero flag: %02X, %8d. Applies
+        // to integer conversions only; %s and %f ignore it.
         bool zeroPad = false;
         int width = 0;
         if (*p == '0') { zeroPad = true; p++; }
@@ -135,27 +118,19 @@ inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list ar
             case 's': impl::AppendStr(text, len, cap, va_arg(args, const char*)); break;
             case 'f': impl::AppendFloat(text, len, cap, va_arg(args, double), precision); break;
             default:
-                // Unknown conversion. Echo it rather than guessing, and note
-                // that no argument is consumed - so anything after this in the
-                // same call reads the wrong vararg. Better visibly wrong than
-                // quietly wrong.
+                // Unknown conversion: echo it rather than guess. No argument
+                // is consumed, so anything after this in the call reads the
+                // wrong vararg.
                 impl::AppendChar(text, len, cap, '%');
                 impl::AppendChar(text, len, cap, *p);
                 break;
         }
     }
 
-    // TRUNCATION SAYS SO. Running out of buffer used to end the line
-    // mid-sentence and look like a message that simply ended there - which for
-    // a diagnostic is the worst possible failure, because the half that gets
-    // discarded is the half explaining what to do. A boot cut two patch
-    // refusals off at "not the game; the" and "would corrupt a func", and
-    // neither read as truncated.
-    //
-    // A static check on format strings (scripts/test_log_lengths.py) catches
-    // the literals, but it can only be a lower bound: one %s can be arbitrarily
-    // long. This is the half that catches what the gate cannot, and it catches
-    // it where it happens.
+    // Truncation is marked rather than silent, since a cut message otherwise
+    // reads as one that simply ended there. scripts/test_log_lengths.py
+    // catches truncation in literal format strings but can't bound a %s
+    // argument, so this catches the rest at the point it happens.
     if (len >= cap) {
         const char* mark = "[..CUT]";
         uint32_t at = (cap > 7u) ? (cap - 7u) : 0u;

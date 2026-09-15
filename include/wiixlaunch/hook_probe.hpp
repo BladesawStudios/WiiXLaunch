@@ -1,36 +1,16 @@
 #pragma once
 
-// WiiXLaunch::HookProbe - the host's own assertion that the chain ran in the
-// right order.
+// WiiXLaunch::HookProbe - the host's own assertion that a hook chain ran in
+// the right order (used by the two demonstration mods, rather than trusting
+// a human to read logged marks and judge the nesting by eye).
 //
-// WHY THIS EXISTS AND WHAT IT REPLACES. The two demonstration mods each log a
-// line before and after calling Original, and a human can read those five lines
-// and see the nesting. That is not a test. It is exactly the load-point probe's
-// old failure one level up: self-reported strings, judged by eye, where a
-// missing line reads as a shorter log rather than as a failure. Nothing was
-// asserting the sequence, so nothing could fail.
-//
-// So the host records the sequence itself and checks it, and prints a verdict
-// that says PASS or FAIL rather than leaving the reader to reconstruct it.
-//
-// ---------------------------------------------------------------------------
-// ATTRIBUTION COMES FROM WHAT THE HOST OBSERVES, NOT FROM WHAT A MOD CLAIMS.
-//
-// A mod marks the sequence with a numeric tag. If the host simply believed the
-// tag, the ordering check would be worth nothing: a mod could pass any value
-// and the "verified" order would be whatever the mods felt like reporting.
-//
-// So a tag is CLAIMED during the module's entry, and the host binds it to
-// whichever module the loader is currently running - Hooks::CurrentOwner(),
-// which the host set, not something the module passed. A tag already claimed by
-// someone else is refused. By the time marks arrive, the host has its own
-// record of which mod each tag belongs to, established under its own
-// observation, and the ordering assertion is against that record.
-//
-// This is the same principle as wiixl.core's InstallHook taking no owner
-// parameter, for the same reason: a self-declared identity makes every report
-// built on it unfalsifiable, and an unfalsifiable report is not evidence.
-// ---------------------------------------------------------------------------
+// A tag is claimed during a module's entry and bound to whichever module
+// the loader is currently running (Hooks::CurrentOwner(), set by the host,
+// never passed by the module). A tag already claimed by someone else is
+// refused. By the time marks arrive, the host has its own record of which
+// mod each tag belongs to, so the ordering assertion is against that
+// record, not against what a mod claims - the same principle as
+// wiixl.core's InstallHook taking no owner parameter.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -43,9 +23,8 @@ namespace WiiXLaunch::HookProbe {
 constexpr uint32_t kMaxMarks = 32;
 constexpr uint32_t kMaxTags  = 8;
 
-// The host's own mark, written by the probe body at the end of the chain. Not
-// claimable by a mod - ClaimTag refuses it - so "the host body ran" cannot be
-// forged by a module that never called Original.
+// Written by the probe body at the end of the chain. Not claimable by a mod
+// (ClaimTag refuses it), so "the host body ran" can't be forged.
 constexpr uint32_t kHostTag = 0x484F5354u;   // 'HOST'
 
 struct TagOwner {
@@ -111,9 +90,8 @@ inline uint32_t ClaimTag(uint32_t tag) {
     return 1;
 }
 
-// Appends a mark. Cheap and total - a mark that does not fit is counted rather
-// than dropped silently, because a truncated sequence that still looked
-// well-formed would be the worst possible answer.
+// Appends a mark. One that doesn't fit is counted (g_Overflow) rather than
+// dropped silently.
 inline void Mark(uint32_t tag) {
     if (impl::g_MarkCount >= kMaxMarks) { impl::g_Overflow++; return; }
     impl::g_Marks[impl::g_MarkCount++] = tag;

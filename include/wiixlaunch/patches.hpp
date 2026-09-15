@@ -1,47 +1,24 @@
 #pragma once
 
-// WiiXLaunch::Patches - raw byte patches, declared as data and applied by the
-// host before any module code runs.
+// WiiXLaunch::Patches - raw byte patches, declared as data and applied by
+// the host before any module code runs. A patch overwrites bytes and can't
+// be chained the way a hook can, but both are things two mods can do to
+// the same address, so both go through one registry that can name the
+// parties when they collide.
 //
-// A patch is not a hook. A hook redirects a function and can be chained; a
-// patch overwrites bytes and cannot. Both are legitimate, and both are things
-// two mods can do to the same address, so both need one registry that can name
-// the parties when they collide.
+// Load sequence: host hooks, then every module's declared patches in load
+// order, then module entries (which may install more hooks). Patches
+// before entries is what makes patch conflicts detectable up front rather
+// than discovered later. Patches before later hooks is what makes hooking
+// a patched function safe: the hook manager captures a target's prologue
+// once, on first install, so it captures the already-patched bytes.
+// Reversed, the manager would capture the original prologue and the patch
+// would then overwrite the jump it had just written.
 //
-// ---------------------------------------------------------------------------
-// THE LOAD SEQUENCE, AND WHY IT IS THIS ORDER.
-//
-//   1. host hooks          installed by WiiXLaunch_Init, before any module
-//   2. DECLARED PATCHES    every module's, at load, in load order
-//   3. module entries      which may install more hooks
-//
-// This is a specification, not an implementation detail, and reordering it
-// breaks two different things.
-//
-// PATCHES BEFORE ENTRIES is what makes patch conflicts detectable at all. The
-// host sees every patch every module declares before any mod code runs, so
-// patch-vs-patch and patch-vs-hook overlaps are known up front rather than
-// discovered when someone's game misbehaves. Applying patches on request from
-// inside a module's entry would give that up entirely - the host would learn
-// about the second patch only after the first had already been written.
-//
-// PATCHES BEFORE LATER HOOKS is what makes patching a to-be-hooked function
-// safe. The hook manager captures a target's prologue exactly once, when the
-// first hook on that address is installed. Because declared patches run before
-// any module entry, a module hooking an address another module patched captures
-// the PATCHED bytes - which is correct, and is the only reason that direction
-// needs no check. Reverse the order and the manager would capture the original
-// prologue, the patch would then overwrite the jump the manager had just
-// written, and the trampoline would carry bytes that no longer match anything.
-//
-// THE OTHER DIRECTION IS NOT SAFE AND IS CHECKED. A patch landing inside the
-// 16 bytes a hook has already displaced writes into the long jump, not into the
-// game: the bytes it is aiming at now live in a trampoline somewhere else, and
-// what it actually corrupts is the branch to the first hook in the chain. This
-// is reachable today, not hypothetically - the host's own GX2 hook is installed
-// during WiiXLaunch_Init, before any module is loaded, so the very first patch
-// any mod declares is already able to land in a hooked window.
-// ---------------------------------------------------------------------------
+// The other direction is checked, not just ordered around: a patch landing
+// inside the 16 bytes a hook has displaced would write into the trampoline
+// jump, not the game. See docs/framework/loader.md and
+// docs/framework/hooks.md for the full reasoning.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -64,11 +41,9 @@ namespace WiiXLaunch::Patches {
 constexpr uint32_t kMaxPatches = 32;
 constexpr uint32_t kOwnerLen = 17;
 
-// WHY THIS IS AN ENUM AND NOT A BOOL. Six refusals that want six different
-// fixes: a malformed record is a build problem, an origin mismatch is a
-// game-version problem, a hooked window is a mod-interaction problem. A caller
-// that gets `false` cannot tell them apart, and neither can a test - see the
-// log-string rule in docs/framework/modules.md.
+// An enum, not a bool: a malformed record, an origin mismatch, and a
+// hooked window want different fixes, and a caller getting `false` can't
+// tell them apart.
 enum class Result : uint32_t {
     Ok = 0,
     BadSize,          // size is 0, or larger than kMaxPatchBytes
@@ -96,9 +71,9 @@ inline const char* ResultName(Result r) {
     return "?";
 }
 
-// One applied patch, kept so a later one can be told who it collides with -
-// and so the host can go back and READ the target rather than believing the
-// applier's return value.
+// One applied patch, kept so a later one can be told who it collides with,
+// and so the host can read the target back rather than trust the return
+// value.
 struct Applied {
     uintptr_t addr;
     uint32_t  size;
@@ -115,37 +90,24 @@ inline uint32_t g_AppliedCount = 0;
 inline uint32_t g_RefusedCount = 0;
 inline uint32_t g_ExaminedCount = 0;
 
-// The arena, whose addresses are different on every boot because the code cave
-// moves with the graphic-pack load order. A patch written by absolute address
-// into that range cannot mean anything - it is either a mod trying to rewrite
-// another module's image, or a build mistake. Both are refused.
-//
-// Supplied rather than read, so a host test can describe a range without a
-// console. Zero size means "no arena known", and the check is skipped.
+// The arena, whose addresses move every boot with the code cave's load
+// order. A patch aimed into that range can't mean anything, so it's
+// refused. Supplied rather than read, so a host test can describe a range
+// without a console; zero size means "no arena known" and skips the check.
 inline uintptr_t g_ArenaBase = 0;
 inline uint32_t g_ArenaSize = 0;
 
-// Where a 32-bit game address lands in this process.
-//
-// On a console or in Cemu this is zero and the answer is the address itself -
-// the game's address space IS the process's. It exists because a host test runs
-// on a 64-bit machine, where a buffer to patch is far above anything a uint32_t
-// can name, and a patch record cannot hold a 64-bit address without changing
-// the format for every real target that will never need one.
-//
-// This is a test seam, not a hook: it is consulted on EVERY patch, so it cannot
-// quietly stop being called the way an unused allocation hook did.
+// Where a 32-bit game address lands in this process. Zero (the real-target
+// default) means the game's address space is the process's own; nonzero
+// only on a host test, whose buffers sit far above what a uint32_t can
+// name.
 inline uintptr_t g_AddrBase = 0;
 
 inline uintptr_t Resolve(uint32_t targetAddr) {
 #if WIIXL_SWITCH
-    // AN OFFSET ON SWITCH, not an address. NSOs are relocated to a random base
-    // every launch, so there is no 32-bit number a patch record could hold that
-    // names a Switch address - the same reason wiixl.call exists. The only
-    // meaning available is the one hooks already use: an offset from the main
-    // module's start.
-    //
-    // g_AddrBase is still added, and is still zero outside a host test.
+    // An offset on Switch, not an address: NSOs relocate per launch, so the
+    // only meaning available is an offset from the main module's start
+    // (same reason wiixl.call exists).
     if (g_AddrBase == 0) {
         return exl::util::modules::GetTargetStart() + static_cast<uintptr_t>(targetAddr);
     }
@@ -153,12 +115,9 @@ inline uintptr_t Resolve(uint32_t targetAddr) {
     return g_AddrBase + static_cast<uintptr_t>(targetAddr);
 }
 
-// Is [addr, addr+size) inside the game image?
-//
-// Only answerable where the host knows the image bounds, which today is Switch.
-// Returning true elsewhere is deliberate: "I cannot check" must not read as
-// "it failed", and on Wii U and Cemu the address IS the process address and the
-// origin comparison below is a meaningful test on its own.
+// Is [addr, addr+size) inside the game image? Only answerable where the
+// host knows the image bounds (Switch today). Returns true elsewhere,
+// deliberately: "can't check" must not read as "failed."
 inline bool InGameImage(uintptr_t addr, uint32_t size) {
 #if WIIXL_SWITCH
     const exl::util::Range& r = exl::util::GetMainModuleInfo().m_Total;
@@ -202,24 +161,16 @@ inline uint32_t AppliedCount()  { return impl::g_AppliedCount; }
 inline uint32_t RefusedCount()  { return impl::g_RefusedCount; }
 inline uint32_t ExaminedCount() { return impl::g_ExaminedCount; }
 
-// Decides whether a patch may be written, without writing it.
+// Decides whether a patch may be written, without writing it. Separate
+// from Apply so a test can assert the reason. Checked in diagnosis order:
+// a hooked window always also fails the origin check (the jump is there,
+// not the prologue), so HookedWindow is tested first, or a patch into a
+// hook would misleadingly report ORIGIN-MISMATCH.
 //
-// Separate from Apply so a test can assert the REASON on a target it has no
-// intention of letting anything write to. The order of the checks is the order
-// of the diagnoses: a malformed record is not a game-version problem, and a
-// hooked window is not an origin mismatch even though a hooked window will
-// always ALSO fail an origin check - the jump is there, not the prologue. That
-// is exactly why HookedWindow is tested first: reporting ORIGIN-MISMATCH for a
-// patch into a hook would send someone looking at their game version when the
-// answer is another mod.
-// Everything below works on a RESOLVED ADDRESS rather than on a PatchEntry.
-//
-// A declared patch holds a 32-bit targetAddr and is resolved once. A runtime
-// patch through wiixl.patch already HAS the address, and could not be expressed
-// in that field anyway - an aarch64 image under real ASLR does not sit below
-// 4 GB. Both roads meet here, which is the whole point of the refactor: a patch
-// written at module entry is now checked against, and recorded alongside, every
-// declared one, instead of being written with only its origin looked at.
+// Works on a resolved address rather than a PatchEntry, so a declared
+// patch (32-bit targetAddr, resolved once) and a runtime patch through
+// wiixl.patch (which already has the address) both go through the same
+// checks and the same collision table.
 inline Result CheckAt(uintptr_t addr, const uint8_t* origin, uint32_t size,
                       const char** collidesWith) {
     if (collidesWith) *collidesWith = nullptr;
@@ -227,17 +178,12 @@ inline Result CheckAt(uintptr_t addr, const uint8_t* origin, uint32_t size,
     if (size == 0 || size > Wxlm::kMaxPatchBytes) return Result::BadSize;
     if (addr == 0 || !origin) return Result::BadTarget;
 
-    // BEFORE ANYTHING DEREFERENCES IT. The origin comparison at the bottom of
-    // this function READS the target, and an address that is not mapped kills
-    // the process there - which turns "this patch is refused" into "the game
-    // does not boot", and refusing without killing the boot is the entire
-    // contract this module documents.
+    // Before anything dereferences it: the origin comparison below reads
+    // the target, and an unmapped address kills the process there.
     if (!impl::InGameImage(addr, size)) return Result::BadTarget;
 
-    // DERIVED, not set. An explicit SetArena would be a check that goes dead
-    // the day someone forgets to call it, and a dead check is indistinguishable
-    // from a passing one. The real host reads the arena it already owns; only a
-    // host test, which has no arena, supplies one.
+    // Derived, not set, on a real host: it reads the arena it already
+    // owns. Only a host test, which has no arena, supplies one explicitly.
     uintptr_t arenaBase = impl::g_ArenaBase;
     uint32_t arenaSize = impl::g_ArenaSize;
 #if WIIXL_CEMU
@@ -260,8 +206,7 @@ inline Result CheckAt(uintptr_t addr, const uint8_t* origin, uint32_t size,
         }
     }
 
-    // Against every patch already applied - declared or runtime, now that both
-    // are recorded in the same table.
+    // Against every patch already applied, declared or runtime.
     for (uint32_t i = 0; i < impl::g_AppliedCount; ++i) {
         const Applied& a = impl::g_Applied[i];
         if (impl::Overlaps(addr, size, a.addr, a.size)) {
@@ -270,8 +215,8 @@ inline Result CheckAt(uintptr_t addr, const uint8_t* origin, uint32_t size,
         }
     }
 
-    // Last, because it is the one that reads the target. Everything above is
-    // arithmetic and can be answered without touching the game's memory.
+    // Last: the only check that reads the target. Everything above is
+    // arithmetic.
     const volatile uint8_t* at = reinterpret_cast<const volatile uint8_t*>(addr);
     for (uint32_t i = 0; i < size; ++i) {
         if (at[i] != origin[i]) return Result::OriginMismatch;
@@ -281,14 +226,7 @@ inline Result CheckAt(uintptr_t addr, const uint8_t* origin, uint32_t size,
     return Result::Ok;
 }
 
-// Decides whether a declared patch may be written, without writing it.
-//
-// Separate from Apply so a test can assert the REASON on a target it has no
-// intention of letting anything write to. The order of the checks is the order
-// of the diagnoses: a malformed record is not a game-version problem, and a
-// hooked window is not an origin mismatch even though a hooked window will
-// always ALSO fail an origin check - the jump is there, not the prologue. That
-// is exactly why HookedWindow is tested first.
+// Same as CheckAt, for a declared patch record.
 inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
     if (collidesWith) *collidesWith = nullptr;
     if (p.size == 0 || p.size > Wxlm::kMaxPatchBytes) return Result::BadSize;
@@ -297,10 +235,8 @@ inline Result Check(const Wxlm::PatchEntry& p, const char** collidesWith) {
 }
 
 // Applies one patch at an already-resolved address, or refuses it by name.
-//
-// Never fatal. A refused patch leaves the target untouched and the boot
-// continues - one mod's bad patch must not cost the user their game, and must
-// not silently cost them the other mods either.
+// Never fatal: a refused patch leaves the target untouched and the boot
+// continues.
 inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin,
                       uint32_t size, const char* owner) {
     impl::g_ExaminedCount++;
@@ -354,33 +290,21 @@ inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin
     }
 
 #if WIIXL_SWITCH
-    // WRITING TO .text THROUGH .text IS NOT A WRITE.
-    //
-    // Horizon maps the game's code read-execute. A store to it either aborts on
-    // hardware or - under an emulator that does not enforce the permission -
-    // lands in memory while the recompiler goes on running the translation it
-    // already made of the ORIGINAL instruction. Both outcomes are silent, and
-    // the second is worse: the bytes read back correctly and the game behaves as
-    // if nothing was patched.
-    //
-    // That is what happened. A mod rewrote a `mov w1,#15` into `mov w1,#99`,
-    // this function logged "applied (origin verified)", and the HUD went on
-    // printing 15. The origin check happens BEFORE the store; nothing after it
-    // ever looked.
-    //
-    // exlaunch already solved this for its own patcher: a second, writable
-    // mapping of the same physical pages, made once at boot, plus a dcache
-    // flush and an icache invalidate so the CPU - or the recompiler's
-    // invalidation tracking - sees the new instruction. Hooks went through it
-    // all along, which is why hooks worked and raw patches did not.
+    // Writing to .text through .text is not a write: Horizon maps game
+    // code read-execute, so a plain store either aborts, or under an
+    // emulator that doesn't enforce the permission, lands in memory while
+    // the recompiler keeps running its translation of the original
+    // instruction. Both outcomes are silent and the bytes read back
+    // correctly, so exlaunch's writable alias of the same physical pages
+    // is used instead (the same mechanism hooks already go through).
     {
         const exl::util::RwPages& pages = exl::patch::impl::GetRwPages();
         const uintptr_t ro = pages.GetRo();
         const uintptr_t span = static_cast<uintptr_t>(pages.GetSize());
         if (addr < ro || (addr - ro) > span || (addr - ro) + size > span) {
-            // The alias covers the module up to the end of .rodata. Past that
-            // there is nothing to write THROUGH, and writing to the plain
-            // address would be the silent non-write all over again.
+            // The alias covers the module up to the end of .rodata. Past
+            // that, writing to the plain address is the silent non-write
+            // again.
             impl::g_RefusedCount++;
             WIIXL_LOG("Patch: %s REFUSED %s at %p (%u B) - outside the writable "
                       "alias of the game image", owner,
@@ -390,11 +314,10 @@ inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin
         uint8_t* rw = reinterpret_cast<uint8_t*>(pages.GetRw() + (addr - ro));
         for (uint32_t i = 0; i < size; ++i) rw[i] = data[i];
 
-        // Flush the DATA side where it was written, invalidate the INSTRUCTION
-        // side where it runs - two mappings of one set of physical pages, and
-        // the two caches do not see each other. RwPages::Flush() would do both
-        // over the whole claim, which for TOTK is the better part of 74 MB of
-        // cache maintenance per four-byte patch.
+        // Flush the data side where it was written, invalidate the
+        // instruction side where it runs - the two mappings' caches don't
+        // see each other, and a whole-claim flush would be ~74 MB of cache
+        // maintenance per four-byte patch on TOTK.
         armDCacheFlush(rw, size);
         armICacheInvalidate(reinterpret_cast<void*>(addr), size);
     }
@@ -406,13 +329,9 @@ inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin
     Backend::FlushCache(addr, size);
 #endif
 
-    // READ IT BACK, THROUGH THE ADDRESS THE CPU EXECUTES.
-    //
-    // Not through whatever alias the write used - the point is to ask the same
-    // mapping the game runs from whether it changed. Every earlier check in
-    // this function tests whether the patch is ALLOWED; this is the only one
-    // that tests whether it HAPPENED, and its absence is what let a patch that
-    // did nothing report success for as long as this code has existed.
+    // Read back through the address the CPU executes, not whatever alias
+    // the write used. Every earlier check tests whether the patch is
+    // allowed; this is the only one that tests whether it happened.
     {
         const volatile uint8_t* check =
             reinterpret_cast<const volatile uint8_t*>(addr);
@@ -424,8 +343,6 @@ inline Result ApplyAt(uintptr_t addr, const uint8_t* data, const uint8_t* origin
                       owner, ResultName(Result::WriteFailed), where, size,
                       data[0], data[1], data[2], data[3],
                       check[0], check[1], check[2], check[3]);
-            WIIXL_LOG("Patch:   the store was accepted and did not take - the "
-                      "target is not writable through the mapping used");
             return Result::WriteFailed;
         }
     }
@@ -462,23 +379,10 @@ inline Result Apply(const Wxlm::PatchEntry& p, const char* owner) {
     return ApplyAt(impl::Resolve(p.targetAddr), p.data, p.origin, p.size, owner);
 }
 
-// Goes back and READS every applied patch's target.
-//
-// WHY THIS IS NOT REDUNDANT. Apply returning Ok says the applier believed it
-// wrote. This says the bytes are there now, read back from the target by code
-// that did not do the writing. A refusal is self-evidencing - nothing changed,
-// and the origin still matches - but a success is not: without a readback the
-// applied path would be verified only by the thing that performed it.
-//
-// Two properties, and the second is the one that would be missed:
-//
-//   1. the target now holds `data`
-//   2. `data` is actually DIFFERENT from `origin`
-//
-// Without (2) a patch that wrote the bytes already there would pass, and so
-// would an applier that wrote nothing at all to a target whose origin and data
-// happened to be equal. A patch that changes nothing is a patch that proves
-// nothing.
+// Reads every applied patch's target back, by code that didn't do the
+// writing. Checks two things: the target holds `data`, and `data` is
+// actually different from `origin` (otherwise a no-op write, or one that
+// happened to already match, would pass).
 inline bool VerifyApplied() {
     if (impl::g_AppliedCount == 0) {
         WIIXL_LOG("Patch: nothing was applied, so there is nothing to verify");
@@ -527,22 +431,10 @@ inline bool VerifyApplied() {
     return pass;
 }
 
-// Puts every applied patch back, and checks the restore took.
-//
-// WHY A DEMONSTRATION WANTS THIS. Proving the applier writes to game memory
-// needs a target the host can read back. Proving it is HARMLESS needs either a
-// target whose modification is provably inert forever, or a much cheaper
-// property: that the modification does not outlive the load sequence.
-//
-// The second is easier to support and does not depend on being right about an
-// address. `examples/patch_mod` uses both - its target is an instruction whose
-// replacement is a different encoding of the same operation, AND it is put back
-// here - so the demonstration is safe even if the inertness analysis is wrong.
-//
-// A SHIPPING HOST WITH REAL PATCH MODS MUST NOT CALL THIS. A patch is meant to
-// persist; undoing one is only useful for a demonstration, or for a host tearing
-// down before a reload. The log says so on every call rather than leaving it to
-// whoever reads this header.
+// Puts every applied patch back, and checks the restore took. A shipping
+// host with real patch mods must not call this - a patch is meant to
+// persist. Useful only for a demonstration, or a host tearing down before
+// a reload.
 inline bool RestoreAll() {
     if (impl::g_AppliedCount == 0) return true;
 
@@ -557,9 +449,6 @@ inline bool RestoreAll() {
         Backend::FlushCache(a.addr, a.size);
 #endif
 
-        // Read it back. A restore that silently did not take would leave the
-        // game running modified for the rest of the session, which is the exact
-        // thing this is here to prevent - so it is checked, not assumed.
         bool holds = true;
         for (uint32_t b = 0; b < a.size; ++b) {
             if (at[b] != a.origin[b]) holds = false;
@@ -585,9 +474,7 @@ inline bool RestoreAll() {
     return failed == 0;
 }
 
-// Everything patched, and by whom. Printed at the load point beside the hook
-// summary, because "which mods touched this address" is one question with two
-// mechanisms behind it.
+// Everything patched, and by whom.
 inline void LogState() {
     WIIXL_LOG("Patch: %u examined, %u applied, %u refused",
               impl::g_ExaminedCount, impl::g_AppliedCount, impl::g_RefusedCount);

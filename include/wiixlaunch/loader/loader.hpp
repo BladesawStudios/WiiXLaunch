@@ -1,17 +1,17 @@
 #pragma once
 
-// The .wxlm module loader.
+// The .wxlm module loader. Reads a module off the filesystem, validates
+// it, places it in memory, relocates it, resolves its imports against the
+// surface registry, runs its .init_array, and calls its entry point at
+// the right phase.
 //
-// Reads a module off the filesystem, validates it, places it in memory,
-// relocates it, resolves its imports against the surface registry, runs its
-// .init_array, and calls its entry point at the right phase.
+// LoadAll enumerates a directory and loads every .wxlm in lexical filename
+// order, each into its own bounded arena grant. That order is a
+// specification (see docs/framework/loader.md), not an enumeration
+// artifact.
 //
-// SEVERAL MODULES. LoadAll enumerates a directory and loads every .wxlm in it,
-// in lexical filename order, each into its own bounded arena grant and each
-// attributed by mod id when it installs a hook. That order is a specification,
-// not an enumeration artefact - see LoadAll and docs/framework/loader.md.
-//
-// ORDER OF OPERATIONS, and it is the order for a reason:
+// Order of operations, in order for a reason - nothing is allocated until
+// the file is proved intact, and nothing executes until proved resolvable:
 //
 //   1. integrity   size, magic, version, machine, endian, ABI, reserved, CRC
 //   2. structure   every section offset and size inside the file
@@ -22,14 +22,9 @@
 //   7. init_array  static constructors, which nothing else will ever run
 //   8. entry       at the phase the module asked for
 //
-// Nothing is allocated until the file has been proved intact, and nothing is
-// executed until it has been proved resolvable. A module that fails at any step
-// is skipped with a named reason and leaves nothing behind - one corrupt file
-// must not cost the user their boot.
-//
-// EVERY STEP LOGS. A failure names itself: which module, which step, which
-// symbol or surface. That is the whole difference between a bug report that can
-// be acted on and "mods don't work".
+// A module that fails at any step is skipped with a named reason and
+// leaves nothing behind. Every step logs, so a failure names which
+// module, which step, which symbol or surface.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -59,21 +54,9 @@ using Wxlm::RejectName;
 constexpr uint32_t kMaxNameLen = 64;
 constexpr uint32_t kMaxPathLen = 192;
 
-// How the loader publishes code it has written.
-//
-// THERE IS NO ALLOCATION HOOK ANY MORE, and removing it was not tidying. Stage
-// 5 moved the image onto the module own sub-arena (Arena::AllocIn at the
-// placement site), which left AllocFn set but never called - and
-// tools/loader_fuzz was installing a red-zoned allocator through it. Its
-// canaries were then bytes nothing could reach, so CheckRedZones() passed
-// without testing anything: a dead hook turned a real test into a vacuous one,
-// silently, and the case count did not change. The fuzzer now poisons the
-// arena reservation itself and checks the loader wrote only inside the grant,
-// which is both a live check and the actual stage-5 invariant.
-//
-// The flush hook stays because it is still called, and because it is what lets
-// the fuzzer run this exact code natively: parsing attacker-shaped data is
-// ordinary logic and testing it should not need a console or a boot.
+// How the loader publishes code it has written. No allocation hook (the
+// image goes through Arena::AllocIn directly); the flush hook stays so
+// tools/loader_fuzz can run this exact code natively, without a console.
 using FlushFn = void (*)(uintptr_t addr, uint32_t size);
 
 namespace impl {
@@ -127,12 +110,9 @@ inline uint32_t g_ModuleCount = 0;
 // integrity check runs BEFORE anything is allocated - that is the point of it.
 alignas(64) inline uint8_t g_Scratch[1024];
 
-// The header, read whole and aligned so it can be overlaid. Safe to overlay
-// only after the endian check, which is why that check comes first.
-//
-// alignas(64), not 8: coreinit's FSReadFile family requires a 64-byte aligned
-// destination. At alignas(8) this happened to work - a static usually lands
-// more aligned than it asks for - which is the worst kind of working.
+// The header, read whole and aligned so it can be overlaid. Safe to
+// overlay only after the endian check runs first. alignas(64), not 8:
+// coreinit's FSReadFile family requires a 64-byte aligned destination.
 alignas(64) inline uint8_t g_HeaderBytes[sizeof(Wxlm::Header)];
 
 // Filenames and paths. Bounded, because everything here is.
@@ -142,10 +122,8 @@ inline void CopyName(char* dst, const char* src) {
     dst[i] = '\0';
 }
 
-// Byte-wise ascending. Deliberately NOT case-insensitive and not locale-aware:
-// the order has to be predictable from the bytes of a filename on any host, and
-// "predictable" beats "friendly" when it is the user's only lever over which
-// mod runs first. Uppercase sorts before lowercase; docs/framework/loader.md says so.
+// Byte-wise ascending, deliberately not case-insensitive or locale-aware:
+// the order must be predictable from the bytes of a filename on any host.
 inline bool NameLess(const char* a, const char* b) {
     for (uint32_t i = 0; i < kMaxNameLen; ++i) {
         const unsigned char ca = static_cast<unsigned char>(a[i]);
@@ -182,41 +160,19 @@ inline void CopyId(char* dst, const char* src) {
 }
 
 // Does [offset, offset+size) fit inside a file of `fileSize` bytes?
-//
-// Everything is widened to 64-bit first, deliberately. A section's size is
-// count * sizeof(entry), and a corrupt or hostile count can wrap a 32-bit
-// multiply to something small that then passes a naive bounds check - which is
-// precisely the check standing between a bad file and a relocation into
-// arbitrary memory. Doing the arithmetic where it cannot wrap makes the check
-// mean what it says.
-//
-// The AArch64 build is what forced this into the open: size_t is 64-bit there,
-// so the narrowing was a compile error, where on 32-bit PowerPC it would have
-// silently truncated.
+// Everything widened to 64-bit first: a section's size is
+// count * sizeof(entry), and a hostile count can wrap a 32-bit multiply to
+// something small that then passes a naive bounds check.
 inline bool InFile(uint64_t offset, uint64_t size, uint64_t fileSize) {
     if (offset > fileSize) return false;
     return offset + size <= fileSize;
 }
 
 // Reads through the aligned scratch, for destinations that are neither
-// 64-byte aligned nor a multiple of 64 - which is every struct and string this
-// loader reads.
-//
-// WHY THIS EXISTS. coreinit's FSReadFile family requires a 64-BYTE ALIGNED
-// buffer and, unless it is reading the tail of the file, a size that is a
-// multiple of 64. wiixlaunch/fs.hpp says so at FS::File::ReadAt. Reading an
-// 8-byte RequiredSurface into a stack local satisfies neither, and Cemu answers
-// with "FS handleAsyncResult(): unexpected error ffffffff" - a failure at the
-// FS layer, reported by the loader as READ-FAILED, with nothing about
-// alignment anywhere in it.
-//
-// The fuzzer could not have found this: its reader is a byte array with no
-// alignment requirement at all. It took a boot. tools/loader_fuzz's
-// MemoryReader now enforces the same constraints, so the next one is caught on
-// the host.
-//
-// Returns the number of bytes delivered, like ReadAt, so a short read at the
-// end of a file stays distinguishable from a failure.
+// 64-byte aligned nor a multiple of 64 (every struct and string this
+// loader reads) - coreinit's FSReadFile family requires both unless
+// reading the tail of the file. Returns bytes delivered, like ReadAt, so a
+// short read at the end of a file stays distinguishable from a failure.
 template <typename Reader>
 inline uint32_t ReadVia(Reader& file, uint32_t offset, void* dst, uint32_t size) {
     if (size == 0 || size > sizeof(g_Scratch)) return 0;
@@ -233,9 +189,8 @@ inline uint32_t ReadVia(Reader& file, uint32_t offset, void* dst, uint32_t size)
     return n;
 }
 
-// Reads into a destination that IS 64-byte aligned - the module image. Whole
-// 64-byte chunks go straight in; only the ragged tail is bounced, so a large
-// payload is still one read.
+// Reads into a destination that is 64-byte aligned (the module image).
+// Whole 64-byte chunks go straight in; only the ragged tail is bounced.
 template <typename Reader>
 inline bool ReadAligned(Reader& file, uint32_t offset, uint8_t* dst, uint32_t size) {
     const uint32_t whole = size & ~63u;
@@ -248,14 +203,8 @@ inline bool ReadAligned(Reader& file, uint32_t offset, uint8_t* dst, uint32_t si
 } // namespace impl
 
 // Forgets every loaded module. For a host test that runs many loads in one
-// process; nothing in a real host calls it, because a module is never unloaded.
-//
-// tools/loader_fuzz needs this and did not have it: g_ModuleCount survived
-// across cases, so after Arena::kMaxModules successful loads every later valid
-// module was rejected NO-MEMORY. The suite still ran 1171 cases and still
-// reported PASS - only the accepted/rejected SPLIT moved, from 293 accepted to
-// 8. A total that cannot move is not a liveness check; see the accepted-count
-// floor in the fuzzer.
+// process; nothing in a real host calls it, since a module is never
+// unloaded.
 inline void ResetForTest() {
     impl::g_ModuleCount = 0;
     for (uint32_t i = 0; i < Arena::kMaxModules; ++i) {
@@ -359,18 +308,10 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
         return Reject::BadPhase;
     }
 
-    // Reserved fields are CHECKED, not ignored. A newer writer setting one and
-    // an older loader ignoring it is how a mod half-works instead of failing.
-    // Every reserved field, not only the counts. The OFFSETS were unchecked, so
-    // a flip in declaredHookOffset or declaredPatchOffset was accepted while
-    // the matching count flip was refused - the fuzzer's per-field attribution
-    // is what made that visible. A reserved field is reserved whether or not
-    // this host would have read it.
-    //
-    // declaredPatch* is IMPLEMENTED as of stage 7 and is no longer reserved.
-    // declaredHook* still is - a mod installs hooks through wiixl.core at
-    // runtime, and declaring them as data is a separate decision nobody has
-    // made yet.
+    // Reserved fields are checked, not ignored: a newer writer setting one
+    // and an older loader ignoring it is how a mod half-works instead of
+    // failing. declaredHook* is still reserved - a mod installs hooks
+    // through wiixl.core at runtime, not as declared data.
     bool reservedSet = (h.reserved0 != 0);
     for (int i = 0; i < 4; ++i) reservedSet = reservedSet || (h.reserved1[i] != 0);
     reservedSet = reservedSet || h.declaredHookOffset != 0;
@@ -381,10 +322,7 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
         return Reject::ReservedNotZero;
     }
 
-    // The '_' id space belongs to the host - WiiXLaunch/mods/_host/ holds the
-    // host's own resources, and a module claiming an id there could read or
-    // shadow them. Reserving the whole PREFIX rather than one name means a
-    // future reserved id needs no new check here.
+    // The '_' id space belongs to the host (WiiXLaunch/mods/_host/).
     if (ModFS::IsReservedId(id)) {
         WIIXL_LOG("[loader:%s] %s: ids beginning with '%c' are reserved for the host",
                   id, RejectName(Reject::ReservedModId), ModFS::kReservedPrefix);
@@ -417,9 +355,8 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
             return Reject::BadSectionBounds;
         }
 
-        // A section may not start inside the header. Nothing well-formed does,
-        // and allowing it means a table can be made to read header bytes as
-        // entries - offsets and counts of the loader's own choosing.
+        // A section may not start inside the header, or a table could be
+        // made to read header bytes as entries.
         if (sp.off < sizeof(Wxlm::Header)) {
             WIIXL_LOG("[loader:%s] %s: %s section starts at %u, inside the %u-byte "
                       "header", id, RejectName(Reject::BadSectionBounds), sp.what,
@@ -429,14 +366,9 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
         }
     }
 
-    // No two sections may overlap. Each is bounded and each starts after the
-    // header, but that still permits a string blob sitting on top of the reloc
-    // table, where one field's meaning is read out of another's bytes. Nothing
-    // a writer produces overlaps, so refusing it costs nothing and removes a
-    // whole class of confusion between tables.
-    //
-    // Found by tools/loader_fuzz: exportCount=1 with an unset exportOffset gave
-    // a table lying on the header, in bounds and accepted.
+    // No two sections may overlap: each is bounded and starts after the
+    // header, but that still permits one field's meaning being read out of
+    // another's bytes.
     for (uint32_t i = 0; i < sizeof(spans) / sizeof(spans[0]); ++i) {
         if (spans[i].size == 0) continue;
         for (uint32_t j = i + 1; j < sizeof(spans) / sizeof(spans[0]); ++j) {
@@ -470,15 +402,9 @@ inline Reject ValidateHeader(const Wxlm::Header& h, const char* id) {
     return Reject::None;
 }
 
-// Loads one module from anything with Size() and ReadAt().
-//
-// Templated on the reader so the same code serves a file on a console and a
-// byte array in a test. FS::File satisfies it; so does tools/loader_fuzz's
-// memory reader. The alternative - reading the whole file into a buffer first -
-// would have been simpler to test and would have doubled peak memory in a code
-// cave under 4 MB.
-//
-// Does NOT close the reader; the caller owns it.
+// Loads one module from anything with Size() and ReadAt(). Templated on
+// the reader so the same code serves a console file and a test's memory
+// reader. Does not close the reader; the caller owns it.
 template <typename Reader>
 inline Reject LoadFrom(Reader& file) {
     if (file.Size() < Wxlm::kMinFileSize) {
@@ -499,10 +425,9 @@ inline Reject LoadFrom(Reader& file) {
     char id[17];
     impl::CopyId(id, h.modId);
 
-    // Claimed size against delivered size FIRST. Structure is checked against
-    // h.fileSize, so a shrunken fileSize would otherwise trip a section bound
-    // and report BAD-SECTION-BOUNDS for what is really a truncated file. The
-    // fuzzer caught that: the rejection was right and the diagnosis was not.
+    // Claimed size against delivered size first, or a shrunken fileSize
+    // would trip a section bound and misreport BAD-SECTION-BOUNDS for what
+    // is really a truncated file.
     if (file.Size() != h.fileSize) {
         WIIXL_LOG("[loader:%s] %s: header says %u bytes, the file is %u - truncated, "
                   "still being written, or not the file the header describes",
@@ -523,10 +448,6 @@ inline Reject LoadFrom(Reader& file) {
               id, h.contentCrc32, h.fileSize - static_cast<uint32_t>(sizeof(Wxlm::Header)));
 
     // --- surfaces, before anything is allocated ------------------------------
-    //
-    // A module that cannot possibly work is rejected before it is written into
-    // memory, and the message names the surface rather than a symbol, because
-    // "requires botw.gx2 v1, not present" is the actionable form.
     for (uint32_t i = 0; i < h.requiredCount; ++i) {
         Wxlm::RequiredSurface req{};
         const uint32_t off = h.requiredOffset + i * sizeof(req);
@@ -556,17 +477,10 @@ inline Reject LoadFrom(Reader& file) {
                   req.versionMajor, req.versionMinor);
     }
 
-    //
-    // payloadSize + bssSize in 32 bits can WRAP, and the consequence is not a
-    // failed allocation - it is a successful small one followed by a zeroing
-    // loop that runs bssSize times. bssSize = 0xFFFFFFFF with a 64-byte payload
-    // gives an imageSize of 63: the allocation succeeds, and then the loop
-    // writes four gigabytes starting inside it.
-    //
-    // Single-bit flips cannot produce that value, so the header sweep never hit
-    // it; it turned up while working out why the sweep's NO-MEMORY results
-    // disagreed with the oracle. The arithmetic is done in 64 bits and the
-    // result is bounded before anything is allocated.
+    // payloadSize + bssSize in 32 bits can wrap: bssSize = 0xFFFFFFFF with
+    // a 64-byte payload gives an imageSize of 63, a successful small
+    // allocation followed by a zeroing loop that writes four gigabytes
+    // starting inside it. Done in 64 bits and bounded before allocating.
     const uint64_t imageSize64 =
         static_cast<uint64_t>(h.payloadSize) + static_cast<uint64_t>(h.bssSize);
     if (imageSize64 > 0xFFFFFFFFull) {
@@ -576,34 +490,20 @@ inline Reject LoadFrom(Reader& file) {
     }
     const uint32_t imageSize = static_cast<uint32_t>(imageSize64);
 
-    // The module's own bounded piece, acquired AFTER the size arithmetic above
-    // has been validated and BEFORE anything is placed. Both halves matter: a
-    // module whose sizes do not add up must be refused for that reason rather
-    // than for running out of memory, and a module that cannot be given what it
-    // needs must be refused without having been partially written anywhere.
+    // The module's bounded piece is acquired after the size arithmetic
+    // above is validated and before anything is placed, so a malformed
+    // size is refused for that reason rather than reported as
+    // out-of-memory, and a refused module is never partially written.
     //
-    // Acquiring first was the original order and the fuzzer rejected it - every
-    // malformed-size case came back NO-MEMORY instead of naming the real fault.
-    //
-    // The module's own bounded piece, acquired BEFORE anything is placed, so a
-    // module that cannot be given what it needs is refused without having been
-    // partially written anywhere.
-    //
-    // The image itself is charged to that piece too. A module's footprint is
-    // its code plus whatever it allocates, and leaving the image outside the
-    // bound would mean a large module quietly costing more than its grant says.
-    // 64 bytes on PowerPC - cache-line, and what every FS destination wants.
-    //
-    // 4096 on AArch64, and it is a CORRECTNESS requirement rather than a
-    // performance one. An aarch64 module addresses its own data with adrp+add,
-    // which the linker has already resolved and which stays correct after the
-    // image moves ONLY if it moves by a whole number of pages: adrp computes
-    // (PC & ~0xFFF) + imm, so a sub-page shift changes the page difference the
-    // linker baked in. There is no relocation on those instructions to fix it
-    // up afterwards, so nothing would report the damage - the module would just
-    // read from one page away.
-    //
-    // Declared up here because the GRANT has to account for it; see below.
+    // The image is charged to that piece too, since a module's footprint
+    // is its code plus whatever it allocates. Alignment: 64 bytes on
+    // PowerPC (cache-line, what every FS destination wants); 4096 on
+    // AArch64, a correctness requirement rather than a performance one. An
+    // aarch64 module addresses its own data with adrp+add, resolved by the
+    // linker, which stays correct after the image moves only if it moves
+    // by a whole number of pages - there is no relocation to fix up a
+    // sub-page shift, so the module would silently read from one page
+    // away.
     constexpr uint32_t kImageAlign =
         (Wxlm::kHostMachine == Wxlm::Machine::AArch64) ? 4096u : 64u;
 
@@ -612,8 +512,8 @@ inline Reject LoadFrom(Reader& file) {
         const uint32_t need = h.payloadSize + h.bssSize;
         uint32_t request = h.heapRequest;
         if (request != 0) {
-            // A stated requirement covers the module's own allocations; the
-            // image has to fit as well, so the host reserves both.
+            // A stated requirement covers the module's own allocations;
+            // the image has to fit too, so the host reserves both.
             const uint64_t total = static_cast<uint64_t>(request) + need;
             if (total > 0xFFFFFFFFull) {
                 WIIXL_LOG("[loader:%s] %s: heapRequest %u plus a %u-byte image does not "
@@ -624,17 +524,11 @@ inline Reject LoadFrom(Reader& file) {
             request = static_cast<uint32_t>(total);
         }
 
-        // THE FLOOR IS THE IMAGE PLUS ITS ALIGNMENT PADDING, not the image.
-        //
-        // Sub-arenas are carved from the top of the arena and land wherever
-        // the running total leaves them; the image inside one is then aligned
-        // to kImageAlign. So a grant of exactly `need` fits only if the
-        // sub-arena happens to start aligned, and AIPuppet on Switch is what
-        // happens when it does not: granted 88064 at 0xb393800, aligned up to
-        // 0xb394000, and the last 2048 bytes no longer fit. Refused for lack
-        // of memory with 874 KB free, which is a true sentence and a useless
-        // one. Reserving the padding as well makes the grant sufficient
-        // wherever it lands.
+        // The floor is the image plus its alignment padding, not the image
+        // alone: sub-arenas land wherever the running total leaves them,
+        // and the image inside one is then aligned to kImageAlign, so a
+        // grant of exactly `need` only fits if the sub-arena happens to
+        // start aligned.
         const uint64_t floor64 =
             static_cast<uint64_t>(need) + (kImageAlign - 1u);
         if (floor64 > 0xFFFFFFFFull) {
@@ -671,32 +565,17 @@ inline Reject LoadFrom(Reader& file) {
         return Reject::NoMemory;
     }
 
-    // POISON BEFORE PLACING, so that "the loader zeroed my .bss" is a claim the
-    // module can actually test.
+    // Poisoned before placing, so "the loader zeroed my .bss" is a claim a
+    // module can actually test: freshly carved arena memory is often
+    // already zero, so a check against that alone would pass whether or
+    // not zeroing ran. 0xCD, not tools/loader_fuzz's 0xA5 arena fill, so
+    // the two stay distinguishable.
     //
-    // THE FOURTH RULE (docs/framework/modules.md). The sample module checks its .bss is
-    // zero and reports success - but freshly carved arena memory is very often
-    // already zero, so that check passed whether or not the zeroing step below
-    // ran. Delete the memset and the module would still have said "bss was
-    // zeroed". A check that cannot tell "correct" from "never happened" is not
-    // a check.
-    //
-    // Filling the image region with a non-zero pattern first fixes that in the
-    // only way that matters: the payload copy and the bss zero each have to
-    // overwrite it, and if either step were removed the module would see
-    // kImagePoison and say so. Bounded by imageSize, so this is proportional to
-    // the module, not to its grant.
-    // 0xCD, deliberately NOT the 0xA5 tools/loader_fuzz fills the arena with.
-    // The fuzzer distinguishes untouched arena (0xA5) from memory the loader
-    // wrote; if both poisons were the same byte the two would be
-    // indistinguishable and its liveness check would be reasoning about the
-    // wrong thing.
-    // EVERY WRITE from here on goes through the alias, and every VALUE stored
-    // is still computed from `image`. On Cemu and Wii U the two are the same
-    // pointer; on Switch the image lives in the host's .text, which cannot be
-    // written to, and Arena hands back a writable view of the same pages. Get
-    // this backwards and a module would be relocated to point into a mapping
-    // that is not executable.
+    // Every write from here on goes through the alias, but every value
+    // stored is still computed from `image`: on Cemu/Wii U the two are the
+    // same pointer, but on Switch the image lives in the host's .text
+    // (not writable), and Arena hands back a writable view of the same
+    // pages.
     uint8_t* wimage = static_cast<uint8_t*>(Arena::Writable(image));
 
     constexpr uint8_t kImagePoison = 0xCD;
@@ -828,12 +707,6 @@ inline Reject LoadFrom(Reader& file) {
     impl::g_Flush(base, imageSize);
 
     // --- record --------------------------------------------------------------
-    //
-    // The slot is claimed HERE, not by the caller. It was briefly the caller's
-    // job, which meant LoadFrom dereferenced a pointer only Load() ever set -
-    // and tools/loader_fuzz calls LoadFrom directly, so it crashed on the first
-    // case. A function that only works when a particular caller set a global
-    // first is not a function, it is half of one.
     if (impl::g_ModuleCount >= Arena::kMaxModules) {
         WIIXL_LOG("[loader:%s] %s: already holding %u modules, which is the limit",
                   id, RejectName(Reject::NoMemory), Arena::kMaxModules);
@@ -854,23 +727,11 @@ inline Reject LoadFrom(Reader& file) {
     m.valid = true;
     m.arena = sub;
 
-    // COMMITTED. Everything above could still have failed; from here the module
-    // is visible to RunPhase.
+    // Committed: everything above could still have failed; from here the
+    // module is visible to RunPhase.
     impl::g_ModuleCount++;
 
-    // --- declared patches ----------------------------------------------------
-    //
-    // APPLIED HERE, AT LOAD, BEFORE ANY MODULE ENTRY RUNS. LoadAll loads every
-    // module before RunPhase calls a single entry, so by the time any mod code
-    // executes the host has seen and applied every patch every mod declared.
-    // That is what makes patch conflicts detectable at all rather than
-    // discovered later - see the load-sequence comment in wiixlaunch/patches.hpp
-    // for why reordering this breaks two separate things.
-    //
-    // A refused patch does not fail the module. The patch is named and skipped,
-    // the module still loads, and the rest of its patches are still tried: one
-    // bad address must not cost a user the mod, and must not silently cost them
-    // its other patches either.
+    // --- declared patches, applied here, before any module entry runs --------
     if (h.declaredPatchCount != 0) {
         WIIXL_LOG("[loader:%s] %u declared patch(es), applied before any module entry",
                   id, h.declaredPatchCount);
@@ -886,13 +747,8 @@ inline Reject LoadFrom(Reader& file) {
                 return Reject::ReadFailed;
             }
 #if WIIXL_HOST
-            // A host test must not write to an address a .wxlm names - it is a
-            // number from a file, and here it is not a game address at all.
-            // Through uintptr_t: targetAddr is a 32-bit field and this build is
-            // 64-bit, which MSVC rightly warns about. Widening explicitly says
-            // the narrowing is understood rather than accidental - and it is a
-            // standing question for Switch, where a game address does not fit
-            // in 32 bits at all. See docs/framework/loader.md on declared patches.
+            // A host test must not write to an address a .wxlm names; it's
+            // a number from a file, not a real game address here.
             WIIXL_LOG("[loader:%s] declared patch %u at %p not applied (host test)",
                       id, i,
                       reinterpret_cast<void*>(static_cast<uintptr_t>(pe.targetAddr)));
@@ -908,16 +764,14 @@ inline Reject LoadFrom(Reader& file) {
     }
 
     // --- init_array ----------------------------------------------------------
-    // Nothing else will ever run these: the flat build has no .init_array output
-    // section and the bootstrap never walks one, so a module's static
-    // constructors exist only if the loader calls them.
+    // Nothing else runs these: the flat build has no .init_array output
+    // section, so a module's static constructors exist only if the loader
+    // calls them.
     if (h.initArrayCount != 0) {
 #if WIIXL_HOST
-        // NEVER execute module code in a host-test build. tools/loader_fuzz
-        // feeds this deliberately malformed input, and the whole point is to
-        // check that bad structure is REJECTED - jumping to a pointer that came
-        // out of a fuzzed file would be reckless, and would test nothing that
-        // the bounds checks above have not already decided. A host build also
+        // Never execute module code in a host-test build: loader_fuzz feeds
+        // deliberately malformed input, and the point is to check bad
+        // structure is rejected before execution. A host build also
         // has 64-bit pointers, so a 32-bit entry could not be called correctly
         // even for a valid module.
         WIIXL_LOG("[loader:%s] %u .init_array entries, not called (host test build)",
@@ -1076,16 +930,10 @@ inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t ca
 
 namespace impl {
 
-// The Cemu version of this resolves coreinit through the import shims because
-// a graphic-pack payload has no imports. On Wii U the plugin links coreinit for
-// real, so these are the actual functions and the struct is WUT's rather than
-// one pinned by static_assert here.
-//
-// Everything else is deliberately the same as Cemu's, including the parts that
-// look like they could be simplified: the candidate path list (a directory that
-// resolves differently from the files inside it is a bug with no symptom until
-// something enumerates), the 64-byte alignment, the 64-entry sweep bound, and
-// the filter on the name rather than on stat flags.
+// Unlike Cemu's version, Wii U's plugin links coreinit for real, so these
+// are the actual functions and the struct is WUT's. Otherwise deliberately
+// identical to the Cemu version: same candidate path list, alignment,
+// sweep bound, and name-based filter.
 alignas(64) inline FSDirectoryEntry g_DirEntry;
 
 // Names of the .wxlm files in `dir`, UNSORTED - FSReadDir's order is not
@@ -1148,20 +996,11 @@ namespace impl {
 // reason as everywhere else here: this runs before anything is allocated.
 inline nn::fs::DirectoryEntry g_DirEntry;
 
-// Names of the .wxlm files in `dir`, UNSORTED - nn::fs does not specify an
-// order and nothing here relies on one. LoadAll sorts.
-//
-// Same shape as the Cemu and Wii U versions on purpose, including the candidate
-// path list: a directory that resolves differently from the files inside it is
-// a bug with no symptom until something enumerates, and that has happened once
-// already on Cemu.
-// Does this directory exist at all?
-//
-// Distinct from "it enumerated nothing", which is the ambiguity this codebase
-// keeps removing. The Switch host chooses between a per-title mods directory
-// and the shared one, and "the per-title folder is empty" must not read as
-// "the per-title folder is absent": one is a user who has installed nothing
-// there yet, the other is a user who has not opted in.
+// Does this directory exist at all, distinct from "it enumerated nothing"?
+// The Switch host chooses between a per-title mods directory and the
+// shared one, and an empty per-title folder must not read as an absent
+// one - one is a user with nothing installed yet, the other hasn't opted
+// in.
 inline bool DirectoryExists(const char* dir) {
     if (!dir || !dir[0]) return false;
     if (!FS::impl::EnsureFSClient()) return false;
@@ -1274,18 +1113,12 @@ inline Reject Load(const char* path) {
 
 // --- loading every module in a directory -----------------------------------
 //
-// LOAD ORDER IS LEXICAL BY FILENAME, ascending, byte-wise on the raw name.
-//
-// This is a specification, not an accident, and it has to be one: load order
-// determines hook install order, which determines the order mods see a call
-// (docs/framework/hooks.md). It is the user's only lever over which mod acts first, so it
-// has to be something they can rely on and predict from the filenames they can
-// see, rather than whatever order the filesystem happens to return.
-//
-// FSReadDir's order is NOT specified by coreinit and is not stable across
-// filesystems or hosts, so it is never used directly - the names are collected
-// and sorted here. Byte-wise means uppercase sorts before lowercase, which is
-// worth knowing when naming a mod to run first.
+// Load order is lexical by filename, ascending, byte-wise on the raw name.
+// A specification, not an accident: load order determines hook install
+// order (docs/framework/hooks.md), the user's only lever over which mod
+// acts first. FSReadDir's order isn't specified by coreinit, so names are
+// collected and sorted here rather than used directly. Byte-wise means
+// uppercase sorts before lowercase.
 inline uint32_t LoadAll(const char* dir) {
     WIIXL_LOG("[loader] enumerating %s", dir);
 

@@ -1,55 +1,29 @@
 #pragma once
 
-// A `key = value` file a module reads from its own directory.
-//
-// A compiled module bakes its constants in, which is right for an address table
-// and wrong for a number the user is meant to choose. The alternative shipped by
-// the mod this was written for was TWO COMPLETE PAYLOAD BINARIES under an
-// options/ folder, differing in one #define - because a compile-time setting can
-// only be changed by compiling.
-//
-// wiixl.core:ModReadFile already reads from mods/<id>/, scoped by the HOST to
-// whichever module is running, so a mod cannot read another mod's files by
-// naming them. This is the parsing half, in the SDK rather than in each mod,
-// because every mod that wants a setting would otherwise write a slightly
-// different integer parser and get the edge cases slightly differently wrong.
-//
-// THE FILE IS OPTIONAL AND A MISSING ONE IS NOT AN ERROR. What must never be
-// silent is a file that exists and says something this does not understand: a
-// user who writes `rooms = fourty` and gets the default has been told nothing,
-// and will report that the setting does not work. So a malformed value is
-// LOGGED and a missing key is not - those are different events and they read
-// differently.
+// A `key = value` file a module reads from its own directory
+// (wiixl.core:ModReadFile, scoped by the host to the running module).
 //
 //     Config cfg;
 //     cfg.Load("config.ini");                  // absent is fine
 //     int rooms = cfg.GetInt("rooms", 45);     // clamped by the caller
 //
-// FORMAT. One setting per line, `key = value`. Blank lines are skipped; `#`,
-// `;` and `//` start a comment, to end of line. Whitespace around the key and
-// value is trimmed. Values are decimal, or hex with a 0x prefix, and may be
-// negative. `true`/`false`/`yes`/`no`/`on`/`off` parse as booleans, as do 1 and
-// 0. Keys are matched case-sensitively, because a key that works in two
-// spellings is two keys to document.
+// Format: one setting per line, `key = value`. Blank lines skipped; `#`,
+// `;`, `//` start a comment to end of line. Whitespace around key/value is
+// trimmed. Values are decimal or hex (`0x` prefix), may be negative.
+// `true`/`false`/`yes`/`no`/`on`/`off`/`1`/`0` parse as booleans. Keys are
+// case-sensitive.
 //
-// NO SECTIONS, AND IT SAYS SO. The convention is `config.ini`, and an .ini
-// extension invites `[Section]` headers - but a key here is matched across the
-// whole file, so two sections holding the same key would silently resolve to
-// whichever came first. That is the shape of bug this file exists to prevent,
-// so a section header is reported at load rather than skipped quietly. Keys are
-// file-wide; name them so they do not collide.
+// No sections: this is matched across the whole file, so `[Section]`
+// headers (which the `.ini` name invites) don't scope a key, and a reused
+// key resolves to the first hit. A section header logs a warning at load
+// rather than being silently misread.
+//
+// The file is optional; a missing one is not an error. A malformed value is
+// logged; a missing key is not.
 
 #include <wiixlaunch/mod_log.h>
-// The buffer below is a zero-initialised 2 KB array, which GCC clears with a
-// call to memset whatever -ffreestanding says - so the header that creates
-// that need is the one that has to satisfy it. Without this a mod including
-// only mod_config.h links cleanly and branches to address 0 the first time it
-// builds a Config.
-//
-// __STDC_HOSTED__ and not a compiler check: the question is whether this
-// build has a C library, and a freestanding one answers 0. tools/config_test
-// drives this parser on a PC, where memset already exists and mod_runtime.h
-// would collide with it - and where its __attribute__((used)) does not parse.
+// GCC clears the buffer below with memset under -ffreestanding, so this
+// header needs mod_runtime.h wherever the C library isn't already present.
 #if !defined(__STDC_HOSTED__) || __STDC_HOSTED__ == 0
 #include <wiixlaunch/mod_runtime.h>
 #endif
@@ -62,14 +36,10 @@ namespace WiiXLaunch {
 
 class Config {
 public:
-    // Big enough for a settings file and small enough to sit in a module's bss
-    // without arguing with the arena. A file longer than this is REFUSED rather
-    // than truncated: half a config is a config with silently missing keys.
+    // A file longer than this is refused rather than truncated: half a
+    // config is one with silently missing keys.
     static constexpr uint32_t kMaxBytes = 2048;
 
-    // Returns false when the file is absent, unreadable, or too large - all
-    // three logged distinctly, because "you have no config" and "your config was
-    // ignored" are not the same news.
     bool Load(const char* path) {
         m_Size = 0;
         m_Loaded = false;
@@ -80,8 +50,6 @@ public:
 
         const int32_t got = read(path, m_Buf, kMaxBytes);
         if (got < 0) {
-            // The host distinguishes "not there" from "could not read it"; this
-            // only sees a negative, so it says what it knows and no more.
             WIIXL_LOG("config: %s not read (%d) - using built-in defaults", path, got);
             return false;
         }
@@ -113,8 +81,6 @@ public:
         return out;
     }
 
-    // Clamped, and LOUD about it. A user who asks for 900 rooms should be told
-    // they got 128, not left to discover it.
     int32_t GetIntClamped(const char* key, int32_t fallback,
                           int32_t lo, int32_t hi) const {
         const int32_t v = GetInt(key, fallback);
@@ -144,9 +110,6 @@ public:
 
 private:
     using ReadFn = int32_t (*)(const char*, void*, uint32_t);
-    // volatile for the reason in docs/framework/modules.md: the loader writes this pointer
-    // at relocation time, and without volatile the compiler folds it into a
-    // direct branch that cannot reach a host address.
     static inline ReadFn volatile g_Read = &wiixl_import__wiixl_core__ModReadFile;
 
     static bool IsSpace(char c) { return c == ' ' || c == '\t' || c == '\r'; }
@@ -156,7 +119,6 @@ private:
         for (; word[i]; ++i) {
             if (at[i] != word[i]) return false;
         }
-        // The candidate must END here, or "on" would match "onwards".
         const char c = at[i];
         return c == '\0' || c == '\n' || IsSpace(c);
     }
@@ -176,32 +138,17 @@ private:
             if (*at >= '0' && *at <= '9')        d = static_cast<uint32_t>(*at - '0');
             else if (base == 16 && *at >= 'a' && *at <= 'f') d = static_cast<uint32_t>(*at - 'a' + 10);
             else if (base == 16 && *at >= 'A' && *at <= 'F') d = static_cast<uint32_t>(*at - 'A' + 10);
-            else return false;                   // a stray character is a typo, not a zero
+            else return false;
             if (d >= base) return false;
             acc = acc * static_cast<int32_t>(base) + static_cast<int32_t>(d);
             ++digits;
         }
-        if (digits == 0) return false;           // "rooms =" with nothing after it
+        if (digits == 0) return false;
 
         out = neg ? -acc : acc;
         return true;
     }
 
-    // A SECTION HEADER IS NOT A SCOPE HERE, so it must not pass unremarked.
-    //
-    // Find() matches a key across the whole file and returns the first hit, so
-    // a file written as
-    //
-    //     [rooms]
-    //     limit = 45
-    //     [parts]
-    //     limit = 60
-    //
-    // resolves `limit` to 45 for both, silently. Calling the file .ini is what
-    // invites that shape, so the cost of the name is this check: one pass at
-    // load, and a line naming the first section found. Not a refusal - a
-    // decorative `[Settings]` header above a flat list is harmless and common,
-    // and refusing the whole file over it would be worse than the problem.
     void WarnOnSections(const char* path) const {
         const char* at = m_Buf;
         while (*at) {
@@ -220,19 +167,16 @@ private:
         }
     }
 
-    // Returns a pointer at the first character of the value, or null.
     const char* Find(const char* key) const {
         if (!m_Loaded || !key) return nullptr;
 
         const char* at = m_Buf;
         while (*at) {
-            // Start of a line: skip indentation.
             while (*at && IsSpace(*at)) ++at;
 
             const bool comment = (*at == '#') || (*at == ';') ||
                                  (at[0] == '/' && at[1] == '/');
             if (!comment && *at != '\n' && *at != '\0') {
-                // Compare the key up to '=' or whitespace.
                 uint32_t i = 0;
                 while (key[i] && at[i] == key[i]) ++i;
                 if (key[i] == '\0') {
@@ -246,7 +190,6 @@ private:
                 }
             }
 
-            // To the end of this line, whatever it turned out to be.
             while (*at && *at != '\n') ++at;
             if (*at == '\n') ++at;
         }

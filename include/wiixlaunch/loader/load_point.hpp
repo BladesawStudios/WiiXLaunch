@@ -1,45 +1,31 @@
 #pragma once
 
-// WiiXLaunch::LoadPoint - STAGE 1 PROBE. Is the title's filesystem usable yet?
+// WiiXLaunch::LoadPoint - is the title's filesystem usable yet? A mod's
+// callback address doesn't exist until its bytes are read off the
+// filesystem, so this asks how early the host can call FSAddClient and
+// actually get a file back.
 //
-// The module loader reads .wxlm blobs off the filesystem, so a mod's callback
-// address does not exist until its bytes are in memory. That makes one question
-// load-bearing for everything downstream: how early can the host call
-// FSAddClient and actually get a file back?
+// A single probe returning NOT_FOUND is ambiguous (filesystem works and
+// the file is absent, or /vol/content isn't mounted yet), so three
+// questions are asked separately:
 //
-// THREE PATHS, THREE SEPARATE ANSWERS. A single probe returning NOT_FOUND is
-// ambiguous in a way that matters: it could mean the filesystem works and the
-// file is absent, or that /vol/content is not mounted yet. Those have opposite
-// consequences, so the probe asks three questions that can be answered
-// independently at each site:
+//   1. STOCK  - a file shipped in the title. Positive control: proves
+//               /vol/content is mounted and readable, verified by content.
+//   2. PACK   - a file injected through the graphic pack's content/
+//               overlay. Proves Cemu's overlay is live at this boot point.
+//   3. DIR    - the mods directory itself, via FSOpenDir, distinguishing
+//               "not there" from "there and empty."
 //
-//   1. STOCK  - a file that ships in the title. Positive control: proves
-//               /vol/content is mounted AND readable. Verified by content, not
-//               just by opening.
-//   2. PACK   - a file injected through the graphic pack's content/ overlay.
-//               Proves Cemu's overlay is live at this point in boot, which the
-//               whole mod-distribution design rests on.
-//   3. DIR    - the mods directory itself, via FSOpenDir. Distinguishes "the
-//               directory is not there" from "the directory is there and
-//               empty", which FSOpenFile cannot do.
+// Opening is not reading: FSOpenFile succeeding doesn't prove FSReadFile
+// works at this timing. Every call is announced before it's made, since
+// calling into coreinit's FS before the OS has set it up may take the
+// process down rather than return an error, and a crash with no output
+// would otherwise be indistinguishable from a silent no-op.
 //
-// OPENING IS NOT READING. FSOpenFile succeeding does not prove FSReadFile works
-// at this timing, and the read is where a synchronous FS call on the boot
-// thread would actually block. The stock probe reads bytes and checks them
-// against a known magic.
-//
-// WRITE-AHEAD LOGGING. Every call is announced BEFORE it is made. Calling into
-// coreinit's FS before the OS has set it up may take the process down rather
-// than return an error, and a crash with no output is indistinguishable from
-// the silent no-op this probe exists to rule out. Announcing first makes the
-// last line in the log name the call that died.
-//
-// The probe uses its OWN client and command block, not the ones in
-// wiixlaunch/fs.hpp: a failed early FSAddClient must not leave the host's real
-// client half-registered for the loader to inherit.
-//
-// NOTHING HERE IS GAME-SPECIFIC. Paths and the load-point address are supplied
-// by the caller - see the nomination note at the bottom.
+// Uses its own client and command block, not wiixlaunch/fs.hpp's: a failed
+// early FSAddClient must not leave the host's real client half-registered.
+// Paths and the load-point address are supplied by the caller; nothing
+// here is game-specific.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -54,26 +40,13 @@
 #endif
 
 // Declares this build's load point: the game address whose instruction is
-// redirected to WiiXLaunch_LoadPointStub.
-//
-// This is BUILD-TIME nomination. scripts/deploy.py reads the resulting global
-// out of the ELF and emits `.origin = <addr> / b wiixlaunch_loadpoint_stub`
-// into the host pack, exactly like the entry hook. Nothing patches game code at
-// runtime, so there is no question of writing into a function Cemu may already
-// have recompiled, and the rule that only the host pack writes into game memory
-// holds.
-//
-// A build that never uses this macro has no load point. deploy.py emits no
-// .origin and says so, which is the correct behaviour for a host with no game
-// module rather than a host that boots and silently does nothing.
-//
-// The stub MUST be named WiiXLaunch_LoadPointStub - deploy.py looks that symbol
-// up by name to place the branch target label.
-// `inline` matches how every other deploy.py-patched global is declared
-// (see g_CemuRelocTableOffset in wiixl_cemu_backend.hpp). A plain
-// definition lands in flat .data while those land in a COMDAT .data, and
-// GCC rejects the mix as a section type conflict. `used` is required for
-// the usual reason: nothing in C++ reads this - deploy.py does.
+// redirected to WiiXLaunch_LoadPointStub. Build-time nomination:
+// scripts/deploy.py reads this global out of the ELF and emits
+// `.origin = <addr> / b wiixlaunch_loadpoint_stub` into the host pack, so
+// nothing patches game code at runtime. A build that never uses this macro
+// has no load point, and deploy.py says so rather than silently doing
+// nothing. The stub must be named WiiXLaunch_LoadPointStub - deploy.py
+// looks that symbol up by name.
 #define WIIXL_DECLARE_LOAD_POINT(addr) \
     extern "C" { __attribute__((section(".data"), used)) \
         inline uint32_t g_WiiXLaunchLoadPointAddr = (addr); }
@@ -104,21 +77,16 @@ inline const char* VerdictName(Verdict v) {
     return "?";
 }
 
-// A file that ships in the title, used as the positive control. Pack/Bootup.pack
-// is a plain (unYaz0'd) SARC archive, so its first four bytes are "SARC" - a
-// magic worth checking rather than trusting a byte count. The BotW module's GUI
-// asset loader already streams this same file successfully, which is why it is
-// the one picked: it is known to exist and known to be readable.
-//
-// These are defaults, not knowledge base is entitled to - a caller on another
-// title passes its own.
+// A file that ships in the title, used as the positive control.
+// Pack/Bootup.pack is a plain (unYaz0'd) SARC archive, first four bytes
+// "SARC"; BotW's GUI asset loader already streams it successfully. These
+// are defaults; a caller on another title passes its own.
 constexpr const char* kStockPath      = "/vol/content/Pack/Bootup.pack";
 constexpr const char* kStockMagic     = "SARC";
-// The pack ships this at content/WiiXLaunch/mods/, because a case-insensitive
-// host filesystem will not let that coexist with a lower-case sibling (see
-// deploy.py). Wii U's own filesystem IS case-sensitive, and whether Cemu's
-// content overlay preserves that is not something to assume - so both spellings
-// are probed and the log says which answered.
+// Shipped at content/WiiXLaunch/mods/ (a case-insensitive host filesystem
+// won't let that coexist with a lowercase sibling). Wii U's filesystem is
+// case-sensitive and whether Cemu's overlay preserves that isn't assumed,
+// so both spellings are probed.
 constexpr const char* kPackFilePath   = "/vol/content/WiiXLaunch/mods/probe.bin";
 constexpr const char* kPackFilePathLC = "/vol/content/wiixlaunch/mods/probe.bin";
 constexpr const char* kModsDirPath    = "/vol/content/WiiXLaunch/mods";
@@ -134,9 +102,7 @@ alignas(32) inline uint8_t g_ProbeCmdBlock[0xA80];
 // coreinit's FSReadFile family requires a 64-byte aligned buffer.
 alignas(64) inline uint8_t g_ProbeBuf[128];
 
-// coreinit's FSStat is 0x64 bytes and FSGetStatFile writes all of them. This
-// was 96 bytes once: it wrote four bytes onto the adjacent stack slot, zeroed a
-// read length, and every read then "succeeded" having transferred nothing.
+// coreinit's FSStat is 0x64 bytes; FSGetStatFile writes all of them.
 struct FsStatBuf { uint32_t flags, mode, owner, group, size, rest[20]; };
 static_assert(sizeof(FsStatBuf) == 0x64, "must match coreinit FSStat exactly");
 
@@ -160,19 +126,10 @@ using FnFSReadFileWithPos = int32_t (*)(void*, void*, void*, uint32_t, uint32_t,
 
 inline bool g_ClientUp = false;
 
-// Opens, reads, and optionally verifies a magic.
-//
-// `fingerprint` additionally logs enough to identify WHICH file was read, not
-// merely that something was. That matters for the positive control: BotW
-// graphic packs commonly overlay /vol/content, and Pack/Bootup.pack is one of
-// the more frequently replaced files. A replacement is still a valid SARC, so
-// the magic check alone cannot separate a stock file from an injected one - and
-// if it cannot, STOCK and PACK collapse back into the single signal that
-// splitting them was meant to avoid.
-//
-// The fingerprint is the stat size plus the SARC/SFAT header fields a repack
-// almost always changes (file size, data offset, node count), plus a positioned
-// read deeper into the file. Compare across boots to tell which file you got.
+// Opens, reads, and optionally verifies a magic. `fingerprint` additionally
+// logs enough to identify which file was read (stat size plus SARC/SFAT
+// header fields a repack almost always changes), since a magic check alone
+// can't tell a stock Bootup.pack from a graphic-pack replacement.
 inline Verdict ProbeFile(const char* where, const char* label,
                          const char* path, const char* expectMagic,
                          bool fingerprint = false) {
@@ -389,8 +346,8 @@ inline void Probe(const char* where,
         return;
     }
 
-    // Announce before calling. If FS is not up, this is the call most likely to
-    // take the process down, and this line being last is itself the answer.
+    // Announced before calling: if FS isn't up, this call is most likely to
+    // take the process down, and a missing follow-up line is the answer.
     WIIXL_LOG("[LP:%s] calling FSAddClient...", where);
     const int32_t addStatus = addClient(g_ProbeClient, 0xFFFFFFFF);
     WIIXL_LOG("[LP:%s] FSAddClient -> %d", where, addStatus);
@@ -414,10 +371,8 @@ inline void Probe(const char* where,
     //    NOT-FOUND with STOCK also NOT-FOUND means nothing is mounted.
     pack = ProbeFile(where, "PACK", packPath, nullptr);
 
-    // Same file, lower-case spelling. If PACK answers and this does not, Cemu's
-    // overlay lookup is case-sensitive and stage 8's layout must match the
-    // shipped capitalisation exactly. If both answer it is case-insensitive
-    // here - a property of this host, not of a real Wii U.
+    // Same file, lowercase spelling. Tests whether Cemu's overlay lookup is
+    // case-sensitive here (a property of this host, not a real Wii U).
     packLC = ProbeFile(where, "PACK-LC", packPathLC, nullptr);
 
     // 3. The directory the loader will enumerate.
@@ -544,36 +499,18 @@ inline void Probe(const char* where,
 
 #endif
 
-// ---------------------------------------------------------------------------
-// NOMINATION is build-time, and deliberately not a base-owned address.
+// Nomination is build-time, deliberately not a base-owned address: the load
+// point is a per-game, per-platform fact base can't know. A project
+// declares the address with WIIXL_DECLARE_LOAD_POINT and a stub named
+// WiiXLaunch_LoadPointStub; deploy.py reads both and emits the `.origin`.
+// A build declaring neither gets no load point and a log line saying so.
 //
-// The load point is a PER-GAME, PER-PLATFORM fact - a different title needs a
-// different early post-FS function, and base has no way to know it. So base
-// owns Probe(), the WIIXL_DECLARE_LOAD_POINT macro and (from stage 4) the
-// loader; it never owns the address.
-//
-// A project declares the address with WIIXL_DECLARE_LOAD_POINT and provides a
-// stub named WiiXLaunch_LoadPointStub. deploy.py reads both out of the ELF and
-// emits the `.origin` into the host pack. A build that declares neither gets no
-// load point and a log line saying so.
-//
-// WHAT THE CEMU MEASUREMENT DID AND DID NOT SETTLE. This probe reported
-// FS-USABLE at the Cemu entry hook itself - FSAddClient, FSOpenFile, FSReadFile,
-// FSReadFileWithPos and FSOpenDir all succeed there, against stock content and
-// pack-injected content alike, before the game has called FSInit. That is
-// because Cemu HLEs coreinit and the filesystem is live from process start, so
-// the game's FSInit/FSAddClient pair concerns the game's client rather than the
-// subsystem.
-//
-// That is a property of the EMULATOR, not of the game or the platform. Aroma
-// runs against real IOSU; Switch has its own romfs mount timing. Neither has
-// been probed. So nomination stays the RULE, not an exception for awkward
-// titles, and BotW keeps nominating its load point on Cemu even though the
-// entry hook would do - it is the only mechanism validated for the case where
-// FS is genuinely not ready early, which is exactly what the other two
-// platforms may turn out to be.
-//
-// See docs/framework/loader.md for what is and is not initialised at each phase.
-// ---------------------------------------------------------------------------
+// This probe reported FS-USABLE at Cemu's entry hook itself, before the
+// game calls FSInit - a property of the emulator (it HLEs coreinit, so the
+// filesystem is live from process start), not of the game or platform.
+// Aroma runs against real IOSU and Switch has its own romfs mount timing;
+// neither has been probed, so nomination stays the rule rather than an
+// exception. See docs/framework/loader.md for what's initialized at each
+// phase.
 
 } // namespace WiiXLaunch::LoadPoint

@@ -1,27 +1,15 @@
-// The handful of functions every non-trivial .wxlm needs and cannot get
-// anywhere.
-//
-// A module is compiled -ffreestanding -nostdlib, so nothing defines memcpy.
-// GCC does not care: it SYNTHESISES calls to memcpy, memset, memmove and memcmp
-// for struct assignment, array initialisation and comparison, even under
-// -ffreestanding, because they are part of the freestanding contract it assumes
-// the target provides.
-//
-// And build_mod.py links with --unresolved-symbols=ignore-all, which it has to -
-// that is what lets an import stay undefined until the loader resolves it. So a
-// module missing memcpy LINKS CLEANLY and branches to address 0 the first time
-// a struct is copied. No build error, no load error; a crash somewhere unrelated
-// to the line that caused it.
-//
-// Including this header is the whole fix. It is header-only and a module is one
-// translation unit, so there is nothing to link and no way to include it twice.
+// memcpy, memset, memmove, memcmp, strcmp, strncmp for a freestanding
+// module. GCC synthesises calls to the first four for struct assignment,
+// array init, and comparison even under -ffreestanding, so a module missing
+// them links cleanly (--unresolved-symbols=ignore-all is required for
+// imports to stay undefined) and branches to address 0 the first time a
+// struct is copied. `<cstring>` declares strcmp/strncmp without defining
+// them, so the same failure applies once a mod calls either by name.
 //
 //     #include <wiixlaunch/mod_runtime.h>
 //
-// `used` on each: nothing in a module references these by name. GCC emits the
-// calls itself, after the point where its own dead-code pass could see a use,
-// so without the attribute they are removed as unreferenced and the problem
-// comes back with the fix apparently applied.
+// `used` on each: GCC emits these calls itself, after its own dead-code pass
+// could see a use, so without the attribute they're stripped as unreferenced.
 #pragma once
 
 #include <cstdint>
@@ -45,9 +33,8 @@ inline void* memset(void* dst, int value, size_t n) {
     return dst;
 }
 
-// Overlap-safe, unlike memcpy. GCC picks this one when it cannot prove the
-// ranges are distinct, so a module that defines only memcpy still branches to
-// zero on exactly the copies that were ambiguous.
+// Overlap-safe, unlike memcpy: GCC picks this one when it can't prove the
+// ranges are distinct.
 __attribute__((used))
 inline void* memmove(void* dst, const void* src, size_t n) {
     uint8_t* d = static_cast<uint8_t*>(dst);
@@ -61,9 +48,7 @@ inline void* memmove(void* dst, const void* src, size_t n) {
     return dst;
 }
 
-// Byte ranges, not NUL-terminated strings. A buffer that came off the wire or
-// off disk is not NUL-terminated, and pretending otherwise is how a parser
-// reads past what actually arrived.
+// Byte ranges, not NUL-terminated strings.
 __attribute__((used))
 inline int memcmp(const void* a, const void* b, size_t n) {
     const uint8_t* x = static_cast<const uint8_t*>(a);
@@ -74,19 +59,8 @@ inline int memcmp(const void* a, const void* b, size_t n) {
     return 0;
 }
 
-// strcmp and strncmp, which <cstring> DECLARES and nothing defines.
-//
-// Not synthesised by the compiler the way memcpy is - a module has to call
-// these by name - but the ending is identical: <cstring> is available under
-// -ffreestanding, so `std::strcmp` compiles, and the link lets it stay
-// undefined. AIPuppet calls strcmp seventeen times to compare BotW AI state
-// names, and every one of them would have branched to 0.
-//
-// UNSIGNED CHAR. The sign of the result is the entire contract, and on a
-// target where plain char is signed - PowerPC is the other way, AArch64 this
-// way - comparing as char makes any byte over 0x7F sort BELOW ASCII. Actor
-// names are ASCII today; the first UTF-8 one would invert a comparison
-// silently.
+// Unsigned char comparison: on a target where plain char is signed, a byte
+// over 0x7F would sort below ASCII.
 __attribute__((used))
 inline int strcmp(const char* a, const char* b) {
     const unsigned char* x = reinterpret_cast<const unsigned char*>(a);
@@ -101,7 +75,7 @@ inline int strncmp(const char* a, const char* b, size_t n) {
     const unsigned char* y = reinterpret_cast<const unsigned char*>(b);
     for (size_t i = 0; i < n; ++i) {
         if (x[i] != y[i]) return static_cast<int>(x[i]) - static_cast<int>(y[i]);
-        if (!x[i]) break;               // both ended; the rest of n is not read
+        if (!x[i]) break;
     }
     return 0;
 }
@@ -110,9 +84,8 @@ inline int strncmp(const char* a, const char* b, size_t n) {
 
 namespace wiixl {
 
-// Length of a NUL-terminated string, bounded. Not strlen: an unbounded walk
-// over something that turned out not to be terminated is the same failure this
-// header exists to prevent, one level up.
+// Bounded, not strlen: an unbounded walk over a non-terminated buffer is
+// the same failure this header exists to prevent.
 inline size_t StrLenBounded(const char* s, size_t cap) {
     size_t n = 0;
     while (s && n < cap && s[n]) ++n;

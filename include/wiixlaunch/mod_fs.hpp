@@ -2,48 +2,24 @@
 
 // WiiXLaunch::ModFS - a mod's own directory, and only its own directory.
 //
-// ---------------------------------------------------------------------------
-// TWO CALLS, NOT ONE WITH A FALLBACK.
+// wiixl.core gives a mod two distinct reads, chosen at the call site:
+// ModReadFile (this mod's directory, cannot escape it) and GameReadFile
+// (game content, through the host's usual path candidates). There is no
+// single call that tries the mod directory and falls back - "whichever
+// resolves first wins" is order-dependent and silent. Nor is there full
+// containment on the game-content side: reading game content is a large
+// part of what modding is, so containment lives only on the scoped call.
 //
-// wiixl.core gives a mod two distinct reads and the choice is made at the call
-// site:
+// A scoped path resolves under WiiXLaunch/mods/<mod id>/ and may not leave
+// it. Refused: an absolute path, any ".." component, a backslash or
+// control character, or a path too long to resolve - as a value
+// (PathResult), not a log string, so a test can assert which fired.
+// Checked on the path the mod supplied, before any concatenation.
 //
-//   ModReadFile   this mod's own directory, and it CANNOT escape it
-//   GameReadFile  game content, through the host's usual path candidates
-//
-// It is deliberately not one call that tries the mod directory and falls back.
-// "Whichever resolves first wins" is order-dependent and silent - the same
-// ambiguity as an FS status of -6 meaning two different things, as two path
-// resolvers disagreeing, and as three refusal reasons collapsed into one bool.
-// Every one of those cost a debugging round. A mod's intent is legible in the
-// log because it is legible in the call it made.
-//
-// It is also deliberately not full containment. Reading game content is a large
-// part of what modding IS; a BotW mod that cannot open a game pack is crippled.
-// The containment is on the SCOPED call, where it is a guarantee worth having,
-// and the other call says plainly that it is not scoped.
-//
-// ---------------------------------------------------------------------------
-// WHAT SCOPED MEANS, precisely.
-//
-// A scoped path is resolved under WiiXLaunch/mods/<mod id>/ and may not leave
-// it. Refused, by value:
-//
-//   - an absolute path (leading '/')
-//   - any ".." component, anywhere in the path
-//   - a backslash, which is a separator on the host build and not on the target
-//   - control characters
-//   - an empty path, or one too long to resolve
-//
-// The refusals are a VALUE and not a log string, so a test can assert which one
-// happened - see the log-string rule in docs/framework/modules.md. And they are checked
-// on the path the mod supplied, BEFORE any concatenation, so there is no window
-// in which a joined string has to be re-parsed to find out whether it escaped.
-//
-// GAME MODULES ARE NOT MODS. wiixlaunch-botw is compiled into the payload, so
-// it is host code and uses the game-content path exactly as the host does. The
-// scoped call is for .wxlm modules, which are the only things with an id and a
-// directory. docs/framework/modules.md states the distinction.
+// Game modules (compiled into the payload, e.g. wiixlaunch-botw) are not
+// mods: they use the game-content path like any other host code. The
+// scoped call is for .wxlm modules, the only things with an id and a
+// directory.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -57,35 +33,18 @@ namespace WiiXLaunch::ModFS {
 // directory too; a module's resources sit in a subdirectory named for its id.
 constexpr const char* kModsRoot = "WiiXLaunch/mods";
 
-// ...and where it ACTUALLY lives this boot, which on Switch may be a per-title
-// subdirectory of that.
-//
-// sd:/WiiXLaunch/mods is one folder shared by every game on the card, because a
-// Switch SD card has no per-title place for a host's own files - unlike Cemu,
-// where the mods directory sits inside a graphic pack that names its titleIds,
-// and Wii U, where it sits in the game's own content. So two games' modules
-// land in the same directory and each game's host tries to load both.
-//
-// Most crossovers are already refused: a mod needing a game surface is refused
-// by name, and a patch is refused because the bytes it expects are not there.
-// A mod that only needs the base surfaces and HOOKS RAW OFFSETS is refused by
-// nothing, and that is the common shape for a game with no module yet.
-//
-// The loader therefore prefers WiiXLaunch/mods/<titleid>/ and this follows it,
-// so a module's own files are found beside the module that was actually loaded
-// rather than in whichever directory the constant happened to name.
+// Where it actually lives this boot, which on Switch may be a per-title
+// subdirectory (a Switch SD card has no per-title place for a host's own
+// files, unlike Cemu's per-pack directory or Wii U's game content, so
+// without this two games' modules would land in one shared directory). The
+// loader prefers WiiXLaunch/mods/<titleid>/ and this follows it.
 inline const char* g_Root = kModsRoot;
 
 inline void SetRoot(const char* root) { if (root && *root) g_Root = root; }
 inline const char* Root() { return g_Root; }
 
 // The host's own resources live under a reserved id rather than beside the
-// mods directory, so the scheme has no exception. An exception is how someone
-// later concludes the scheme is optional.
-//
-// The whole '_' PREFIX is reserved, not just this one name - reserving a space
-// rather than a single string means a future reserved id needs no new check and
-// no new refusal path.
+// mods directory. The whole '_' prefix is reserved, not just this name.
 constexpr const char* kHostId = "_host";
 constexpr char kReservedPrefix = '_';
 
@@ -120,12 +79,10 @@ inline const char* PathResultName(PathResult r) {
 
 namespace impl {
 
-// Is [p, p+3) a ".." component - that is, ".." bounded by separators or ends?
-//
-// Checked as a COMPONENT rather than as a substring, because "a..b" and
-// "..foo" contain the characters without escaping anything, and refusing those
-// would make perfectly ordinary filenames unreadable for no gain. What must be
-// refused is a ".." that the filesystem would act on.
+// Is [p, p+3) a ".." component (bounded by separators or ends)? Checked as
+// a component rather than a substring, since "a..b" and "..foo" don't
+// escape anything and refusing them would make ordinary filenames
+// unreadable.
 inline bool IsParentComponentAt(const char* path, uint32_t i) {
     if (path[i] != '.' || path[i + 1] != '.') return false;
     const bool startsComponent = (i == 0) || (path[i - 1] == '/');
@@ -142,11 +99,9 @@ inline uint32_t Len(const char* s) {
 
 } // namespace impl
 
-// Checks a mod-supplied relative path without joining it.
-//
-// Deliberately separate from Resolve so a test can assert the reason on a path
-// it never intends to open, and so the rules are stated once in a function that
-// takes nothing but the path.
+// Checks a mod-supplied relative path without joining it. Separate from
+// Resolve so a test can assert the reason on a path it never intends to
+// open.
 inline PathResult CheckScoped(const char* path) {
     if (!path || path[0] == '\0') return PathResult::Empty;
     if (path[0] == '/') return PathResult::Absolute;
@@ -167,11 +122,10 @@ inline PathResult CheckScoped(const char* path) {
     return PathResult::Ok;
 }
 
-// Joins a checked path under the CURRENT module's directory.
-//
-// `out` must hold kMaxScopedPath bytes. The identity comes from ModContext -
-// what the host is running - never from the caller, so a module cannot ask for
-// another module's directory by naming it.
+// Joins a checked path under the current module's directory. `out` must
+// hold kMaxScopedPath bytes. Identity comes from ModContext, never the
+// caller, so a module can't ask for another module's directory by naming
+// it.
 inline PathResult Resolve(const char* path, char* out) {
     if (out) out[0] = '\0';
 

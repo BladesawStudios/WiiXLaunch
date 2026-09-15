@@ -2,46 +2,22 @@
 
 // WiiXLaunch::Hooks - one registry of every hook, keyed by target address.
 //
-// WHY THIS EXISTS. Hooks used to be installed directly by the backend, with no
-// record of who had hooked what. Two mods hooking one function still worked,
-// but only by accident, and the accident is worth spelling out because it is
-// what this file replaces.
+// The bytes at `target` are read exactly once, when a site is first
+// created, before any hook exists there. Every later `Original` is emitted
+// from an address the manager already knows, never copied out of memory
+// whose contents depend on install history - so nothing can mistake a
+// previously-installed jump for the function's real prologue.
 //
-// The old InstallHook copied the four instructions at `target` into a
-// trampoline, appended a jump back to target+16, handed that back as Original,
-// and wrote a jump at `target` to the callback. When a SECOND hook installed on
-// the same address it did the same thing - and the four instructions it copied
-// were no longer the function's prologue, they were the first hook's jump. So
-// the second hook's "original" was "jump to the first hook's callback", and the
-// chain worked. It worked because a long jump happens to be exactly four
-// instructions and happens to be position-independent. Nothing checked that,
-// nothing recorded it, and nothing could report it.
-//
-// CORRECT BY CONSTRUCTION MEANS: the bytes at `target` are read EXACTLY ONCE,
-// when the site is created, before any hook exists. Every Original after that
-// is EMITTED from a callback address the manager knows, never copied out of
-// memory whose contents depend on install history. There is no arrangement of
-// installs that can make the manager mistake a jump for a prologue, because it
-// never looks again.
-//
-// ---------------------------------------------------------------------------
-// CALL ORDER: FIRST INSTALLED RUNS FIRST.
+// Call order is first-installed-first:
 //
 //   install A, then B, then C   =>   A -> B -> C -> the game
 //
-// Load order is priority order, which is the thing a user can actually control
-// by choosing which mods to enable. The old accidental behaviour was the
-// reverse - each new hook wrapped the previous - and inverting it has a
-// pleasant consequence: `target` is written ONCE, on the first install, and
-// never touched again. Appending a hook rewrites the CONTENTS of the previous
-// tail's trampoline slot instead.
-//
-// That matters for a subtle reason. A mod captures its Original pointer at
-// install time and may keep it forever. If appending changed where Original
-// pointed, every earlier mod would be holding a stale pointer. So each link
-// owns a fixed four-instruction SLOT, and Original is the slot's address; only
-// the jump inside it is rewritten when a successor appears. The address a mod
-// holds stays valid for the life of the process.
+// `target` is written once, on the first install, and never touched again.
+// Appending a hook rewrites the previous tail's trampoline slot instead. A
+// mod captures its `Original` pointer at install time and may keep it
+// forever, so each link owns a fixed slot and only the jump inside it is
+// rewritten when a successor appears - the address a mod holds stays valid
+// for the life of the process.
 //
 //   target        -> A.callback          (written once, on first install)
 //   A.slot        -> B.callback          (rewritten when B installed)
@@ -49,14 +25,10 @@
 //   C.slot        -> prologueTramp       (C is the tail)
 //   prologueTramp -> saved prologue, then jump to target+16
 //
-// ---------------------------------------------------------------------------
-// CONFLICT REPORTING IS THE DELIVERABLE, not a side effect. When two mods hook
-// one address the log names both, by mod id, in call order. That line is the
-// whole reason the registry is central: it turns "my game crashes with these
-// two mods" into a one-line diagnosis. Nothing is ever refused for sharing -
-// the host does not arbitrate between mods it knows nothing about. A mod that
-// means to replace a function simply never calls Original, which truncates the
-// chain below it, and the summary still shows who else was there.
+// Sharing is never refused: the host does not arbitrate between mods it
+// knows nothing about, and a mod meaning to replace a function simply
+// never calls `Original`, truncating the chain below it. When two mods
+// hook one address the log names both, by mod id, in call order.
 
 #include <wiixlaunch/platform.hpp>
 #include <wiixlaunch/debug_log.hpp>
@@ -75,8 +47,8 @@ constexpr uint32_t kMaxSites = 256;
 constexpr uint32_t kMaxLinks = 256;
 constexpr uint32_t kOwnerLen = 17;
 
-// A long jump on this platform is exactly four instructions, and the prologue
-// it displaces is therefore exactly four. Both are this constant.
+// A long jump on this platform is exactly four instructions, and the
+// prologue it displaces is therefore exactly four. Both are this constant.
 constexpr uint32_t kJumpWords = 4;
 
 enum class Install : uint32_t {
@@ -102,44 +74,15 @@ inline const char* InstallName(Install r) {
     return "?";
 }
 
-// POWERPC ONLY, AND THAT IS A GAP RATHER THAN A DECISION.
+// This encoder and decoder emit PowerPC only. On Switch, Install refuses by
+// name (Install::NoArchSupport) rather than write PowerPC into aarch64
+// code. exlaunch (vendored) already implements hooking and a real prologue
+// relocator for aarch64; delegating to it is the fix for this gap.
 //
-// Everything below emits PowerPC, unconditionally, on every platform. It stayed
-// invisible for as long as only PowerPC hosts ran a module that hooked. The
-// first Switch boot where one did installed eight of these into aarch64 code
-// and the game died on an undefined instruction - 0x618C64B4, which is word 1
-// of this sequence, `ori r12,r12,lo`, decoded as arm64.
-//
-// The chain logic in this file is architecture-neutral. Five primitives are
-// not, and only two of them are small:
-//
-//   1. EmitLongJump / DecodeLongJump  - encoding. Small.
-//   2. IsPcRelativeBranch             - decoding. Small.
-//   3. impl::AllocWords               - on Switch this falls through to the
-//                                       HOST-TEST pool: ordinary .data, which
-//                                       is not executable.
-//   4. impl::Flush                    - a no-op off Cemu; aarch64 needs the
-//                                       instruction cache invalidated by hand.
-//   5. writing `target` itself        - the game's .text, which Horizon does
-//                                       not make writable for the asking.
-//
-// exlaunch implements all five (exl::hook::arch::Hook) and is already vendored,
-// so the fix is more likely to be delegation than reimplementation - especially
-// its prologue RELOCATOR, which fixes up adrp/adr/b/ldr-literal rather than
-// refusing them the way this file does.
-//
-// Until then Install refuses by name on a platform this cannot encode for. A
-// refusal costs a mod its hooks; emitting the wrong architecture costs the
-// user their game.
-//
-// --- PowerPC encoding, as arithmetic ---------------------------------------
-//
-// Deliberately pure functions over uint32_t. They run identically on the host,
-// which is what lets tools/hook_test decode what the manager emitted without a
-// console and without executing a single PowerPC instruction.
+// Pure functions over uint32_t so tools/hook_test can decode what the
+// manager emitted on the host, without a console.
 
-// lis r12,hi ; ori r12,r12,lo ; mtctr r12 ; bctr - the same encoding the
-// backend has always used, kept here so emit and decode cannot drift apart.
+// lis r12,hi ; ori r12,r12,lo ; mtctr r12 ; bctr
 inline void EmitLongJump(uint32_t* dst, uintptr_t dest) {
     const uint32_t d = static_cast<uint32_t>(dest);
     dst[0] = 0x3D800000u | (d >> 16);
@@ -148,9 +91,8 @@ inline void EmitLongJump(uint32_t* dst, uintptr_t dest) {
     dst[3] = 0x4E800420u;
 }
 
-// The inverse. Returns 0 when these four words are not a long jump of the shape
-// above - which is itself the assertion a test wants: "the manager wrote a jump
-// here, to exactly this address."
+// The inverse. Returns 0 when these four words are not a long jump of the
+// shape above.
 inline uintptr_t DecodeLongJump(const uint32_t* src) {
     if ((src[0] & 0xFFFF0000u) != 0x3D800000u) return 0;
     if ((src[1] & 0xFFFF0000u) != 0x618C0000u) return 0;
@@ -159,20 +101,12 @@ inline uintptr_t DecodeLongJump(const uint32_t* src) {
     return static_cast<uintptr_t>(((src[0] & 0xFFFFu) << 16) | (src[1] & 0xFFFFu));
 }
 
-// Is this instruction's meaning tied to where it sits?
-//
-// The prologue is MOVED to a trampoline, so any instruction whose destination
-// is computed from its own address means something different once relocated.
-// On PowerPC that is the I-form branch (opcode 18: b/bl) and the B-form
-// conditional branch (opcode 16: bc/bcl) when their AA bit is clear. With AA
-// set the target is absolute and the instruction survives being moved;
-// bclr/bcctr (opcode 19) are register-indirect and also survive.
-//
-// The old code copied four instructions blindly. For the accidental second hook
-// that was safe, because what it copied was a long jump - lis/ori/mtctr/bctr,
-// none of them PC-relative. For a REAL function prologue it was never
-// guaranteed, and the failure is silent: the branch still executes, it just
-// goes somewhere else. This is the check that was missing.
+// Is this instruction's meaning tied to where it sits? The prologue is
+// moved to a trampoline, so a branch computed from its own address means
+// something different once relocated. On PowerPC that's the I-form branch
+// (opcode 18) and the B-form conditional branch (opcode 16) when AA is
+// clear; with AA set, or for register-indirect bclr/bcctr (opcode 19), the
+// instruction survives being moved.
 inline bool IsPcRelativeBranch(uint32_t insn) {
     const uint32_t op = insn >> 26;
     if (op == 16u || op == 18u) return (insn & 0x2u) == 0u;   // AA == 0
@@ -201,23 +135,16 @@ namespace impl {
 inline Site g_Sites[kMaxSites];
 inline uint32_t g_SiteCount = 0;
 
-// THE PROLOGUE DECODER'S OWN LIVENESS. "We refused nothing" and "the decoder
-// never ran" look identical in a log, and that ambiguity is the whole failure
-// class docs/framework/modules.md rule four is about. These count what was actually
-// examined, so the number can visibly drop to zero.
+// Counts of what the prologue decoder actually examined, so a silent
+// decoder and an absent one don't read the same in the log.
 inline uint32_t g_PrologueWordsDecoded = 0;
 inline uint32_t g_PrologueRelativeFound = 0;
 inline uint32_t g_PrologueSitesChecked = 0;
 inline Link g_Links[kMaxLinks];
 inline uint32_t g_LinkCount = 0;
 
-// Executable scratch for trampolines.
-//
-// On Cemu this comes from the backend's trampoline pool, which stays a host
-// static for the reasons in docs/framework/loader.md - it is per-payload state, not a
-// sharing problem, and once main.cpp is a .wxlm there is exactly one payload.
-// On the host test it is ordinary memory: nothing is executed there, only
-// decoded.
+// Executable scratch for trampolines: Cemu's backend trampoline pool, or on
+// the host test, ordinary memory (nothing there is executed, only decoded).
 #if WIIXL_CEMU
 inline uint32_t* AllocWords(uint32_t words) {
     return reinterpret_cast<uint32_t*>(Backend::AllocateTrampoline(words * 4));
@@ -252,21 +179,11 @@ inline Site* FindSite(uintptr_t target) {
 
 } // namespace impl
 
-// The mod id hooks are currently attributed to.
-//
-// The loader sets this around a module's entry and clears it afterwards, the
-// same shape as Arena::SetCurrent and for the same reason: the install path has
-// no place to carry an identity, and a hook that ends up attributed to the
-// wrong mod makes the conflict report worse than useless. Null means "not
-// inside a module", and the caller's own WIIXL_HOOK_OWNER is used.
-// DELEGATED, not owned. "Which module is the host running" is one question
-// that hooks, patches and the mod-scoped filesystem all ask, so it lives in
-// wiixlaunch/mod_context.hpp rather than here. It used to live here, which was
-// accurate while hooks were the only asker and became a small lie the moment
-// anything else needed it - a file read has no owner, it has a caller.
-//
-// These two keep their names because callers and tests use them, and because
-// "owner" is still the right word for a hook.
+// The mod id hooks are currently attributed to. Delegated to
+// wiixlaunch/mod_context.hpp, which the loader sets around a module's entry
+// and clears afterward - hooks, patches, and the mod-scoped filesystem all
+// ask the same question. Null means "not inside a module"; the caller's own
+// WIIXL_HOOK_OWNER is used then.
 inline void SetCurrentOwner(const char* id) { ModContext::SetCurrent(id); }
 inline const char* CurrentOwner() { return ModContext::Current(); }
 
@@ -288,9 +205,8 @@ inline const Site* SiteAt(uint32_t i) {
 }
 inline const Site* FindSite(uintptr_t target) { return impl::FindSite(target); }
 
-// Names every owner of a site, in call order, into `out`. This is the string
-// the conflict line is built from, exposed so a test can assert the ORDER
-// rather than trusting the log's formatting.
+// Names every owner of a site, in call order, into `out`. Exposed so a test
+// can assert order rather than trusting the log's formatting.
 inline uint32_t OwnersOf(const Site* s, char* out, uint32_t cap) {
     uint32_t n = 0;
     if (!s || cap == 0) { if (cap) out[0] = '\0'; return 0; }
@@ -306,10 +222,8 @@ inline uint32_t OwnersOf(const Site* s, char* out, uint32_t cap) {
 }
 
 // Installs `callback` at `target` on behalf of `owner`, and hands back the
-// address to call to continue the chain.
-//
-// `owner` is a mod id, or a host component's name. It exists for one reason:
-// so that when this address is hooked twice the log can say who.
+// address to call to continue the chain. `owner` names who to blame in the
+// conflict report if this address is hooked twice.
 inline Install InstallHook(uintptr_t target, uintptr_t callback,
                            const char* owner, uintptr_t* originalOut) {
     if (originalOut) *originalOut = 0;
@@ -319,19 +233,13 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
         return Install::BadTarget;
     }
 
-    // BEFORE ANYTHING IS WRITTEN. See the note above EmitLongJump.
-    //
-    // Guarded on the PLATFORM and not on the host machine, deliberately: the
-    // host test build is x86 and must keep exercising this whole function,
-    // because that test is the only thing standing between the encoding and
-    // the game. It is the Switch build that cannot be allowed through.
+    // Guarded on the platform, not the host machine: the host-test build is
+    // x86 and must keep exercising this function, since that test is the
+    // only thing checking the encoding before it reaches a real console.
 #if WIIXL_SWITCH
     WIIXL_LOG("Hook: %s refused at %p - %s: this hook manager emits PowerPC and "
               "this host is aarch64", owner ? owner : "?",
               reinterpret_cast<void*>(target), InstallName(Install::NoArchSupport));
-    WIIXL_LOG("Hook:   hooking is UNAVAILABLE on Switch, so a module that needs it "
-              "loads and then does nothing. This is missing work, not a broken "
-              "module - see the note above EmitLongJump in hook_manager.hpp.");
     (void)callback;
     return Install::NoArchSupport;
 #else
@@ -345,9 +253,7 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
             return Install::NoSites;
         }
 
-        // THE ONE AND ONLY READ OF THE TARGET'S BYTES. Everything downstream is
-        // emitted from addresses the manager knows, so no later install can
-        // mistake a jump for a prologue.
+        // The one and only read of the target's bytes.
         const volatile uint32_t* src = reinterpret_cast<const volatile uint32_t*>(target);
         uint32_t saved[kJumpWords];
         for (uint32_t i = 0; i < kJumpWords; ++i) saved[i] = src[i];
@@ -360,8 +266,6 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
         impl::g_PrologueRelativeFound += relative;
         impl::g_PrologueSitesChecked++;
 
-        // Printed on EVERY site, clean or not. A silent decoder and an absent
-        // decoder read the same; a count does not.
         WIIXL_LOG("Hook: prologue check at %p: %u instructions decoded, %u relative",
                   reinterpret_cast<void*>(target), kJumpWords, relative);
 
@@ -370,8 +274,6 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
                 WIIXL_LOG("Hook: %s refused at %p - %s: instruction %u (0x%08X) is "
                           "PC-relative", owner, reinterpret_cast<void*>(target),
                           InstallName(Install::PrologueNotRelocatable), i, saved[i]);
-                WIIXL_LOG("Hook:   moving it to a trampoline would silently send it "
-                          "elsewhere; this target needs branch fixup first");
                 return Install::PrologueNotRelocatable;
             }
         }
@@ -417,7 +319,7 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
     link->slot = slot;
     link->next = nullptr;
 
-    // The new link is the TAIL, so it continues into the real function.
+    // The new link is the tail, so it continues into the real function.
     EmitLongJump(slot, reinterpret_cast<uintptr_t>(site->prologueTramp));
     impl::Flush(slot, kJumpWords * 4);
 
@@ -429,9 +331,9 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
         EmitLongJump(t, callback);
         impl::Flush(t, kJumpWords * 4);
     } else {
-        // Append. The previous tail stops going to the real function and goes
-        // to us instead. Its SLOT ADDRESS does not move, so whatever Original
-        // pointer that mod captured is still the right one to call.
+        // Append: the previous tail stops going to the real function and
+        // goes to us instead. Its slot address does not move, so any
+        // Original a mod captured is still correct.
         EmitLongJump(site->tail->slot, callback);
         impl::Flush(site->tail->slot, kJumpWords * 4);
         site->tail->next = link;
@@ -445,9 +347,6 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
         WIIXL_LOG("Hook: %s hooked %p (depth 1)", link->owner,
                   reinterpret_cast<void*>(target));
     } else {
-        // THE DIAGNOSIS LINE. Two mods on one address is legal and reported by
-        // name, because this is what turns "it crashes with these two enabled"
-        // into something actionable.
         char owners[160];
         OwnersOf(site, owners, sizeof(owners));
         WIIXL_LOG("Hook: SHARED TARGET %p is now %u deep - call order: %s -> game. "
@@ -456,25 +355,17 @@ inline Install InstallHook(uintptr_t target, uintptr_t callback,
                   reinterpret_cast<void*>(target), site->depth, owners);
     }
     return Install::Ok;
-#endif  // !WIIXL_SWITCH - see the architecture note above EmitLongJump
+#endif  // !WIIXL_SWITCH
 }
 
-// Records a hook the manager did not install itself.
-//
-// Switch and Wii U hand hooking to exlaunch and WUPS, which build their own
-// trampolines. Reimplementing them here would be a much larger claim than this
-// stage is making, and would have to be right on hardware nobody is testing
-// today. So on those platforms the manager does not chain - it REGISTERS, so
-// that the conflict report, which is the deliverable, works identically
-// everywhere. The chain order there is whatever the platform does; what is the
-// same on all three is that a shared address is named, with both owners.
+// Records a hook the manager did not install itself. Switch and Wii U hand
+// hooking to exlaunch and WUPS, which build their own trampolines; the
+// manager registers rather than chains, so the conflict report still names
+// every owner of a shared address on every platform.
 inline void Note(uintptr_t target, uintptr_t callback, const char* owner) {
     Site* site = impl::FindSite(target);
     if (!site) {
         if (impl::g_SiteCount >= kMaxSites) {
-            // The conflict report IS the deliverable on these platforms, so a
-            // dropped entry does not cost a feature - it makes the report wrong
-            // while it still looks complete.
             WIIXL_LOG("Hook: %s noted at %p but all %u site slots are taken - "
                       "this target is MISSING from the conflict report",
                       owner ? owner : "?", reinterpret_cast<void*>(target), kMaxSites);
@@ -515,8 +406,9 @@ inline void Note(uintptr_t target, uintptr_t callback, const char* owner) {
     }
 }
 
-// Every site, at the load point - and every SHARED site called out separately,
-// because that short list is the one worth reading in a bug report.
+// Every site, at the load point, and every shared site called out
+// separately since that short list is the one worth reading in a bug
+// report.
 inline void LogState() {
     uint32_t shared = 0;
     for (uint32_t i = 0; i < impl::g_SiteCount; ++i) {
@@ -525,15 +417,12 @@ inline void LogState() {
     WIIXL_LOG("Hook: %u target(s) hooked by %u hook(s); %u target(s) shared by more "
               "than one owner", impl::g_SiteCount, impl::g_LinkCount, shared);
 
-    // The decoder ran this many times. An append at an existing address does
-    // NOT re-decode - the prologue was captured once, before any hook existed,
-    // which is the property that makes the chain correct by construction - so
-    // this counts SITES, not installs, and that is why the two numbers differ.
+    // Sites, not installs: an append at an existing address does not
+    // re-decode, since the prologue was captured once, before any hook
+    // existed.
     WIIXL_LOG("Hook: prologue decoder ran on %u site(s): %u instructions decoded, "
               "%u PC-relative refused", impl::g_PrologueSitesChecked,
               impl::g_PrologueWordsDecoded, impl::g_PrologueRelativeFound);
-    WIIXL_LOG("Hook:   appends do not re-decode - a prologue is captured once per "
-              "address, before any hook exists");
 
     char owners[160];
     for (uint32_t i = 0; i < impl::g_SiteCount; ++i) {
