@@ -1,4 +1,4 @@
-![logo](docs/res/PillBanna.png)
+![logo](res/PillBanna2.png)
 
 # WiiXLaunch
 
