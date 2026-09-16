@@ -1,20 +1,8 @@
 #!/usr/bin/env python3
-"""Asserts scripts/wxlm.py still agrees with wiixlaunch/loader/wxlm.hpp.
+"""Asserts scripts/wxlm.py agreement with wiixlaunch/loader/wxlm.hpp.
 
-The .wxlm format has two implementations - a Python writer and a C++ loader -
-and a drift between them is the one failure neither side can detect at runtime.
-The loader would read a plausible-looking garbage offset and relocate into it,
-which on this platform means writing into the code cave and executing it.
-
-So this does not restate the layout. It PARSES the static_asserts out of the C++
-header and checks the Python packer against them, which means the header stays
-the single source of truth and this file cannot drift from it independently.
-
-It also checks the two algorithms both sides must agree on byte-for-byte:
-CRC32 (zlib vs the nibble table in the header) and FNV-1a (the writer's hash vs
-WiiXLaunch::Surface::Hash).
-
-Run by the build; no arguments.
+Parses static_asserts from the C++ header to verify struct sizes, member offsets,
+constants, CRC32, and FNV-1a hashing against the Python packer.
 """
 
 import os
@@ -27,10 +15,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 HEADER = os.path.join(ROOT, "include", "wiixlaunch", "loader", "wxlm.hpp")
 
-# Floors for what parse_asserts must find. They exist so a parse that returns
-# NOTHING is a failure rather than a vacuous pass - see the fourth rule in
-# docs/framework/modules.md. Raise them when asserts are added; never lower them to make a
-# build go green.
+# Minimum parsed assertion floors.
 EXPECTED_MIN_SIZES = 5
 EXPECTED_MIN_OFFSETS = 8
 
@@ -102,17 +87,7 @@ def main():
 
     failures = []
 
-    # --- did the parse find anything at all? --------------------------------
-    #
-    # THE FOURTH RULE, and this file was breaking it. The pinned-offset loop
-    # below is `for field, cxx_offset in sorted(offsets.items())`: over an EMPTY
-    # dict it runs zero times, appends zero failures, prints "0 pinned offsets"
-    # and exits 0. Deleting every offsetof static_assert from wxlm.hpp was
-    # measured to do exactly that - green build, nothing checked.
-    #
-    # The regexes are the fragile part: they do not span lines, so a reformat is
-    # enough to stop them matching. So the counts are ASSERTED, not just
-    # reported.
+    # Verify assertions were successfully parsed.
     if len(sizes) < EXPECTED_MIN_SIZES:
         failures.append(
             "  parsed only %d sizeof static_asserts, expected at least %d - either\n"
@@ -159,10 +134,7 @@ def main():
         failures.append("  kFormatVersion is %s in wxlm.hpp, %d in wxlm.py"
                         % (consts.get("kFormatVersion"), wxlm.FORMAT_VERSION))
 
-    # --- CRC32: zlib must equal the header's nibble-table implementation ------
-    #
-    # Reimplemented here from the table IN THE HEADER, so this compares the two
-    # algorithms rather than trusting that both are "CRC32".
+    # --- CRC32: zlib vs header nibble table ----------------------------------
     m = re.search(r"kCrcNibble\[16\]\s*=\s*\{(.*?)\};", text, re.S)
     if not m:
         failures.append("  could not find kCrcNibble in wxlm.hpp")
@@ -189,13 +161,7 @@ def main():
                         "nibble table 0x%08X" % (len(probe), want, got))
                     break
 
-    # --- FNV-1a: writer must equal WiiXLaunch::Surface::Hash -----------------
-    #
-    # NOT behind an exists() guard any more. It was, and renaming surface.hpp
-    # away was measured to make this script print "CRC32 and FNV-1a verified"
-    # while verifying no such thing - a check that does not merely vanish but
-    # actively claims to have run. A guard around a check is a check that stops
-    # existing the day the file moves.
+    # --- FNV-1a: wxlm.py vs WiiXLaunch::Surface::Hash -------------------------
     surface_hpp = os.path.join(ROOT, "include", "wiixlaunch", "loader", "surface.hpp")
     if not os.path.exists(surface_hpp):
         failures.append(
@@ -215,17 +181,7 @@ def main():
         else:
             failures.append("  could not read the FNV constants out of surface.hpp")
 
-    # --- the writer must actually emit something ----------------------------
-    #
-    # Everything above reads CONSTANTS off wxlm.py and never calls it. A writer
-    # whose packing returned b"" was measured to pass this script cleanly,
-    # because nothing here had ever asked it to write a byte. This is the
-    # liveness half: the agreement checks are worth nothing if the thing they
-    # describe produces no output.
-    #
-    # The read-back deliberately uses the offsets parsed out of the C++ HEADER,
-    # not the offsets python_offsets() computes, so a drift in FIELD_ORDER
-    # cannot hide behind itself.
+    # --- Header packing round-trip -------------------------------------------
     try:
         blob = wxlm.pack_header(
             0, 1, b"audit".ljust(16, b"\0"), 1, 2, 3,
@@ -256,14 +212,7 @@ def main():
                             "  %s read back as %d at the offset wxlm.hpp pins (%d), "
                             "expected %d" % (field, got, offsets[field], want))
 
-    # The same round trip for an AArch64 module, which is a DIFFERENT BYTE
-    # ORDER rather than a different field list. Worth its own pass because the
-    # writer packed ">" into eight struct formats for as long as PowerPC was
-    # the only target, and a single one left behind would produce a file whose
-    # header reads correctly and whose relocation table does not.
-    #
-    # No toolchain is needed for this, which is why it lives here rather than
-    # in the Switch build: it is a statement about the format.
+    # --- AArch64 little-endian round-trip -------------------------------------
     aarch64_checks = 0
     try:
         blob64 = wxlm.pack_header(
@@ -315,8 +264,7 @@ def main():
                             % (field, got, want))
                     aarch64_checks += 1
 
-    # Liveness, the fourth rule: this whole block passes trivially if it never
-    # ran, and "never ran" is what a removed keyword argument would look like.
+    # Verify at least one AArch64 check was executed.
     if aarch64_checks == 0:
         failures.append("  no aarch64 header check ran at all - the second byte "
                         "order is untested and this script would still say PASSED")

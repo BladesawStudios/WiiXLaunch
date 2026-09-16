@@ -1,7 +1,4 @@
-// WUPS plugin glue - Wii U (Aroma) only. This is what makes the built .wps a
-// loadable plugin: Aroma reads the WUPS_PLUGIN_* metadata sections and calls
-// INITIALIZE_PLUGIN() at plugin load, which is our one entry into
-// WiiXLaunch_Init().
+// WUPS plugin glue for Wii U (Aroma).
 #include <wiixlaunch/platform.hpp>
 
 #if WIIXL_WIIU
@@ -23,33 +20,10 @@
 #include <coreinit/memdefaultheap.h>
 #include <cstdio>
 
-// THE ARENA, and the two things this platform needs that the others state
-// differently.
-//
-// WHERE. Cemu reads the tail of its code cave and Switch reserves space in its
-// own .text, because Horizon will not let one address be both writable and
-// executable. Wii U needs neither trick: memory from the default heap can be
-// written and then executed, which is how WUMS loads and runs the plugins
-// themselves. So the reservation is an ordinary allocation and there is no
-// write alias - Arena::Writable() stays the identity here.
-//
-// 2 MB because it costs nothing on a console with MEM2 to spare, and because
-// it puts the best-effort grant at the same 256 KB cap Cemu lands on rather
-// than at a fraction of it.
+// Heap-allocated arena for loaded modules.
 constexpr uint32_t kWiiUArenaSize = 2u * 1024u * 1024u;
 
-// CACHE MAINTENANCE, and it is not optional.
-//
-// The loader has just written instructions through the data cache and is about
-// to branch into them through the instruction cache. The Espresso does not
-// reconcile those on its own. Until now this platform used the loader's
-// DEFAULT flush hook, which is an empty function everywhere except Cemu - so a
-// module would have loaded, relocated correctly, and then executed whatever
-// happened to be in the instruction cache at that address.
-//
-// That failure needs hardware to see and says nothing useful when it happens,
-// which is the worst combination. Cemu never showed it because the emulator's
-// Backend::FlushCache was always wired up there.
+// Flush data cache and invalidate instruction cache after loading modules.
 static void WiiUFlush(uintptr_t addr, uint32_t size) {
     DCFlushRange(reinterpret_cast<void*>(addr), size);
     ICInvalidateRange(reinterpret_cast<void*>(addr), size);
@@ -119,17 +93,7 @@ INITIALIZE_PLUGIN() {
     }
 }
 
-// The Wii U load point.
-//
-// Cemu has to nominate one as an ADDRESS INSIDE THE GAME, which is knowledge
-// only a game module has - so there it is botw/load_point.hpp that calls the
-// loader. Aroma gives us a lifecycle event instead, at a point where the title
-// is up and coreinit FS is usable, so the host can drive the loader itself and
-// module loading on this platform does not depend on any game module.
-//
-// INITIALIZE_PLUGIN is too early for it: that runs at plugin load, before a
-// title, and WiiXLaunch_Init's job there is registering surfaces. Modules are
-// read here, once a title has actually started.
+// Wii U load point: runs when title starts and filesystem is ready.
 ON_APPLICATION_START() {
     s_NotifyInitStatus = NotificationModule_InitLibrary();
 
@@ -139,9 +103,7 @@ ON_APPLICATION_START() {
              (unsigned long)B::g_PatchOkCount, B::g_BackendInitOk ? "ok" : "FAILED");
     NotificationModule_AddInfoNotification(msg);
 
-    // The reservation and the flush, before anything can ask for memory.
-    // Both are this platform's answers to questions the other two answer
-    // elsewhere; see the comments on kWiiUArenaSize and WiiUFlush.
+    // Allocate module arena from default heap and configure flush hook.
     void* arena = MEMAllocFromDefaultHeapEx(kWiiUArenaSize, 64);
     if (arena) {
         WiiXLaunch::Arena::SetReservation(reinterpret_cast<uintptr_t>(arena),
@@ -149,32 +111,18 @@ ON_APPLICATION_START() {
         WiiXLaunch::Loader::SetFlushHook(&WiiUFlush);
         WIIXL_LOG("[loader] arena %u B at %p", kWiiUArenaSize, arena);
     } else {
-        // Not the same as "no modules", and the loader would otherwise report
-        // it as ARENA-NOT-READY without saying who failed to provide one.
         WIIXL_LOG("[loader] could not allocate a %u B arena from the default "
                   "heap - every module will be refused for memory, and that is "
                   "this plugin's fault rather than theirs.", kWiiUArenaSize);
     }
 
-    // What this host is and what it offers, logged before any module is read,
-    // so a rejection further down can be read against it.
     WIIXL_LOG("[loader] host ABI v%u, format v%u",
               WiiXLaunch::Core::kAbiVersion, WiiXLaunch::Wxlm::kFormatVersion);
     WiiXLaunch::Surface::LogRegistered();
 
-    // Lexical filename order, which is also hook priority - a specification
-    // rather than an enumeration artefact. See docs/framework/loader.md.
     const uint32_t loaded = WiiXLaunch::Loader::LoadAll("WiiXLaunch/mods");
 
-    // Declared patches are applied during the loads above; they are verified
-    // and put back HERE, between LoadAll and RunPhase, so no module code runs
-    // while the game is modified. Same ordering as the Cemu load point, and for
-    // the same reason - it was wrong there once and the boot log said so.
-    //
-    // WHETHER THEY STAY IS A SETTING NOW - patches.persist in the target's
-    // config, which is how a host says it ships real patch mods rather than the
-    // sample. This used to be a comment asking you to delete the call, and a
-    // comment telling you to edit code is a setting nobody has written down.
+    // Verify declared patches and restore them unless configured to persist.
     WiiXLaunch::Patches::VerifyApplied();
     if constexpr (!WiiXLaunch::Host::PatchesPersist) {
         WiiXLaunch::Patches::RestoreAll();

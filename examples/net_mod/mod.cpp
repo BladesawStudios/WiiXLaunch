@@ -1,29 +1,12 @@
-// d_net.wxlm - the wiixl.net demonstration.
-//
-// It opens a real listener on a real port and answers a real request, so a boot
-// proves the surface rather than the build proving it compiles. Point a browser
-// or curl at the address this logs and you get a line back.
-//
-// It also does ONE THING WRONG ON PURPOSE: it closes a socket and then uses the
-// closed handle. That is the case host handles exist for - with raw descriptors
-// the stale send would have landed on whatever socket inherited the number, so
-// the boot log carrying "STALE-HANDLE" is the property demonstrating itself
-// rather than a comment claiming it.
-//
-// Everything the loader writes at runtime is volatile, for the reason in
-// docs/framework/modules.md: without it the compiler folds the import pointers into
-// direct branches and the demonstration stops demonstrating anything.
-
+// d_net.wxlm - wiixl.net demonstration module.
+// Listens on a port and serves a small HTTP response across ticks.
 #include <cstdint>
 
 extern "C" {
     extern void     wiixl_import__wiixl_core__Log(const char* text);
     extern uint32_t wiixl_import__wiixl_core__RegisterTick(void (*fn)());
 
-    // wiixl.net v1.0. Importing ANY of these makes wiixl.net a required
-    // surface, so on a host that does not register it - Switch, which has no
-    // socket implementation - this module is refused by name at load and never
-    // runs at all. That refusal is the feature.
+    // wiixl.net imports.
     extern uint32_t wiixl_import__wiixl_net__Available(void);
     extern uint32_t wiixl_import__wiixl_net__Open(uint32_t* outHandle);
     extern uint32_t wiixl_import__wiixl_net__SetNonBlocking(uint32_t handle);
@@ -33,16 +16,11 @@ extern "C" {
     extern uint32_t wiixl_import__wiixl_net__Accept(uint32_t listener, uint32_t* outHandle);
     extern int32_t  wiixl_import__wiixl_net__Send(uint32_t handle, const void* buf, uint32_t len);
     extern int32_t  wiixl_import__wiixl_net__Recv(uint32_t handle, void* buf, uint32_t maxSize);
-    // v1.1. Half-close. Sending a reply and closing while the request is still
-    // unread makes TCP send an RST instead of a FIN, and the client loses the
-    // reply - see the state machine below.
     extern uint32_t wiixl_import__wiixl_net__Shutdown(uint32_t handle, uint32_t how);
     extern uint32_t wiixl_import__wiixl_net__Close(uint32_t handle);
     extern uint32_t wiixl_import__wiixl_net__LocalIp(uint32_t handle);
     extern uint32_t wiixl_import__wiixl_net__Held(void);
     extern uint32_t wiixl_import__wiixl_net__Quota(void);
-    // The host's own name for a result code. Imported rather than copied, so
-    // this mod's log cannot drift from the host's enum the day a value is added.
     extern const char* wiixl_import__wiixl_net__ResultName(uint32_t result);
 }
 
@@ -75,54 +53,26 @@ static U32Fn     volatile g_Held      = &wiixl_import__wiixl_net__Held;
 static U32Fn     volatile g_Quota     = &wiixl_import__wiixl_net__Quota;
 static NameFn    volatile g_ResultName = &wiixl_import__wiixl_net__ResultName;
 
-// SEVERAL PORTS, TRIED IN ORDER.
-//
-// The first boot of this mod failed at bind, and the reason was not the socket
-// layer: something else on the machine already held 8080. A demonstration that
-// only works when a popular port happens to be free proves nothing on the
-// machines where it matters most, so it tries a few and says which it got.
-//
-// A real server should take its port from configuration rather than guessing;
-// this is a sample, and guessing quietly is the thing worth avoiding.
+// Candidate ports to try in order.
 static const uint32_t kPorts[] = { 8080, 8099, 9080, 51080 };
 static const uint32_t kPortCount = sizeof(kPorts) / sizeof(kPorts[0]);
 static const uint32_t kResultOk = 0;
 
-// .bss, so the loader has to have zeroed it. volatile so the compiler cannot
-// fold state it can see only this file writing.
 static volatile uint32_t g_Listener;
 static volatile uint32_t g_Served;
 
-// --- one connection at a time, carried ACROSS TICKS -------------------------
-//
-// The first working boot of this mod served three requests and curl got
-// "connection reset by peer" every time. Accept, send, close in a single tick
-// looks right and is not:
-//
-//   - the client has usually not even SENT its request when accept() returns,
-//     so closing immediately meets the request with a closed socket, and
-//   - closing a socket with unread bytes still in its receive buffer makes TCP
-//     send an RST rather than a FIN, which tells the client to DISCARD anything
-//     it has not read yet - including the reply.
-//
-// So a connection lives across ticks: read until the request's headers are
-// complete, then reply, then half-close, then close. That is the minimum an
-// HTTP server can do and still be one.
+// Non-blocking connection state machine across ticks.
 constexpr uint32_t kNoConn = 0;
-constexpr uint32_t kMaxConnTicks = 600;   // ~10s at 60fps, then give up
+constexpr uint32_t kMaxConnTicks = 600;   // ~10s at 60fps
 
 static volatile uint32_t g_Conn;          // handle, or kNoConn
 static volatile uint32_t g_ConnTicks;
 static volatile uint32_t g_ConnSent;      // bytes of the reply written so far
 static volatile uint32_t g_ConnGotRequest;
 static volatile uint32_t g_Match;         // how much of "\r\n\r\n" we have seen
-// Whether anything has been read on THIS connection yet. The not-HTTP check
-// below must look at the connection's genuinely first byte and no other: a
-// request split across reads can easily resume mid-line, and "the chunk starts
-// with a lowercase letter" would then reject a perfectly good request.
 static volatile uint32_t g_ConnRead;
-static volatile uint32_t g_Timeouts;      // connections that never finished a request
-static volatile uint32_t g_NotHttp;       // connections that were not HTTP at all
+static volatile uint32_t g_Timeouts;
+static volatile uint32_t g_NotHttp;
 
 // No libc here, so this module builds its own strings.
 static char* AppendText(char* out, char* end, const char* text) {
@@ -200,10 +150,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
     LogFn log = g_Log;
     if (!accept || !send || !recv) return;
 
-    // --- take a connection if we are free ----------------------------------
-    //
-    // Non-blocking, so "nothing pending" is the ordinary answer every frame and
-    // costs one call. Anything that can block here can freeze the game.
+    // Accept incoming connection non-blockingly if free.
     if (g_Conn == kNoConn) {
         uint32_t conn = 0;
         if (accept(listener, &conn) != kResultOk) return;
@@ -213,18 +160,14 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
         g_ConnGotRequest = 0;
         g_ConnRead = 0;
         g_Match = 0;
-        return;   // the client has not sent anything yet; read next frame
+        return;
     }
 
     const uint32_t conn = g_Conn;
 
-    // A client that connects and says nothing must not hold the only slot for
-    // the rest of the session.
+    // Drop connection if request is not received within ~10s.
     g_ConnTicks = g_ConnTicks + 1;
     if (g_ConnTicks > kMaxConnTicks) {
-        // Silence is not a diagnosis. Before this line the connection was just
-        // dropped, and a client that connected and never sent a valid request
-        // looked exactly like a server that was not listening.
         const uint32_t t = g_Timeouts + 1;
         g_Timeouts = t;
         LogFn tlog = g_Log;
@@ -236,21 +179,13 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
         return;
     }
 
-    // --- drain the request --------------------------------------------------
-    //
-    // This is the part whose absence caused the reset. The bytes are not needed
-    // - the reply is the same either way - but they have to be TAKEN, or the
-    // close below turns into an RST and the client discards the reply.
+    // Drain request headers.
     if (!g_ConnGotRequest) {
         char in[128];
         const int32_t n = recv(conn, in, sizeof(in));
-        if (n == 0) { FinishConn(); return; }        // peer went away
+        if (n == 0) { FinishConn(); return; }
         if (n > 0) {
-            // A request that is not HTTP at all. Every HTTP method starts with
-            // an uppercase letter; a TLS ClientHello starts with 0x16, and
-            // waiting ten seconds to time out on one tells the person at the
-            // other end nothing. This is the exact case that cost a boot:
-            // `curl https://...` against a plain-HTTP server.
+            // Reject non-HTTP traffic early (e.g. TLS handshake).
             const bool firstRead = (g_ConnRead == 0);
             g_ConnRead = 1;
             if (firstRead && (in[0] < 'A' || in[0] > 'Z')) {
@@ -265,8 +200,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
                     if (o < line + sizeof(line) - 1) *o++ = hex[(b >> 4) & 0xF];
                     if (o < line + sizeof(line) - 1) *o++ = hex[b & 0xF];
                     o = AppendText(o, line + sizeof(line),
-                                   "). 0x16 means TLS - this server speaks plain "
-                                   "http://, not https://");
+                                   "). Plain HTTP only, not HTTPS.");
                     *o = 0;
                     log(line);
                 }
@@ -274,7 +208,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
                 return;
             }
 
-            // Look for the blank line ending the headers, across reads.
+            // Look for end of HTTP headers (\r\n\r\n).
             uint32_t m = g_Match;
             for (int32_t i = 0; i < n; ++i) {
                 const char c = in[i];
@@ -286,16 +220,15 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModTick() {
             g_Match = m;
             if (m == 4) g_ConnGotRequest = 1;
         }
-        // n < 0 is "nothing yet" - try again next frame.
         if (!g_ConnGotRequest) return;
     }
 
-    // --- write the reply, across as many ticks as it takes ------------------
+    // Send HTTP reply across ticks.
     const uint32_t total = sizeof(kReply) - 1;
     uint32_t sent = g_ConnSent;
     if (sent < total) {
         const int32_t n = send(conn, kReply + sent, total - sent);
-        if (n < 0) return;                            // would block; next frame
+        if (n < 0) return;
         sent += static_cast<uint32_t>(n);
         g_ConnSent = sent;
         if (sent < total) return;
@@ -327,9 +260,6 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
         return;
     }
 
-    // The surface is registered, which is why this module loaded at all. Whether
-    // a socket can be opened RIGHT NOW is a separate question with its own
-    // answer - on Cemu it depends on the title's process having a network stack.
     if (!available()) {
         log("d_net: wiixl.net is registered but no socket library is reachable "
             "here - see the Net: line above. Not listening.");
@@ -350,8 +280,6 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
 
     reuse(listener);
 
-    // The one option this cannot do without. There is no fcntl in nsysnet, so
-    // this is the only way to keep accept() off the game thread's neck.
     r = nonBlock(listener);
     LogResult("set non-blocking", r);
     if (r != kResultOk) { close(listener); return; }
@@ -367,8 +295,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
         o = AppendText(o, line + sizeof(line), " refused (");
         NameFn name = g_ResultName;
         o = AppendText(o, line + sizeof(line), name ? name(r) : "?");
-        o = AppendText(o, line + sizeof(line), ") - see the Net: line for the "
-                                               "platform's own reason");
+        o = AppendText(o, line + sizeof(line), ")");
         *o = 0;
         log(line);
     }
@@ -382,13 +309,8 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
     LogResult("listen", r);
     if (r != kResultOk) { close(listener); return; }
 
-    // The address you actually have to type. The console does not tell you.
     HandleFn localIp = g_LocalIp;
     if (localIp) {
-        // A socket bound to INADDR_ANY has no single local address, and under
-        // Cemu SO_MYADDR comes back 0. Printing "http://0.0.0.0:8099/" as if it
-        // were an address to type is a URL that cannot work - so when there is
-        // no address to give, say what is actually true instead.
         const uint32_t ip = localIp(listener);
         char line[128];
         char* o = AppendText(line, line + sizeof(line), "d_net: listening on ");
@@ -399,9 +321,6 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
             o = AppendU32(o, line + sizeof(line), port);
             o = AppendText(o, line + sizeof(line), "/");
         } else {
-            // The exact command, because "curl localhost" left the scheme to
-            // be guessed and https:// was guessed twice. A plain-HTTP server
-            // meeting a TLS handshake says nothing useful on its own.
             o = AppendText(o, line + sizeof(line), "all interfaces, port ");
             o = AppendU32(o, line + sizeof(line), port);
             o = AppendText(o, line + sizeof(line), " - try:  curl http://localhost:");
@@ -414,7 +333,6 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
 
     g_Listener = listener;
 
-    // --- what this module is allowed to hold --------------------------------
     U32Fn held = g_Held;
     U32Fn quota = g_Quota;
     if (held && quota) {
@@ -428,12 +346,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
         log(line);
     }
 
-    // --- the deliberate mistake ---------------------------------------------
-    //
-    // Open a socket, close it, then use the closed handle. With raw descriptors
-    // this is the send that lands on somebody else's connection; here it comes
-    // back named, and the boot log shows the refusal happening rather than a
-    // comment asserting that it would.
+    // Verify stale handle detection: using a closed handle must fail.
     SendFn send = g_Send;
     uint32_t doomed = 0;
     if (send && open(&doomed) == kResultOk) {
@@ -444,21 +357,18 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {
             char* o = AppendText(line, line + sizeof(line),
                                  "d_net: using a closed handle was refused, code ");
             o = AppendU32(o, line + sizeof(line), static_cast<uint32_t>(-n));
-            o = AppendText(o, line + sizeof(line), " - as it should be");
+            o = AppendText(o, line + sizeof(line), " - as expected");
             *o = 0;
             log(line);
         } else {
-            log("d_net: A CLOSED HANDLE STILL SENT DATA - the generation check "
-                "is not working");
+            log("d_net: A CLOSED HANDLE STILL SENT DATA - generation check failed");
         }
     }
 
-    // Accepting has to happen repeatedly, which is what a tick is for.
     TickRegFn regTick = g_RegTick;
     if (regTick && regTick(&WiiXLaunch_ModTick)) {
         log("d_net: registered a per-frame tick to accept connections");
     } else {
-        log("d_net: RegisterTick was refused - nothing will be served. See the "
-            "Tick: line above.");
+        log("d_net: RegisterTick was refused - nothing will be served.");
     }
 }

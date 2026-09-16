@@ -1,61 +1,11 @@
 #!/usr/bin/env python3
-"""Assemble the SDK a mod author needs, and nothing else.
+"""Assemble the standalone WiiXLaunch SDK for mod authors.
 
-WHY THIS EXISTS.
-
-The only real mod written against this framework is a FORK of it. BotW_API_wxlm
-carries vendor/exlaunch, wut, WUPS, libfunctionpatcher and wiixlaunch-botw, its
-own build_all.bat, docs/ and tools/ - the entire framework and four submodules
-it never compiles - to produce one 65 KB file that uses none of it. It forked
-because there was no other way to get at build_mod.py and the linker script.
-
-A .wxlm needs three scripts and a set of headers. That is the whole dependency:
-
-    sdk/
-        scripts/build_mod.py     how a module is compiled and packed
-        scripts/wxlm.py          the packer, and the format's only writer
-        scripts/wxlm_mod.ld      linked at 0, keeps .init_array
-        include/wiixlaunch/imports/*.h   one per surface, generated
-        include/wiixlaunch/mod_runtime.h memcpy and friends
-        include/wiixlaunch/mod_math.h    sqrt, sin, cos
-        include/wiixlaunch/patch_decl.hpp  WIIXL_DECLARE_PATCH
-        include/wiixlaunch/mod_config.h  key = value settings
-        include/wiixlaunch/mod_version.h offsets per game build
-        sdk.json                 which host this was cut from
-        README.md
-
-build_mod.py derives its root from its own location, so an SDK laid out this way
-needs no flags: `python sdk/scripts/build_mod.py --source mymod` works with the
-framework tree absent entirely.
-
-THE TEST THAT MATTERS is --verify: it builds a module using ONLY the assembled
-SDK, from a working directory outside both trees, and compares the result byte
-for byte against the same module built from the full tree. The three-layer
-design exists so a mod can be built without the framework; until something does
-that, it is a design nobody has run.
-
---host cuts the other half. An SDK builds a .wxlm and a .wxlm does nothing on
-its own: it needs the host that loads it. That host is a Cemu graphic pack, and
-the one this repo deploys has the six sample modules inside it - fine for
-testing here, wrong to hand to someone else, who would get five mods they did
-not ask for and a demonstration of hook collision in their game. --host copies
-the pack with mods/ holding only what the HOST owns: its own resources under
-_host/, and probe.bin.
-
-THE SDK IS COMMITTED, at sdk/ in this repo. It was a build artifact first, which
-meant the answer to "how do I get an SDK" was "build the framework" - a Python
-install, a toolchain, three submodules and a clone, to obtain 31 files that are
-just text. Anyone can now take the folder straight out of the repository, or off
-a release, and never see this script.
-
-    python scripts/make_sdk.py            # refresh sdk/ after changing a surface
-    python scripts/make_sdk.py --check    # fail if sdk/ is out of date
-    python scripts/make_sdk.py --host     # cut a player-ready pack too
-
---check is the gate that keeps the committed copy honest, the same way
-gen_imports --check keeps the generated headers honest. A checked-in artifact
-that has drifted from its source is worse than no artifact: it looks
-authoritative and is stale.
+Usage:
+    python scripts/make_sdk.py            # Refresh sdk/ from the repository
+    python scripts/make_sdk.py --check    # Verify sdk/ is up to date
+    python scripts/make_sdk.py --verify   # Verify SDK by building a test module
+    python scripts/make_sdk.py --host     # Package player-ready host graphic pack
 """
 import io
 import json
@@ -67,44 +17,20 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ppc_relocs is not on this list because anyone remembered it. --verify built a
-# module from the assembled SDK, wxlm.py failed on "No module named ppc_relocs",
-# and that is the whole argument for the check existing: a dependency you forget
-# is one you cannot notice from inside the tree that has it.
 SCRIPTS = ["build_mod.py", "wxlm.py", "ppc_relocs.py", "aarch64_relocs.py",
            "wxlm_mod.ld", "wxlm_mod_aarch64.ld"]
 HEADERS = [os.path.join("wiixlaunch", "mod_runtime.h"),
            os.path.join("wiixlaunch", "mod_log.h"),
-           # The host's own formatter, shared rather than reimplemented - a mod
-           # gets %p and %.2f and the 23 cases in tools/format_test that guard
-           # them. mod_log.h includes it.
            os.path.join("wiixlaunch", "format.hpp"),
-           # sqrt, sin and cos. A mod doing anything three-dimensional needs
-           # them, <cmath> is not available freestanding, and libm is not
-           # linked - so without this the mod either does not compile or, worse,
-           # links to nothing. Bounds measured by tools/mathtest.
            os.path.join("wiixlaunch", "mod_math.h"),
-           # Declared patches. The .wxlm format has carried a patch section
-           # since stage 7 and examples/patch_mod declares three, but the header
-           # that writes one was never shipped - so the capability existed and
-           # no SDK user could reach it. Found while porting a mod whose whole
-           # job is five instruction rewrites.
            os.path.join("wiixlaunch", "patch_decl.hpp"),
-           # A key = value file in the module own directory, so a limit a
-           # user is meant to choose is not baked into the binary. The mod
-           # this came from shipped two whole payloads to offer one switch.
            os.path.join("wiixlaunch", "mod_config.h"),
-           # One mod, several game versions. A mod holding raw offsets is
-           # holding them for ONE build, and had no way to ask which build it
-           # got - so the only outcomes were right by luck or silently wrong.
            os.path.join("wiixlaunch", "mod_version.h")]
 IMPORTS = os.path.join("include", "wiixlaunch", "imports")
 
-# A module built with the SDK is refused by a host whose surfaces have moved on
-# in a way that matters, so the SDK records what it was cut from. This is
-# informational - the loader does the actual refusing, by name, at load - but a
-# mod author with a .wxlm that will not load wants to know which SDK made it.
+
 def host_versions():
+    """Extract surface versions from generated import headers."""
     out = {}
     for name in sorted(os.listdir(os.path.join(ROOT, IMPORTS))):
         if not name.endswith(".h"):
@@ -203,8 +129,7 @@ the arrangement.
 """
 
 
-# What belongs to the HOST rather than to any mod. Everything else under mods/
-# is somebody's module and does not travel with the host.
+# Files preserved in mods/ for the host.
 HOST_KEEP = ("_host", "probe.bin")
 
 
@@ -236,9 +161,7 @@ def cut_host(dest):
             removed.append(entry)
             shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
 
-    # An empty mods/ has to SURVIVE the copy to the player's machine, and an
-    # empty directory does not survive a zip. A README in it is also the only
-    # instruction a player needs.
+    # Empty mods/ needs a file so zip/copy tools preserve the directory.
     io.open(os.path.join(mods, "README.txt"), "w", encoding="utf-8", newline="").write(
         "Put .wxlm files in this directory.\n"
         "\n"
@@ -281,12 +204,7 @@ def verify_host(host):
     return True
 
 
-# Running the SDK's own scripts makes Python write bytecode beside them, so the
-# check has to know the difference between the SDK's CONTENT and what using it
-# leaves behind. --verify does exactly that every build, which is how this was
-# found: the next build's --check reported sdk/scripts/__pycache__ as a file
-# that should not be there, and it was right that it existed and wrong that it
-# mattered.
+# Ignore bytecode artifacts created when executing SDK scripts.
 def is_debris(rel):
     parts = rel.replace("\\", "/").split("/")
     return "__pycache__" in parts or rel.endswith(".pyc")
@@ -330,8 +248,6 @@ def verify(sdk):
         'struct Blob { char bytes[64]; };\n'
         '\n'
         'extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {\n'
-        '    // A struct copy, so the build needs memcpy and would branch to 0\n'
-        '    // without mod_runtime.h - the probe exercises what it ships.\n'
         '    Blob a{}; Blob b = a; a = b;\n'
         '    if (C::Log) C::Log(a.bytes[0] ? "probe" : "probe: built from the SDK alone");\n'
         '}\n')
@@ -341,8 +257,6 @@ def verify(sdk):
     outs = {}
     for label, root in (("sdk", sdk), ("tree", ROOT)):
         out = os.path.join(src, "build_" + label)
-        # cwd is somewhere neither tree owns, so a relative path to either one
-        # would fail rather than quietly working.
         r = subprocess.run(
             [sys.executable, os.path.join(root, "scripts", "build_mod.py"),
              "--source", src, "--out", out],
@@ -354,11 +268,7 @@ def verify(sdk):
             return False
         outs[label] = io.open(os.path.join(out, "sdk_probe.wxlm"), "rb").read()
 
-    # The editor half. A mod folder has no build system in it, so an indexer
-    # knows nothing until build_mod.py writes compile_commands.json - and
-    # "your editor will resolve everything" is a claim like any other. Replaying
-    # that file with -fsyntax-only is exactly what an indexer does with it, so
-    # if this resolves, clangd and the VS Code C/C++ extension resolve.
+    # Verify compile_commands.json syntax by replaying with -fsyntax-only.
     db_path = os.path.join(src, "compile_commands.json")
     if not os.path.exists(db_path):
         sys.stderr.write("[make_sdk] --verify: the build wrote no compile_commands.json, "
@@ -391,17 +301,10 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     dest = os.path.abspath(args[0]) if args else os.path.join(ROOT, "sdk")
 
-    # sdk/ is committed, so it sits at the root. The host is a BUILD PRODUCT -
-    # cut from whatever build_cemu just produced - so it belongs in build/ with
-    # the rest of them, and this used to drop it at the root next to sdk/ where
-    # it was both surprising and untracked. Given an explicit destination it
-    # still lands beside it, which is what somebody passing one would expect.
+    # SDK sits at sdk/; host pack product defaults to build/host.
     host_dest = (os.path.join(os.path.dirname(dest), "host") if args
                  else os.path.join(ROOT, "build", "host"))
 
-    # The generated headers are most of what the SDK IS. Shipping stale ones
-    # would hand a mod author a wrong signature, which is the exact failure the
-    # generator exists to prevent.
     r = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "gen_imports.py"),
                         "--check"])
     if r.returncode != 0:

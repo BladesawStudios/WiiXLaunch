@@ -1,40 +1,5 @@
 #!/usr/bin/env python3
-"""What the Switch build produces, and what it depends on.
-
-Two checks, both needing devkitA64 and neither answerable by the code merely
-compiling.
-
-scripts/test_wxlm.py already proves the writer and wxlm.hpp agree about the
-header, in both byte orders, without a toolchain. This is the other half and it
-needs devkitA64: that a module COMPILED for Switch produces a file the loader
-would accept - right machine, right byte order, and a relocation table
-containing only kinds that exist on this architecture.
-
-WHY THAT LAST CHECK IS THE POINT. A PowerPC relocation in an aarch64 module is
-the failure this whole path invites: the writer would have to have fallen
-through to the wrong reader, and the result is a file that loads, relocates a
-16-bit half of an instruction that is not there, and jumps into it. The header
-would look perfect. So the kinds are asserted, not just the header.
-
-THE SECOND CHECK IS ABOUT nnSdk. A subsdk resolves its imports against the
-game's own nnSdk at load, so a symbol exlaunch declares but nnSdk does not
-export LINKS CLEANLY and branches to address 0 the first time it is called.
-That is not hypothetical: exlaunch's fs_files.hpp declares four ReadFile
-overloads and one of them,
-
-    ReadFile(ulong* bytesRead, FileHandle, long position, void* buffer)
-
-documents a `size` parameter its signature does not have and is not exported.
-Calling it cost a boot: rtld printed "Unresolved symbol
-_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPv" and the process jumped to 0.
-
-So the set of nn:: symbols this host imports is pinned. Adding one becomes a
-deliberate act with a line to edit, rather than something discovered by killing
-a console.
-
-Run from the repo root. build_switch.bat runs it, which is where devkitA64 is
-already a hard requirement.
-"""
+"""Verification of Switch module output and vetted nnSdk imports."""
 
 import io
 import os
@@ -50,19 +15,12 @@ sys.path.insert(0, HERE)
 
 import wxlm  # noqa: E402
 
-# Kinds an aarch64 module may contain. Import is the registry fixup and Addr64
-# is R_AARCH64_ABS64; everything else A64 does with an address is PC-relative
-# and carries no runtime record at all. See scripts/aarch64_relocs.py.
+# Allowed relocations for AArch64 modules.
 ALLOWED = {wxlm.RELOC_IMPORT, wxlm.RELOC_ADDR64}
 KIND_NAMES = {0: "Addr32", 1: "Addr16Ha", 2: "Addr16Hi", 3: "Addr16Lo",
               4: "Import", 5: "Addr64"}
 
-# Every nn:: symbol the Switch host may import from the game's nnSdk.
-#
-# All but CloseFile have been OBSERVED to resolve on a real boot. They are
-# listed rather than counted because the failure is per-symbol: one that does
-# not exist takes the whole process down at its first call, and which one it
-# was is the entire diagnosis.
+# Vetted nnSdk symbols the Switch host is permitted to import.
 ALLOWED_NN_IMPORTS = {
     "nn::fs::MountSdCardForDebug(char const*)",
     "nn::fs::OpenFile(nn::fs::FileHandle*, char const*, int)",
@@ -73,16 +31,11 @@ ALLOWED_NN_IMPORTS = {
     "nn::fs::ReadDirectory(long*, nn::fs::DirectoryEntry*, "
     "nn::fs::DirectoryHandle, long)",
     "nn::fs::CloseDirectory(nn::fs::DirectoryHandle)",
-    # Writing, added when FS::WriteFile got a Switch branch. Every one of
-    # these was confirmed present in the game's own dynamic symbol table
-    # before being imported - an nn:: symbol that does not resolve aborts
-    # the process at load, before this host can say anything about it.
     "nn::fs::CreateFile(char const*, long)",
     "nn::fs::WriteFile(nn::fs::FileHandle, long, void const*, unsigned long, "
     "nn::fs::WriteOption const&)",
     "nn::fs::FlushFile(nn::fs::FileHandle)",
     "nn::fs::SetFileSize(nn::fs::FileHandle, long)",
-    # exlaunch's own runtime linking, not ours.
     "nn::ro::detail::g_pAutoLoadList",
     "nn::ro::detail::g_LookupGlobalManualFunctionPointer",
 }
@@ -181,8 +134,7 @@ def main():
             failures.append("  endian byte is %d, expected %d (little)"
                             % (endian_byte, wxlm.ENDIAN_LITTLE))
 
-        # Read with "<" unconditionally rather than with whatever the endian
-        # byte said: if that byte is wrong, reading by it would hide the fault.
+        # Unpack little-endian.
         f = struct.unpack_from(wxlm.header_format("<"), d, 0)
         magic, _fmt, machine = f[0], f[1], f[2]
 
@@ -218,8 +170,6 @@ def main():
                     "unaligned 64-bit store is a fault on this architecture"
                     % (i, off))
 
-        # Liveness. A module with no relocations at all would pass every check
-        # above without any of them looking at anything.
         if reloc_count == 0:
             failures.append(
                 "  the module has NO relocations, so nothing above was tested. A "
@@ -237,7 +187,6 @@ def main():
               "%d byte(s), %d relocation(s) (%s), %d check(s), 0 failures"
               % (len(d), reloc_count, summary, checks))
 
-        # The host's own imports, when the build hands us its ELF.
         if len(sys.argv) > 1:
             return check_nn_imports(sys.argv[1])
         return 0

@@ -1,33 +1,7 @@
-// Fuzzes the .wxlm loader against malformed input, natively.
+// Native test harness for the .wxlm loader against malformed and mutated inputs.
 //
-// The loader is the one component that reads data it did not produce and then
-// writes to memory it executes. It is about to become the thing every mod on
-// every platform goes through. Every bug found here costs a script run; found
-// later it costs a boot loop on someone else's machine.
-//
-// This runs the REAL loader - include/wiixlaunch/loader/loader.hpp, compiled
-// for WIIXL_HOST_TEST - against a memory reader and a counting allocator. What
-// is under test is the validation and relocation logic, which is ordinary
-// parsing and needs no console.
-//
-// WHAT THIS DOES NOT TEST: the big-endian byte layout of a real module. The
-// baseline here is built in host-native order and tagged Machine::HostTest, so
-// the loader's field reads work the same way they do on a console reading its
-// own byte order. scripts/test_wxlm.py covers the layout agreement between the
-// writer and the format.
-//
-// THE IMPORTANT CLASS IS CRC-CORRECT CORRUPTION. A checksum only proves the
-// bytes are the ones the writer produced; it says nothing about whether their
-// structure is sane. A module built by a slightly-wrong future writer has a
-// valid checksum over invalid structure, and that is exactly the file that must
-// not relocate. So every mutation recomputes the CRC before the loader sees it,
-// which stops the integrity check short-circuiting the structural ones.
-//
-// The assertion is not merely "it returned an error". It is:
-//   - a specific Reject code, for the cases with one right answer
-//   - nothing was allocated, or everything allocated was released
-//   - the entry point was never called
-//   - no write landed outside an allocation (the allocator red-zones every one)
+// Tests validation and relocation logic with a memory reader and red-zoned allocator.
+// Mutated files have their CRC32 recomputed to test structural validation beyond integrity.
 
 #define WIIXL_HOST_TEST 1
 #define _CRT_SECURE_NO_WARNINGS 1
@@ -49,22 +23,8 @@ namespace Wxlm = WiiXLaunch::Wxlm;
 namespace Loader = WiiXLaunch::Loader;
 using Wxlm::Reject;
 
-// ---------------------------------------------------------------------------
-// A reader over a byte vector, satisfying what the loader needs.
-// ---------------------------------------------------------------------------
-// It ENFORCES coreinit's constraints, and that is the point rather than a
-// detail.
-//
-// A plain byte array will happily serve any pointer and any length, so the
-// first version of this reader accepted reads the real filesystem refuses - and
-// the loader shipped violating them at every structured read. Cemu answered
-// "FS handleAsyncResult(): unexpected error ffffffff" on the first boot, which
-// is a failure at the FS layer that says nothing about alignment.
-//
-// A stand-in more permissive than the thing it stands in for does not test that
-// thing. This one refuses what coreinit refuses: a destination that is not
-// 64-byte aligned, and a length that is not a multiple of 64 unless the read
-// reaches the end of the file.
+// Memory reader enforcing coreinit alignment constraints (64-byte alignment
+// for destination and read lengths unless reading to EOF).
 int g_AlignmentViolations = 0;
 
 class MemoryReader {
@@ -100,23 +60,7 @@ private:
     const std::vector<uint8_t>& m_Data;
 };
 
-// ---------------------------------------------------------------------------
-// Containment: did the loader write ONLY inside the sub-arena it was granted?
-//
-// This replaces a red-zoned allocator installed through the loader old
-// AllocFn hook. That hook stopped being called when stage 5 moved the image
-// onto Arena::AllocIn, so the canaries became bytes nothing could reach and the
-// check passed without testing anything - a dead hook turning a live test
-// vacuous, with no change in the case count to notice it by.
-//
-// The property checked here is stronger and cannot go dead the same way,
-// because it is not attached to a hook. The whole reservation is poisoned
-// before each case; after a load, every byte OUTSIDE the granted sub-arena must
-// still be poison. That is the actual stage-5 invariant - a module cannot reach
-// the host end of the arena or another module grant - stated in terms of the
-// memory rather than in terms of the plumbing.
-// ---------------------------------------------------------------------------
-// Counted in the harness below; declared here because arena_backing uses them.
+// Containment check: verifies loader writes only inside granted sub-arena.
 extern int g_ContainmentChecks;
 extern int g_LivenessChecks;
 
@@ -251,52 +195,19 @@ static Baseline MakeBaseline() {
 // ---------------------------------------------------------------------------
 static int g_Cases = 0, g_Failures = 0;
 static int g_Accepted = 0, g_Rejected = 0;
-// Relocation results read back and compared, as opposed to loads that merely
-// succeeded. Floored below for the usual reason: a check that stops running
-// looks exactly like a check that passes.
 static int g_ValueChecks = 0;
 
-// How many cases must run. The dead-hook incident (docs/framework/modules.md, fourth
-// rule) was invisible partly because THE CASE COUNT DID NOT MOVE - there was no
-// number that a disarmed suite would have changed. This is that number. Raise
-// it when cases are added; never lower it to make a build go green.
+// Test execution count floors.
 static const int kExpectedCases = 1181;
-
-// And a floor on how many of them are ACCEPTED.
-//
-// The case total alone is not enough, and that is not hypothetical: when the
-// module table stopped being reset between cases, every case still ran and the
-// suite still passed, but accepted collapsed from 293 to 8 because the loader
-// was refusing valid modules for a reason that had nothing to do with them. A
-// suite that only counts how many times it ran cannot see that.
-//
-// MOVED 327/853 -> 331/852 when the arena grant started reserving the
-// image's ALIGNMENT PADDING as well as the image. Four well-formed modules
-// had been refused NO-MEMORY for space they should have had, and this suite
-// counted those refusals as successes - which is what these floors exist to
-// make visible, in the direction that is easy to miss.
-//
-// Raised, not relaxed: the total is unchanged at 1183, the oracle still
-// agrees with the loader on all 1088 header flips, and the grant only ever
-// governs the best-effort cap - a malformed module is refused by the header,
-// CRC and section-bound checks long before the arena is asked for anything.
-// So nothing newly accepted can be malformed; four things newly stopped being
-// wrongly rejected.
 static const int kExpectedAccepted = 331;
 static const int kExpectedRejected = 852;
 
-// Both halves of the containment property must actually be exercised, or the
-// pair reduces to the single check that went vacuous last time.
 int g_ContainmentChecks = 0;
 int g_LivenessChecks = 0;
 
-// Offsets of the header fields the mutators poke, derived from the struct so
-// they cannot drift from it.
 #define OFF(field) static_cast<uint32_t>(offsetof(Wxlm::Header, field))
 
-// The arena reservation for a host run. Real memory, so a granted sub-arena is
-// a range the loader can actually write into - and so the containment check
-// above has something genuine to inspect.
+// Arena reservation backing for host containment verification.
 namespace arena_backing {
 constexpr uint32_t kSize = 2u << 20;
 uint8_t* g_Block = nullptr;
@@ -1219,18 +1130,13 @@ int main() {
             (uint64_t)h.initArrayOffset + (uint64_t)h.initArrayCount * 4ull > h.payloadSize)
             return false;
 
-        // Relocation sites must land inside the payload, and an import
-        // relocation must name an import that exists.
+        // Relocations must land within payload, imports must exist.
         for (uint32_t i = 0; i < h.relocCount; ++i) {
             uint32_t hdr32, val;
             std::memcpy(&hdr32, v.data() + h.relocOffset + i * 8, 4);
             std::memcpy(&val,   v.data() + h.relocOffset + i * 8 + 4, 4);
             const uint32_t kind = hdr32 >> 24, off = hdr32 & 0x00FFFFFFu;
             if (kind >= (uint32_t)Wxlm::RelocKind::Count) return false;
-            // Spelled out here rather than calling Wxlm::RelocWidth, on purpose:
-            // an oracle that asks the implementation what it thinks the answer
-            // is can only ever agree with it. Two independent statements of the
-            // same table is the whole mechanism.
             uint32_t width = 4;
             if (kind == (uint32_t)Wxlm::RelocKind::Addr16Ha ||
                 kind == (uint32_t)Wxlm::RelocKind::Addr16Hi ||
@@ -1268,10 +1174,7 @@ int main() {
                 std::printf("  FAIL  flip %u:%d wrote outside the granted sub-arena\n",
                             byte, bit);
             } else if (got == Reject::NoMemory && oracleSaysValid) {
-                // Well-formed but unallocatable. A module asking for 2 GB of
-                // bss is structurally valid and still cannot be loaded, so this
-                // is a resource answer rather than a disagreement about the
-                // file. Counted as agreement.
+                // Structurally valid but unallocatable; count as agreement.
                 ++flipAgree;
                 ++g_Rejected;
             } else if (loaderAccepted != oracleSaysValid) {
@@ -1281,10 +1184,7 @@ int main() {
                             loaderAccepted ? "ACCEPTED" : Wxlm::RejectName(got),
                             oracleSaysValid ? "well-formed" : "malformed");
             } else if (loaderAccepted && !arena_backing::WroteInGrant()) {
-                // The liveness half, on the 289 accepted flips too. It used to
-                // run only on the handful of explicitly-accepted cases, so the
-                // bulk of the suite checked containment alone - which passes
-                // trivially when nothing writes at all.
+                // Verify loader actually wrote inside the grant.
                 ++g_Failures;
                 std::printf("  FAIL  flip %u:%d loaded without writing inside its grant\n",
                             byte, bit);
@@ -1304,9 +1204,6 @@ int main() {
                     "coreinit would refuse\n", g_AlignmentViolations);
     }
 
-    // The numbers FIRST, then the floors that judge them. A disarm message that
-    // withholds the counts it is complaining about sends the reader back to run
-    // the suite again to find out what they were.
     const int acceptedTotal = g_Accepted + flipAccepted;
 
     std::printf("\n%d containment checks, %d liveness checks\n",
@@ -1315,9 +1212,7 @@ int main() {
                 "%d FAILURES\n",
                 g_Cases, g_Rejected, acceptedTotal, g_ValueChecks, g_Failures);
 
-    // FLOORS. A suite that shrinks silently reports success over whatever is
-    // left of itself, and a floor on the TOTAL does not constrain the split -
-    // see the fourth rule in docs/framework/modules.md.
+    // Floor checks to prevent test suite disarming.
     if (g_Cases < kExpectedCases) {
         std::printf("LOADER FUZZ DISARMED: %d cases ran, expected at least %d.\n"
                     "Cases were removed, or a block stopped being reached.\n",

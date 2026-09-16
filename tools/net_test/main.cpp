@@ -1,21 +1,7 @@
-// net_test - the ownership half of wiixl.net, on the host.
+// Host-side tests for wiixl.net socket ownership and isolation.
 //
-// WHAT THIS CAN AND CANNOT TEST, up front. It cannot open a socket: there is no
-// nsysnet here and the point is not to test nsysnet. What it tests is the layer
-// that decides WHO holds a socket, what happens when a module leaks them, and
-// whether a stale handle can reach a live socket - all of which are pure logic
-// over a table, and all of which are where the bugs that hurt actually live.
-//
-// The transport underneath is a fake installed through Transport::SetHostOps,
-// and it is a fake with one specific job: IT REUSES FILE DESCRIPTORS, lowest
-// free first, exactly like every real OS. That is the behaviour that turns a
-// use-after-close into cross-mod corruption, and no real platform will produce
-// it on demand. The whole generation-counter design is answerable only against
-// a backend that recycles, so the fake recycles.
-//
-// Every refusal below is paired with the same call SUCCEEDING. A check that can
-// only pass is not a check: if Open started returning NoModule unconditionally,
-// half these assertions would still be green without the positive controls.
+// Uses a mock transport that recycles file descriptors to verify generation-counter
+// protection against stale handles, leak reclamation, and cross-module boundaries.
 
 #include <wiixlaunch/net.hpp>
 #include <wiixlaunch/net_transport.hpp>
@@ -50,9 +36,7 @@ static void BeginSection(const char* name) {
     std::printf("\n%s:\n", name);
 }
 
-// A section that ran zero checks is a section that silently did nothing, which
-// is the failure mode this project keeps finding. Every section declares how
-// many it must have run.
+// Section check floor validation.
 static void EndSection(int expected) {
     const int ran = g_checks - g_sectionStart;
     if (ran != expected) {
@@ -89,11 +73,10 @@ static int  g_FakeLastClosed = -1;
 static int  g_FakeRecvBytes = 0;      // what the next Recv should deliver
 static bool g_FakeBindFails = false;
 static bool g_FakeNonBlockFails = false;
-// A platform that ACCEPTS the option and does not apply it. Every check that
-// watched setsockopt's return value would pass; the game would still freeze.
+// Simulate platform that reports success without applying non-blocking.
 static bool g_FakeNonBlockLies = false;
 static bool g_FakeCanReadOpts = true;
-static int  g_FakeLastError = 0;      // what the platform would say went wrong
+static int  g_FakeLastError = 0;      // simulated platform error code
 
 static void FakeReset() {
     for (int i = 0; i < kFakeFds; ++i) {
@@ -116,7 +99,7 @@ static void FakeReset() {
 static bool FakeInit() { return g_FakeAvailable; }
 static bool FakeAvailable() { return g_FakeAvailable; }
 
-// LOWEST FREE DESCRIPTOR FIRST. This is the entire reason the fake exists.
+// Recycle lowest free descriptor first.
 static int FakeOpen() {
     if (g_FakeOpenFails) return -1;
     for (int i = 3; i < kFakeFds; ++i) {          // 0-2 reserved, like a real OS
@@ -326,9 +309,7 @@ int main() {
         ok("modB opens", N::Open(&b) == N::Result::Ok);
         const int fdB = FdOf(b);
 
-        // LIVENESS. If the fake stopped recycling, everything below would pass
-        // for the wrong reason - the stale handle would be refused because it
-        // named a dead descriptor, not because the generation caught it.
+        // Verify descriptor recycling across generations.
         ok("the fake really did recycle the descriptor", fdB == fdA);
         ok("and really did reuse the slot", (a & 0xFFFFu) == (b & 0xFFFFu));
         ok("so the two handles differ ONLY in generation", a != b);
@@ -338,13 +319,10 @@ int main() {
         const int32_t sent = N::Send(a, payload, static_cast<uint32_t>(std::strlen(payload)));
         ok("modA's stale handle is refused by name", sent == N::kIoStaleHandle);
 
-        // The assertion that matters. An implementation that returned an error
-        // AND wrote anyway would pass the line above and fail this one.
         ok("and nothing was written to the recycled descriptor",
-           g_Fake[fdB].bytesSent == 0);
+            g_Fake[fdB].bytesSent == 0);
 
-        // Positive control: the same descriptor IS writable by its real owner,
-        // so "nothing was written" above is not just a dead fake.
+        // Positive control: descriptor is writable by genuine owner.
         MC::SetCurrent("modB");
         const int32_t okSent = N::Send(b, "mine", 4);
         ok("modB can write to its own socket", okSent == 4);
@@ -772,10 +750,7 @@ int main() {
     // -----------------------------------------------------------------------
     BeginSection("every result has a name");
     {
-        // Rule 5, applied to this enum: if two outcomes are supposed to be
-        // distinguishable, something must be able to tell them apart. Names are
-        // what a mod logs, so a duplicate name would make two different results
-        // read identically in a bug report.
+        // Verify every enum value has a distinct, readable name.
         const N::Result all[] = {
             N::Result::Ok, N::Result::Unsupported, N::Result::Unavailable,
             N::Result::NoModule, N::Result::NoSlots, N::Result::ModuleQuota,
@@ -806,8 +781,7 @@ int main() {
         return 1;
     }
 
-    // A floor, so a build that compiled away half the file cannot report
-    // success. Raise it deliberately when checks are added.
+    // Minimum check count floor.
     static const int kExpectedChecks = 107;
     if (g_checks < kExpectedChecks) {
         std::printf("NET TESTS INCOMPLETE: ran %d checks, expected at least %d\n",

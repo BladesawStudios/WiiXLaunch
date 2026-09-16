@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Reports which of the module's public API has no surface symbol.
-
-WHY THIS EXISTS. "Can a mod do everything a source mod could?" was, until this
-script, a question answered by reading nineteen headers and remembering. That is
-not an answer anybody can check, and it silently stops being true every time a
-function is added to the module and not to a surface.
-
-So it is a NUMBER. The script lists every public entry point in the game module
-and base framework, matches it against the symbols the surfaces export, and
-prints what is uncovered.
-
-WHAT IT IS NOT. It is not a proof of parity. A name matching a name says the
-symbol exists, not that it does the same thing or takes the same arguments -
-those the surfaces' own comments and the boot log have to carry. What this
-catches is the thing nothing else can: a public function nobody exposed.
-
-INTENTIONAL OMISSIONS ARE LISTED, NOT IGNORED. A function in EXCLUDED is one
-somebody decided a mod should not have, with the reason next to it. That is the
-difference between "we thought about it" and "we forgot", and the difference is
-invisible unless it is written down.
-"""
+"""Reports public module and framework APIs that lack a corresponding surface symbol."""
 
 import os
 import re
@@ -33,10 +13,6 @@ BASE = os.path.join(ROOT, "include", "wiixlaunch")
 SCANNED = [
     (os.path.join(MODULE, "game"), "botw"),
     (os.path.join(MODULE, "gui", "gui.hpp"), "botw"),
-    # The graphics headers were MISSING from this list until asked whether the
-    # port had parity. botw.gfx was written and never measured, so "0 uncovered"
-    # was 0 uncovered OF WHAT THIS LOOKED AT - which is the same error the impl
-    # skip made, one level up. A scan's blind spot reports as coverage.
     (os.path.join(MODULE, "graphics", "gx2.hpp"), "botw"),
     (os.path.join(MODULE, "graphics", "nvn.hpp"), "botw"),
     (os.path.join(BASE, "mem.hpp"), "base"),
@@ -51,22 +27,14 @@ SURFACE_DIRS = [
     os.path.join(BASE, "loader"),
 ]
 
-# --- the registry ceiling ---------------------------------------------------
-#
-# Surfaces are declared in one set of files and stored in a fixed array declared
-# in another. Nothing in the compiler connects the two: registration is a
-# runtime call that returns false, so twenty-four surfaces against a cap of
-# sixteen builds cleanly, boots, logs eight refusals, and rejects the mod that
-# needed one of them - by the RIGHT name, for the WRONG reason.
-#
-# Both numbers are static text. This reads them and compares them.
+# --- registry capacity check -----------------------------------------------
+# Compare declared surfaces against kMaxSurfaces in surface.hpp.
 SURFACE_NAME = re.compile(  # BROKEN
     r'constexpr\s+const\s+char\s*\*\s*k\w*\s*=\s*"((?:wiixl|botw)\.\w+)"')
 CAP = re.compile(r'constexpr\s+uint32_t\s+kMaxSurfaces\s*=\s*(\d+)\s*;')
 CAP_HEADER = os.path.join(BASE, "loader", "surface.hpp")
 
-# A floor, because "0 surfaces declared, plenty of headroom" is the failure this
-# check would otherwise report as a pass.
+# Minimum expected surface count to guard against false passes on scan failure.
 MIN_SURFACES = 20
 
 
@@ -114,26 +82,18 @@ def check_registry_capacity():
     return 0
 
 
-# Public functions deliberately NOT on a surface, and why. Each of these was a
-# decision; leaving the reason here is what stops the next person re-deciding it
-# by accident.
+# Public functions deliberately NOT on a surface, and why.
 EXCLUDED = {
-    # The two halves of NVN texture creation. botw.gfx:CreateTexture is the one
-    # a module calls and it takes PIXELS, the same as GX2 - these are how the
-    # NVN backend gets from pixels to the memory pool it actually wants.
+    # NVN texture creation.
     "CreateTextureRaw": "what botw.gfx:CreateTexture calls on NVN; a module "
                         "uses the surface, not this",
     "CreateTexturePackaged": "takes an NVN container, which is a build-time "
                              "artifact of the host; a module has pixels",
 
-    # The tiling between those two. Pure arithmetic over bytes, with no NVN
-    # call in it - which is why tools/nvn_swizzle_test can check it against a
-    # real packaged texture on a PC. A module never needs it: it hands over
-    # rows and the backend decides what the device wants.
+    # NVN block-linear layout.
     "SwizzleRgba8": "the NVN block-linear layout, applied by CreateTextureRaw; a module passes linear pixels and does not know or care",
 
-    # Host plumbing a mod has no business calling - these install hooks or hand
-    # back raw engine pointers that the surfaces wrap properly.
+    # Host engine accessors wrapped by surfaces.
     "GetRaw": "raw pointer; botw.player's escape hatch is the audited way",
     "GetActor": "returns Actor by value; botw.actor hands out handles instead",
     "GetAll": "std::vector; botw.actor's Query/QueryAt replaces it",
@@ -148,11 +108,7 @@ EXCLUDED = {
     "ForEachOfType": "template callback; botw.pouch enumerates by index",
     "OnUpdate": "single callback slot; botw.player's RegisterTick is the fanned-out form",
     "OnTick": "single callback slot; see RegisterTick",
-    # Every one of these is a SINGLE callback slot on the module - "call again
-    # to replace it" - so the surface that owns it fans it out to N attributed
-    # slots instead of handing the slot to whichever mod asked last.
-    # botw.input RegisterFrame is the one that was missing: the API server was
-    # pumped from it, and this line claimed it was covered when it was not.
+    # Single-slot callbacks fanned out by surfaces to multiple subscribers.
     "OnFrame": "single slot; botw.input RegisterFrame, botw.gui and botw.gfx fan it out, attributed",
     "OnLoaded": "single callback slot; botw.flyt fans it out",
     "OnKorokGet": "single callback slot; botw.events makes it consumable",
@@ -219,12 +175,7 @@ EXCLUDED = {
     "Spawn": "exposed per surface",
     "Stop": "exposed as botw.vfx Stop",
 
-    # --- names the surfaces already carry under a clearer spelling ----------
-    #
-    # These are not gaps. A surface renamed the call where the module's own name
-    # was ambiguous once several surfaces existed side by side, and the coverage
-    # scan matches by name, so each one has to say so here rather than sit in a
-    # list of things that look forgotten.
+    # --- renamed surface calls ----------------------------------------------
     "GetCurrentLife": "botw.actor GetLife / botw.player ActorGetLife",
     "SetCurrentLife": "botw.actor SetLife / botw.player ActorSetLife",
     "GetCurrentHearts": "botw.actor GetHearts",
@@ -267,11 +218,7 @@ EXCLUDED = {
     "Frame": "botw.gui FrameNumber",
     "GetArmourEffects": "botw.armour GetArmourEffect, one effect at a time",
 
-    # --- host internals a mod has no business reaching ----------------------
-    #
-    # Manager pointers, offset arithmetic helpers and hook bookkeeping. Every
-    # one of these is something the surfaces call ON a mod's behalf; handing
-    # them over would be handing over the pointer the surface exists to keep.
+    # --- host internals -----------------------------------------------------
     "WorldMgr": "manager pointer",
     "MapMgr": "manager pointer",
     "TimeMgr": "manager pointer",
@@ -355,10 +302,6 @@ EXCLUDED = {
     "RegisterDrawCallback": "GUI installs its own with botw.gfx; RegisterFrame is the mod API",
 
     # --- state the surfaces drive, not state a mod sets ----------------------
-    #
-    # Reference-returning accessors (int& CellSize()) and hook bookkeeping. The
-    # surfaces expose the VALUE forms - GetCellSize, SetWallGeometry - because a
-    # reference a mod could hold is a pointer into host memory by another name.
     "CellSize": "reference accessor; botw.region GetWallGeometry reports it",
     "WallHeight": "reference accessor; see GetWallGeometry",
     "WallThickness": "reference accessor; see GetWallGeometry",
@@ -405,16 +348,7 @@ EXCLUDED = {
     "ToUnixSeconds": "calendar arithmetic behind GetCalendarTime",
     "OSGetTime": "the coreinit call behind the wall clock",
 
-    # --- the GX2/NVN command layer -------------------------------------------
-    #
-    # These are one-line wrappers around the graphics driver's own entry points,
-    # used to BUILD DrawSprite and DrawMesh. Exposing them would mean handing a
-    # mod the command buffer to drive directly, which is a different and much
-    # larger contract than "draw this sprite" - every one of them can corrupt the
-    # frame or hang the GPU, and none of them can be made safe by this boundary.
-    #
-    # A mod that genuinely needs the command layer wants a surface designed for
-    # it, not these leaked through one at a time.
+    # --- GX2/NVN command layer ----------------------------------------------
     "SetContextState": "GX2 command layer",
     "SetAttribBuffer": "GX2 command layer",
     "SetFetchShader": "GX2 command layer",
@@ -466,24 +400,7 @@ SYMBOL = re.compile(r'WIIXL_SURFACE_SYMBOL\("([^"]+)"')
 
 
 def public_functions(path):
-    """Public entry points in one header, skipping impl namespaces.
-
-    THE IMPL SKIP TRACKS BRACES, not a comment.
-
-    It used to end on a line equal to "} // namespace impl", which is how those
-    namespaces happen to be closed in most of this tree - and in map.hpp they
-    are not. The result was that everything after the first impl namespace in
-    that file was skipped, its public functions were never counted, and the
-    coverage number came out HIGHER than the truth.
-
-    That is the failure this project keeps naming: a check reporting confidence
-    it has not earned. Verified by removing a surface symbol and watching the
-    count fail to move - the liveness test that caught it was itself a case that
-    could not fail, and had to be redone with a symbol known to be counted.
-
-    Depth counting cannot drift that way: the namespace ends where its brace
-    ends, whatever the comment says.
-    """
+    """Public entry points in one header, tracking brace depth to skip impl namespaces."""
     names = set()
     impl_depth = 0        # brace depth at which the current impl namespace opened
     depth = 0
@@ -581,17 +498,13 @@ def main():
                 last = header
             print("      %s" % fn)
 
-    # A floor on the export count, so a surface quietly losing its table is not
-    # reported as improved coverage.
+    # Floor on exported symbol count to detect table shrinkage.
     if len(exported) < 400:
         sys.stderr.write("\n[surface_coverage] only %d symbols exported, expected at "
                          "least 400 - a surface table has shrunk.\n" % len(exported))
         return 1
 
-    # AND A FLOOR ON WHAT WAS SCANNED. A regex that stops matching, or a header
-    # that moves, would otherwise report perfect coverage of nothing - which is
-    # the same shape as test_wxlm printing "verified" for a file that did not
-    # exist.
+    # Floor on scanned entry points to guard against broken scanning.
     if total < 450:
         sys.stderr.write("\n[surface_coverage] only %d public entry points found, "
                          "expected at least 450 - the scan is broken, not the "

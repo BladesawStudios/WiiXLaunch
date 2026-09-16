@@ -1,29 +1,5 @@
 #!/usr/bin/env python3
-"""Enrol a game build by fingerprinting its dump, so nobody types a hex number.
-
-The host CRCs a slice of read-only data at boot and matches it against the names
-in a target's `identity.known`. Getting a name in there used to mean booting the
-game, reading the fingerprint out of the log and pasting it into JSON. That is
-not a workflow, it is a chore with a typo in it.
-
-The bytes being hashed are read-only data, so they are the same bytes that sit
-in the dump on disk. This computes the fingerprint from the file and writes the
-row itself:
-
-    python scripts/enrol_build.py --target totk --name 1.2.1 --nso <path>/main
-    python scripts/enrol_build.py --target botw --name v208  --rpx <path>/U-King.rpx
-
-THE SLICE IS READ FROM THE TARGET FILE, never restated here. If the host hashes
-0x600000 into read-only data for 4096 bytes, so does this - because it asks the
-same file the host was generated from. A tool that kept its own copy of those
-numbers would be a second place for them to drift.
-
-WHAT THIS DOES NOT DO is verify that the offline answer matches the runtime one.
-It cannot: that depends on the loader mapping the segment where this assumes it
-does. Run it once, boot the game once, and check the two numbers agree. After
-that it is mechanical - and --dry-run prints the fingerprint without writing, so
-the comparison costs nothing.
-"""
+"""Enrol a game build by fingerprinting its dump into targets/<name>.json."""
 
 import argparse
 import io
@@ -37,15 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def crc32(data):
-    """The host's Crc32, which is standard CRC-32.
-
-    include/wiixlaunch/loader/wxlm.hpp computes it a nibble at a time from a
-    16-entry table, which is the usual small-footprint form of the IEEE
-    polynomial 0xEDB88320 with the usual init and final xor. zlib is an
-    independent implementation of the same thing rather than a copy of that one,
-    and the check value below is the standard's, so a divergence would show up
-    here instead of as a fingerprint that never matches.
-    """
+    """Standard CRC-32 (IEEE polynomial 0xEDB88320)."""
     assert zlib.crc32(b"123456789") & 0xFFFFFFFF == 0xCBF43926, (
         "this zlib does not compute standard CRC-32")
     return zlib.crc32(data) & 0xFFFFFFFF
@@ -56,13 +24,7 @@ def crc32(data):
 # ---------------------------------------------------------------------------
 
 def lz4_block(src, out_size):
-    """LZ4 block decompression.
-
-    Written out rather than pulled in: the machine has no lz4 module, and the
-    format is a page of code. Token byte is literal length in the high nibble
-    and match length minus 4 in the low; a nibble of 15 continues in
-    0xFF-terminated bytes; then a little-endian 2-byte match offset.
-    """
+    """LZ4 block decompression."""
     dst = bytearray()
     i, n = 0, len(src)
     while i < n:
@@ -106,19 +68,7 @@ def lz4_block(src, out_size):
 
 
 def nso_build_id(path):
-    """The NSO's build id: 32 bytes of moduleId at 0x40, first 20 meaningful.
-
-    RECORDED AS EVIDENCE, not used as the identity. It cannot be the identity,
-    because it is not reachable at runtime - the header holding it is never
-    mapped and the mapped image carries no .note.gnu.build-id. But it is exactly
-    what a loader prints, so a row carrying one can be checked against a boot log
-    by anybody, later, without this tool or these files.
-
-    This exists because a name is not evidence. Eleven builds were enrolled from
-    the names of the folders they sat in, and one of those folders was wrong: the
-    directory called "130" holds 1.2.1, which was only caught by matching these
-    ids against the build ids Ryujinx printed for the update it loaded.
-    """
+    """Extract NSO build id (32 bytes moduleId at 0x40, first 20 bytes meaningful)."""
     with open(path, "rb") as f:
         head = f.read(0x60)
     if head[:4] != b"NSO0":
@@ -127,12 +77,7 @@ def nso_build_id(path):
 
 
 def nso_rodata(path):
-    """The decompressed .rodata segment of an NSO.
-
-    Segment 1 is read-only data, and the host hashes at an offset from where
-    that segment begins in memory - so an offset into these bytes is the same
-    offset the host uses, with no base to know.
-    """
+    """Extract decompressed .rodata segment of an NSO."""
     with open(path, "rb") as f:
         blob = f.read()
     if blob[:4] != b"NSO0":
@@ -161,11 +106,7 @@ SHF_RPL_ZLIB = 0x08000000
 
 
 def rpx_bytes_at(path, addr, length):
-    """`length` bytes at virtual address `addr`, out of an RPX.
-
-    An RPX is a big-endian ELF32 whose sections may be zlib-compressed, marked
-    by SHF_RPL_ZLIB and prefixed with a big-endian uncompressed size.
-    """
+    """Read `length` bytes at virtual address `addr` from an RPX ELF."""
     with open(path, "rb") as f:
         blob = f.read()
     if blob[:4] != b"\x7fELF":
@@ -181,12 +122,7 @@ def rpx_bytes_at(path, addr, length):
         if sh_addr == 0 or sh_size == 0:
             continue
 
-        # sh_size IS THE FILE SIZE, and for a compressed section that is not
-        # how much address space it covers. BotW's .rodata is 0x14DCAD bytes in
-        # the RPX and 0x462BBB in memory, so testing containment against
-        # sh_size rejects three quarters of the section - which is exactly how
-        # this announced itself: "no section contains 0x10200000", for an
-        # address sitting comfortably inside .rodata.
+        # For compressed sections, address space is given by uncompressed size.
         mem_size = sh_size
         if sh_flags & SHF_RPL_ZLIB:
             mem_size = struct.unpack_from(">I", blob, sh_off)[0]
@@ -268,11 +204,6 @@ def main():
         build_id = nso_build_id(args.nso)
 
     if args.fingerprint:
-        # NO DUMP, BUT A RUNNING GAME. The boot log prints the fingerprint of
-        # whatever is underneath, and that is a perfectly good source - it is
-        # the same number, measured at the other end. The blob checks below are
-        # skipped because there is nothing to inspect, so this is the one path
-        # that takes the caller's word for it.
         fp = num(args.fingerprint) & 0xFFFFFFFF
         blob = None
         where = "taken from a boot log, not computed"
@@ -298,8 +229,7 @@ def main():
     if build_id:
         print("[enrol] build id  %s" % build_id)
 
-    # A sanity note the caller can act on: read-only data that is all one byte
-    # is not identifying anything.
+    # Warn if rodata slice lacks entropy.
     if blob is not None and len(set(blob)) <= 2:
         print("[enrol] WARNING: that slice has %d distinct byte value(s). It "
               "will not distinguish builds - move the offset."
@@ -339,8 +269,6 @@ def main():
     row = {"name": args.name, "platform": platform,
            "fingerprint": "0x%08X" % fp}
     if build_id:
-        # The one field in here that can be checked against a boot log by
-        # somebody who has neither this tool nor the dump.
         row["build_id"] = build_id
     known.append(row)
     ident["known"] = known

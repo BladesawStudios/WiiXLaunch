@@ -48,9 +48,7 @@ def find_devkitppc_tool(name):
 def main():
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    # THE SAME RESOLVER THE BUILD USED. A deploy that picked its own config could
-    # package a TOTK payload into a BotW graphic pack and be entirely consistent
-    # with itself while doing it.
+    # Target configuration resolver.
     ap = argparse.ArgumentParser()
     ap.add_argument("--target", default=None,
                     help="host target name; targets/<name>.json")
@@ -69,18 +67,11 @@ def main():
     deploy_dir = os.path.join(root_dir, "deploy")
     switch_deploy_dir = os.path.join(deploy_dir, "switch", "atmosphere", "contents", switch_title_id, "exefs")
     wiiu_deploy_dir = os.path.join(deploy_dir, "wiiu", "wiiu", "environments", "aroma", "plugins")
-    # The pack folder is project.name, verbatim. This used to prepend
-    # "WiiXLaunch_", which meant the name in wiixlaunch.json was never the
-    # name on disk and the pack could not be called what you called it.
+    # Pack folder matches project name.
     cemu_deploy_dir = os.path.join(deploy_dir, "cemu", "graphicPacks", project_name)
 
     os.makedirs(switch_deploy_dir, exist_ok=True)
-    # A TARGET NEED NOT HAVE EVERY PLATFORM. There is no Wii U Tears of the
-    # Kingdom, so a TOTK host that produced an Aroma plugin and a Cemu graphic
-    # pack would be producing two things that cannot run, and the operator would
-    # have to know to ignore them. A section containing nothing but "//" notes
-    # declares nothing, which is how targets/totk.json says so out loud instead
-    # of by omission.
+    # Check if target platform section is declared.
     def declares(section):
         return any(not k.startswith("//") for k in config.get(section, {}))
 
@@ -128,29 +119,15 @@ def main():
     # deploy that ships no modules and a deploy that ships the wrong ones look
     # identical from inside the build.
     #
-    # sd:/WiiXLaunch/mods/ is the SD ROOT, not the exefs directory, so this sits
-    # beside atmosphere/ rather than under it: copy deploy/switch/ to the card
-    # and both land where they belong.
-    # PER TARGET, like the deploy. build/switch-mods was shared, so building
-    # one game's modules and deploying another's shipped the first game's -
-    # which is how a TOTK install ended up holding BotW's samples and none of
-    # its own mods, with the romfs still active.
+    # Target- and title-scoped switch mods directory.
     switch_mods_src = os.path.join(root_dir, "build", target_name, "switch-mods")
-    # PER TITLE. sd:/WiiXLaunch/mods is one directory for every game on the
-    # card - a graphic pack names its titleIds and a Wii U content folder
-    # belongs to its game, but an SD card has no such scoping, so two games'
-    # modules land together and each host is offered both. The host prefers
-    # this subdirectory and falls back to the flat one only when it is absent,
-    # so writing here is what opts a card in.
     switch_mods_dst = os.path.join(deploy_dir, "switch", "WiiXLaunch", "mods",
                                    switch_title_id)
     os.makedirs(switch_mods_dst, exist_ok=True)
     switch_modules = sorted(f for f in os.listdir(switch_mods_src)
                             if f.endswith(".wxlm")) if os.path.isdir(switch_mods_src) else []
 
-    # Same rule as the Cemu pack: a module that is no longer built must not
-    # survive in the deployed directory, because the loader enumerates whatever
-    # is there and would load it.
+    # Remove stale modules from deploy directory.
     switch_ids = {m[:-len(".wxlm")] for m in switch_modules}
     for old_name in sorted(os.listdir(switch_mods_dst)):
         old_path = os.path.join(switch_mods_dst, old_name)
@@ -424,42 +401,14 @@ version = 7
             #   just dead weight in a shared 4 MB code cave. Skip the file and
             #   say so.
             #
-            # This is stricter than the original skip either way: the old code
-            # emitted the table AND failed to patch it. Nothing now ships a
-            # table it cannot reach.
-            #
-            # THE UNDERLYING RULE, because it keeps coming up: anything
-            # referenced only from outside the compiler's view MUST be
-            # __attribute__((used)) - data or code, no distinction. GCC emits an
-            # inline definition only when a translation unit odr-uses it, and a
-            # reference the compiler cannot see does not count.
-            #
-            # It has now fired from both directions. A data global written by
-            # this script and read by a src/cemu/*.asm table
-            # (g_CemuMemShimTableOffset) was dropped and shipped unreachable -
-            # silent at runtime. An inline function whose only caller was a
-            # hand-written asm() block (WiiXLaunch_LoadPointProbe) was dropped
-            # and failed at link - loud. Same cause, opposite symptoms.
-            #
-            # `used` cannot rescue a header nobody included, which is why
-            # src/cemu/bootstrap.cpp includes the umbrella: the host's own
-            # translation unit is what guarantees the base globals exist at all.
+            # Symbols referenced only from assembly tables must be declared used.
             m = offset_symbol_re.search(asm_text)
             if m:
                 symbol_name = m.group(1)
                 symbol_addr = sym_dict.get(symbol_name)
 
                 if symbol_addr is None and is_module_asm:
-                    # Which module is this, and is it actually compiled in?
-                    #
-                    # The module declares WIIXL_DECLARE_MODULE(<name>) from its
-                    # umbrella header, which emits g_WiiXLaunchModule_<name>.
-                    # Present means some translation unit included that header,
-                    # so the module IS part of this build - and a missing shim
-                    # symbol is then a dropped global, not an unused module.
-                    #
-                    # Without this the two cases printed the same line and only
-                    # one of them was acceptable.
+                    # Check if module was compiled in via g_WiiXLaunchModule_<name>.
                     module_name = None
                     parts = rel_path.replace(chr(92), "/").split("/")
                     for part in parts:
@@ -651,35 +600,7 @@ version = 7
             f.write(cemu_asm_content)
         print(f"[Cemu] Generated Graphic Pack files -> {cemu_deploy_dir}")
 
-    # --- STAGE 1 SCAFFOLDING: the load-point probe's PACK test file ---
-    #
-    # WiiXLaunch::LoadPoint's PACK probe opens
-    # /vol/content/wiixlaunch/mods/probe.bin to find out whether Cemu's
-    # graphic-pack content/ overlay is live at the load point. Without this file
-    # the probe reports NOT-FOUND for the uninteresting reason that nothing ever
-    # shipped one, which answers nothing.
-    #
-    # CANONICAL CASE: content/WiiXLaunch/. Nothing else ships, and this is
-    # enforced below rather than left to convention.
-    #
-    # Wii U's filesystem is case-sensitive. The host filesystem this pack is
-    # BUILT on usually is not: on Windows/NTFS, asking for content/wiixlaunch/
-    # when content/WiiXLaunch/ already exists silently resolves to the existing
-    # directory, so a lower-case path in this script ships under the capitalised
-    # name anyway - and two directories differing only in case cannot coexist
-    # there at all. A boot on Windows therefore cannot tell you which spelling
-    # is correct; it resolves both. Linux Cemu will not.
-    #
-    # WiiXLaunch wins because it is what already ships: pack_resources.py writes
-    # content/WiiXLaunch/logo.bin, and GX2::LoadTexture("WiiXLaunch/logo.bin")
-    # and the docs all name it that way. Changing those to match a lower-case
-    # mods/ would be a bigger and more breakable change than picking the
-    # capitalisation already in use.
-    #
-    # The PACK-LC probe in load_point.hpp deliberately asks for the lower-case
-    # spelling. On a case-insensitive host it answers (NTFS resolving both); on
-    # a case-sensitive one it must report NOT-FOUND, which is the correct result
-    # and confirms this enforcement is doing something.
+    # Stage 1 load-point probe test file (content/WiiXLaunch/mods/probe.bin).
     WIIXL_CONTENT_DIR = "WiiXLaunch"
     probe_dir = os.path.join(cemu_deploy_dir, "content", WIIXL_CONTENT_DIR, "mods")
     os.makedirs(probe_dir, exist_ok=True)
@@ -693,15 +614,7 @@ version = 7
     print(f"[Cemu] Load-point probe file -> content/WiiXLaunch/mods/probe.bin "
           f"({len(probe_body)} bytes, magic {probe_magic.decode()})")
 
-    # Every module this build produced. Copied rather than generated:
-    # build_cemu.bat compiles and packs them, because the flags belong with the
-    # other compile flags.
-    #
-    # EVERY .wxlm in build/ is shipped, not a fixed list. The loader enumerates
-    # the directory and sorts lexically, so a stale module left in build/ would
-    # silently become part of the load order - which is exactly why the names
-    # are printed in sorted order below rather than just counted. What is listed
-    # here is what the loader will find, in the order it will find it.
+    # Copy all built .wxlm modules in lexical order.
     build_dir = os.path.join(root_dir, "build")
     modules = sorted(f for f in os.listdir(build_dir)
                      if f.endswith(".wxlm")) if os.path.isdir(build_dir) else []
@@ -720,17 +633,7 @@ version = 7
             shutil.copy2(src, os.path.join(probe_dir, name))
             print(f"[Cemu]   {i}. {name} ({os.path.getsize(src)} bytes)")
 
-        # --- per-module resource directories --------------------------------
-        #
-        # Each module gets mods/<id>/, so two mods shipping a file of the same
-        # name are shipping two different files. Before this it was a collision
-        # resolved by whichever the filesystem answered first - silent and
-        # order-dependent, which is the class of ambiguity this project keeps
-        # removing.
-        #
-        # build_cemu stages each module's data under build/moddata/<id>/,
-        # because the id-to-source-directory mapping already lives there and
-        # duplicating it here would be a second place to get it wrong.
+        # Per-module resource directories (mods/<id>/).
         moddata = os.path.join(build_dir, "moddata")
         if os.path.isdir(moddata):
             for mod_id in sorted(os.listdir(moddata)):
@@ -750,26 +653,13 @@ version = 7
 
     # Package src/resources into content/WiiXLaunch/ for Cemu graphic pack
     resources_src = os.path.join(root_dir, "src", "resources")
-    # The host's own resources go under the RESERVED id, not beside the mods
-    # directory. WiiXLaunch/logo.bin was the one thing exempt from the scheme,
-    # and an exception is how someone later concludes the scheme is optional.
-    #
-    # "_host" is reserved by prefix: the loader refuses any module id beginning
-    # with '_', so a mod cannot claim this directory or shadow what is in it.
-    # See ModFS::kHostId.
     resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch",
                                  "mods", "_host")
     if os.path.exists(resources_src):
         pack_script = os.path.join(root_dir, "scripts", "pack_resources.py")
         subprocess.run([sys.executable, pack_script, resources_src, resources_dst], check=True)
 
-        # Host resources used to be written to content/WiiXLaunch/ directly.
-        # A pack built before they moved still has them there, and a leftover
-        # copy makes the namespacing scheme LOOK like it still has an exception
-        # - which is exactly the conclusion the move was meant to prevent.
-        #
-        # Only files that now exist under _host are removed, so this can never
-        # delete something that merely happens to live in content/WiiXLaunch.
+        # Clean up legacy un-namespaced host resources.
         legacy_dir = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")
         for name in sorted(os.listdir(resources_dst)):
             stale = os.path.join(legacy_dir, name)
@@ -778,13 +668,7 @@ version = 7
                 print(f"[Cemu] Removed {name} from the pre-namespacing location; "
                       f"it lives under mods/_host/ now")
 
-    # Enforce the canonical capitalisation on the tree that actually ships.
-    #
-    # A case-insensitive build host will happily produce content/wiixlaunch/ or
-    # content/WIIXLAUNCH/ if some path string drifts, and nothing on Windows
-    # will ever complain - the mistake only surfaces on a real Wii U or on Linux
-    # Cemu, as a mod that silently is not found. Checking the emitted names here
-    # is the only place it can be caught on the machine that built it.
+    # Enforce canonical path casing (case-sensitive on target consoles/Linux).
     content_root = os.path.join(cemu_deploy_dir, "content")
     if os.path.isdir(content_root):
         for entry in os.listdir(content_root):

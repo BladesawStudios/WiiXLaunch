@@ -1,30 +1,13 @@
 #!/usr/bin/env python3
-"""Builds a .wxlm module from a source directory, in or out of this tree.
+"""Builds a .wxlm module from a source directory.
 
+Usage:
     python scripts/build_mod.py --source examples/hook_mod_a --id a_first
     python scripts/build_mod.py --source . --id botw_api --wiixlaunch ../WiiXLaunch
 
-THIS IS THE ONLY DEFINITION OF HOW A MODULE IS BUILT. build_cemu calls it for
-the in-tree samples and an external project calls it for its own, so the flags,
-the linker script and the packing step cannot drift between them.
-
-That mattered enough to write down: the flags are not obvious and getting one
-wrong fails in ways that do not look like a flag problem. -fno-pie/-fno-pic
-because this toolchain emits GOT-indirect addressing under -fPIE that the
-relocator does not handle; -nostdlib with -lgcc anyway because GCC emits calls
-to libgcc's PowerPC register save/restore helpers and wxlm.py rejects a module
-with undefined symbols; --unresolved-symbols=ignore-all because a module's
-imports are DELIBERATELY undefined and are resolved at load through the surface
-registry. A second copy of that list would eventually disagree with this one,
-and the disagreement would show up as a module that loads and misbehaves.
-
-WHAT A MODULE SOURCE DIRECTORY LOOKS LIKE:
-
-    <source>/mod.cpp     the module (required; --entry-file to rename)
-    <source>/data/       optional; deployed to mods/<id>/ on the target
-
-The output is <out>/<id>.wxlm plus <out>/moddata/<id>/ for the resources, which
-is the layout scripts/deploy.py expects.
+Expected module source directory layout:
+    <source>/mod.cpp     module entry (required; --entry-file to rename)
+    <source>/data/       optional; deployed to mods/<id>/ on target
 """
 
 import argparse
@@ -38,14 +21,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_ROOT = os.path.dirname(HERE)
 
-
-# Everything that differs between the two architectures a .wxlm can be built
-# for, in one place. A mod's SOURCE does not change between them - it names
-# surfaces, not platforms - so this is the whole of the difference.
-#
-# -msdata=none is PowerPC-only and is not merely unnecessary on aarch64, it is
-# rejected. That is the shape of most of this table: not a preference, a fact
-# about the toolchain.
+# Target platform architecture and toolchain definitions.
 TARGETS = {
     "cemu": {
         "machine":  "ppc32",
@@ -65,25 +41,13 @@ TARGETS = {
         "prefix":   "aarch64-none-elf-",
         "linker":   "wxlm_mod_aarch64.ld",
         "defines":  ["__SWITCH__=1", "WIIXL_SWITCH=1"],
-        # Small code model: adrp+add reaches +/-4 GB, which is more than a
-        # module and its own data will ever span, and it is what keeps the
-        # relocation set down to one absolute kind.
         "arch":     ["-mcmodel=small"],
         "toolchain": "devkitA64",
-        # NOT "switch". In this repository build/switch/ is the HOST's - it is
-        # where build_switch.bat writes subsdk9 and main.npdm and where
-        # deploy.py reads them from - and a mod build with no --out lands in
-        # build/ too. They cannot actually clobber each other, since the host's
-        # files have fixed names and a mod's are <id>.elf/<id>.wxlm, but one
-        # directory holding both is how you end up staring at a folder
-        # wondering which half of it you just built.
         "subdir":   "switch-mods",
     },
 }
 
-# Wii U is absent on purpose rather than by oversight: it is the same PowerPC
-# module the Cemu target produces, byte for byte, because a .wxlm names surfaces
-# and neither the code nor the format knows which of the two is running it.
+# Wii U runs the same PowerPC module as Cemu.
 
 
 def find_gxx(target):
@@ -163,20 +127,9 @@ def read_manifest(source):
 
 
 # --- editor integration -----------------------------------------------------
-#
-# A mod is a folder somewhere with no build system in it, which is fine for the
-# compiler and useless for an editor: nothing tells clangd or the VS Code C/C++
-# extension where <wiixlaunch/imports/...> lives, what the target is, or which
-# macros are set, so every include is red and no symbol resolves.
-#
-# The build already knows all of it - it constructs the exact command. So it
-# writes that command out in the two formats editors read, every time it runs.
-# No configuration to keep in sync, because the thing being written IS the
-# command that just compiled.
 def write_ide_files(source, cmd, mod_cpp, includes, gxx):
     """compile_commands.json for clangd, c_cpp_properties.json for VS Code."""
-    # compile_commands.json: the compile step only. The link flags in `cmd` are
-    # not something an indexer should see, and -T/-nostdlib confuse some of them.
+    # Strip link flags before emitting compile commands for indexers.
     compile_only = [a for a in cmd
                     if a not in ("-nostartfiles", "-nostdlib", "-Wl,-q",
                                  "-Wl,--unresolved-symbols=ignore-all", "-lgcc")]
@@ -295,10 +248,7 @@ def main():
                     help="bytes this module requires; omitted means best effort")
     ap.add_argument("--include", action="append", default=[],
                     help="extra include directory; repeatable")
-    # Required surfaces are DERIVED from the imports at v1.0, which is right
-    # almost always. This is for the case it is not: a symbol that only exists
-    # from a later minor, where resolving against an older host would leave the
-    # mod running with a call it cannot make. Repeatable, <surface>@<major>.<minor>.
+    # Overrides derived v1.0 floor when a symbol requires a later minor version.
     ap.add_argument("--require", dest="requires", action="append", default=[],
                     help="require a surface at a minimum version, e.g. botw.map@1.1")
     ap.add_argument("--init", metavar="DIR",
@@ -315,17 +265,7 @@ def main():
     root = os.path.abspath(args.wiixlaunch)
     source = os.path.abspath(args.source)
 
-    # Where output goes when nobody says.
-    #
-    # In the framework tree that is <root>/build, because deploy.py collects
-    # from there and the in-tree samples are part of the host's own build.
-    #
-    # From an SDK it is <mod>/build instead. An SDK is somebody's installed
-    # toolchain, not their workspace: writing their module into it would put
-    # build artifacts inside the thing they downloaded, and leave the answer to
-    # "where did my .wxlm go" somewhere they have no reason to look. sdk.json is
-    # only ever written by make_sdk.py, so its presence is what distinguishes
-    # the two.
+    # In framework tree: default to <root>/build. In an SDK: default to <mod>/build.
     if args.out:
         out = os.path.abspath(args.out)
     elif os.path.exists(os.path.join(root, "sdk.json")):
@@ -337,9 +277,7 @@ def main():
     if manifest is None:
         return 1
 
-    # The command line wins, so a one-off build can override without editing the
-    # mod - but it says which value came from where, because a flag silently
-    # shadowing a manifest is how you debug the wrong file for twenty minutes.
+    # CLI flags override manifest values.
     def settle(flag_value, key, default):
         if flag_value is not None:
             if key in manifest and str(manifest[key]) != str(flag_value):
@@ -358,13 +296,8 @@ def main():
             % (target, "".join("    %-8s %s\n" % (k, v["toolchain"])
                                for k, v in sorted(TARGETS.items()))))
         return 1
-    # Lists ACCUMULATE rather than override: a manifest listing what the mod
-    # needs and a command line adding one more are not in conflict.
+    # Accumulate list values from manifest and CLI.
     includes_cfg = list(manifest.get("include", [])) + list(args.include)
-    # A mod of any size has more than one .cpp. This built exactly the entry
-    # file until a 2,000-line mod arrived in two translation units, linked
-    # cleanly because imports are allowed to stay undefined, and packed a call
-    # to a function that was never compiled.
     sources_cfg = list(manifest.get("sources", []))
     requires_cfg = list(manifest.get("require", [])) + list(args.requires)
 
@@ -378,9 +311,7 @@ def main():
               (MANIFEST, mod_id, phase,
                ", %d required surface(s)" % len(requires_cfg) if requires_cfg else ""))
 
-    # A module id is what its resource directory is named, so the loader's rule
-    # about the reserved namespace applies here too - and finding out at build
-    # time costs a script run rather than a boot that refuses the module.
+    # Ids beginning with '_' are reserved for the host (e.g. mods/_host/).
     if mod_id.startswith("_"):
         sys.stderr.write(
             "[build_mod] '%s' is in the host's reserved id space.\n"
@@ -425,9 +356,6 @@ def main():
             % (tcfg["prefix"], tcfg["env"], tcfg["toolchain"]))
         return 1
 
-    # Each target gets its own output directory. The FILENAME stays <id>.wxlm on
-    # both, because that is the name the module is deployed under wherever it
-    # ends up - and because a Switch module and a Cemu one are the same mod.
     if tcfg["subdir"]:
         out = os.path.join(out, tcfg["subdir"])
     os.makedirs(out, exist_ok=True)
@@ -435,26 +363,15 @@ def main():
     wxlm = os.path.join(out, mod_id + ".wxlm")
 
     includes = [os.path.join(root, "include")]
-    # A module may sit next to headers of its own.
     if os.path.isdir(os.path.join(source, "include")):
         includes.append(os.path.join(source, "include"))
-    # A manifest's include path is relative to the MOD, not to the shell's
-    # working directory - the manifest travels with the mod and the cwd does not.
+    # Manifest include paths are relative to the mod directory.
     includes += [i if os.path.isabs(i) else os.path.join(source, i)
                  for i in includes_cfg]
 
     cmd = [gxx,
            "-std=gnu++20", "-fno-pie", "-fno-pic", "-Os",
            "-ffreestanding", "-fno-exceptions", "-fno-rtti",
-           # WARNINGS, which this compiled without entirely until a real bug
-           # walked past every one of them: the BotW API server had
-           #     if (IsWrite(req)) { ... } else if (IsWrite(req)) { ... }
-           # so the second arm was unreachable and three of its routes had
-           # never once run. -Wduplicated-cond names that exact shape.
-           #
-           # Warnings, not errors. A mod is somebody else's code and failing
-           # their build over style is not this tool's business - but saying
-           # nothing at all was not either.
            "-Wall", "-Wextra", "-Wduplicated-cond", "-Wduplicated-branches",
            "-Wno-unused-parameter", "-Wno-unused-function"]
     cmd += tcfg["arch"]
@@ -465,8 +382,7 @@ def main():
             "-Wl,--unresolved-symbols=ignore-all",
             mod_cpp] + extra_cpp + ["-lgcc", "-o", elf]
 
-    # Before compiling, so the editor is configured even if the code does not
-    # build yet - which is exactly when you most want the editor working.
+    # Configure editor files before compile so IDE works even if build fails.
     write_ide_files(source, cmd, mod_cpp, includes, gxx)
 
     r = subprocess.run(cmd)
@@ -484,14 +400,9 @@ def main():
     if r.returncode != 0:
         return 1
 
-    # The path, because it is not always where you would guess: a target with
-    # its own subdirectory puts it one level down, and the output above names
-    # the file without saying where it landed.
     print("[build_mod] %s" % wxlm)
 
-    # Resources, staged where deploy.py looks for them. Cleared first: a
-    # directory left from a renamed or removed file would otherwise ship
-    # forever, which is the same staleness deploy.py guards against for .wxlm.
+    # Stage resources where deploy.py looks for them.
     data_src = os.path.join(source, "data")
     staged = os.path.join(out, "moddata", mod_id)
     if os.path.isdir(staged):
@@ -499,11 +410,6 @@ def main():
     if os.path.isdir(data_src):
         shutil.copytree(data_src, staged)
         files = sum(len(f) for _r, _d, f in os.walk(staged))
-        # mod_id, not args.id - which is None unless --id was passed on the
-        # command line, and it usually is not: the id comes from mod.json.
-        # The PATH above always used mod_id, so the files went to the right
-        # place and only the line saying so was wrong. It read
-        # "None: staged 1 resource file(s) for mods/None/" on every build.
         print("[build_mod] %s: staged %d resource file(s) for mods/%s/"
               % (mod_id, files, mod_id))
 

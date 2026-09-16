@@ -1,9 +1,4 @@
-// Checks mod_math.h against libm on the host.
-//
-// A module cannot call libm, so these are approximations - but "approximate"
-// has to mean a number, not a hope. This sweeps the ranges a mod actually uses
-// and asserts the bound the header promises. It runs natively because that is
-// where a correct answer to compare against exists.
+// Host-side verification of mod_math.h approximations against libm reference values.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -14,9 +9,7 @@
 static int g_Fail = 0;
 static int g_Checks = 0;
 
-// The worst error seen, per name. The bound in mod_math.h has to be a measured
-// number rather than a guess, and the only way to write one down honestly is to
-// have the sweep report what it actually reached.
+// Tracks worst-case observed error across test sweeps.
 struct Worst { const char* what; double err; };
 static Worst g_Worst[8] = {};
 
@@ -43,13 +36,9 @@ static void Check(const char* what, double got, double want, double tol, bool re
 }
 
 int main() {
-    // COMPARE AT THE SAME INPUT. The first version of this swept a double and
-    // passed (float)x to us and x to libm, so every failure it reported was the
-    // float cast, not the approximation: at 100 radians an angle rounds by up
-    // to 3.8e-6, and sin moves by that much whoever computes it. The reference
-    // therefore takes the float too, widened back - which is exact.
+    // Reference libm calls use widened float input to test approximation rather than precision cast.
 
-    // sqrt: every magnitude a game coordinate or a squared distance reaches.
+    // Sqrt across range 1e-6 to 1e9.
     for (double xd = 1e-6; xd < 1e9; xd *= 1.7) {
         const float x = (float)xd;
         Check("sqrt", WiiXLaunch::ModMath::Sqrt(x), std::sqrt((double)x), 1e-7, true);
@@ -57,17 +46,14 @@ int main() {
     Check("sqrt(0)", WiiXLaunch::ModMath::Sqrt(0.0f), 0.0, 0.0, false);
     Check("sqrt(-1) is 0", WiiXLaunch::ModMath::Sqrt(-1.0f), 0.0, 0.0, false);
 
-    // sin/cos across +/- 100 radians: a camera yaw accumulates without being
-    // wrapped, so the reduction matters as much as the series.
+    // Sin/cos sweep across +/- 100 radians.
     for (double ad = -100.0; ad <= 100.0; ad += 0.00037) {
         const float a = (float)ad;
         Check("sin", WiiXLaunch::ModMath::Sin(a), std::sin((double)a), 3e-7, false);
         Check("cos", WiiXLaunch::ModMath::Cos(a), std::cos((double)a), 3e-7, false);
     }
 
-    // Printed whether or not anything failed: these are the numbers the header
-    // quotes, and a bound is only honest if the thing it bounds is visible next
-    // to it. Tighten them if a change here improves on them.
+    // Report observed worst-case errors.
     for (int i = 0; i < 8 && g_Worst[i].what; ++i)
         std::printf("[mathtest] worst %-14s %.3g\n", g_Worst[i].what, g_Worst[i].err);
     std::printf("[mathtest] %d checks, %d failures\n", g_Checks, g_Fail);

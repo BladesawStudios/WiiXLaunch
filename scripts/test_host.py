@@ -1,22 +1,7 @@
 #!/usr/bin/env python3
-"""Host-completeness check: is the host still a host without src/main.cpp?
-
-From stage 4 onward main.cpp is a .wxlm like any other mod, so nothing the host
-needs may depend on it. This asserts that mechanically, against an ELF the build
-scripts link from an EMPTY main.cpp.
-
-It exists because the manual version of this test found two real latent
-dependencies that had been satisfied only because main.cpp happened to include
-the right headers: the link failed on g_CemuRelocTableOffset without an explicit
-wiixl_cemu_backend.hpp include, and the deploy failed on g_CemuFsShimTableOffset
-without the umbrella. Both are the same shape - an `inline` global that exists
-only if some translation unit included its header - and that shape is invisible
-until something forces the issue. This is the thing that forces it.
+"""Host-completeness check: verify host ELF is complete without src/main.cpp.
 
 Usage:  python scripts/test_host.py <path-to-host-test-elf>
-
-The build scripts do the compiling, since they own the flags and duplicating
-them here would drift. This only inspects the result.
 """
 
 import os
@@ -54,8 +39,7 @@ def read_symbols(readelf, elf):
     return syms
 
 
-# Everything the host must contain on its own. Each entry is
-# (symbol, why it has to be there, must_be_at_zero).
+# Required host symbols: (symbol, description, must_be_at_zero).
 REQUIRED = [
     ("WiiXLaunch_Cemu_Init", "the entry-hook stub the pack branches to", True),
     ("__wiixl_bootstrap_start", "deploy.py's relocation skip range", False),
@@ -66,9 +50,6 @@ REQUIRED = [
     ("g_CemuRelocTableOffset", "patched by deploy.py, loaded by the bootstrap asm", False),
     ("g_CemuRelocCount", "patched by deploy.py, loaded by the bootstrap asm", False),
     ("g_CemuHeapOffset", "patched by deploy.py; the heap starts there", False),
-    # The four base shim tables. Each is spliced into the codecave
-    # unconditionally, so each must have a symbol for deploy.py to patch or the
-    # table ships unreachable.
     ("g_CemuFsShimTableOffset", "coreinit FS shims - the loader reads modules through them", False),
     ("g_CemuLoggingShimTableOffset", "coreinit OSReport shims - the log itself", False),
     ("g_CemuMemShimTableOffset", "coreinit memory shims", False),
@@ -88,10 +69,6 @@ def main():
 
     readelf = find_readelf()
     if readelf is None:
-        # NO GATE EXITS 0 ON A MISSING INPUT. This used to print SKIPPED and
-        # return 0, which is a check that quietly ceases to exist on a machine
-        # without the tool while the build still says OK. "Skipped" is a state
-        # that has to be seen, and the only way to guarantee that is to fail.
         sys.stderr.write(
             "\n"
             "============================================================\n"
@@ -105,11 +82,6 @@ def main():
 
     syms = read_symbols(readelf, elf)
 
-    # readelf ran but told us nothing - a changed output format, a stripped
-    # binary, a wrapper that swallowed the arguments. Without this the loop
-    # below would report every symbol missing, which reads as a code problem
-    # rather than a tooling one, or - if the required list were ever emptied -
-    # would pass having inspected an empty dict.
     if len(syms) < len(REQUIRED):
         sys.stderr.write(
             "\n[test_host] readelf returned %d symbols for %s, fewer than the %d this\n"
@@ -138,9 +110,6 @@ def main():
                 "           .text.WiiXLaunch_Cemu_Init first."
                 % (name, addr))
 
-    # The weak default must be what an empty main.cpp resolves to. A GLOBAL bind
-    # here would mean something else defined WiiXLaunch_Init strongly, which for
-    # this ELF means the test compiled the wrong sources.
     if "WiiXLaunch_Init" in syms and syms["WiiXLaunch_Init"][2] != "WEAK":
         failures.append(
             "  UNEXPECTED WiiXLaunch_Init is %s, expected WEAK\n"
@@ -157,8 +126,6 @@ def main():
             "  come from it. See docs/framework/loader.md.\n\n")
         return 1
 
-    # Say WHAT was checked, not just that it passed. A count that can visibly
-    # drop to zero is a liveness assertion costing one line.
     print("[test_host] Host is complete without main.cpp "
           "(%d required symbols checked against %d in the ELF, %d pinned to address 0, "
           "WiiXLaunch_Init confirmed WEAK)"

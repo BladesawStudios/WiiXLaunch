@@ -1,35 +1,5 @@
 #!/usr/bin/env python3
-"""Asserts every build gate is actually WIRED IN and that its result is checked.
-
-This is the fourth rule (docs/framework/modules.md) applied to the build scripts:
-
-    Every check must be able to fail. Where a check could pass because the
-    thing it watches never ran, pair it with a positive assertion that the
-    thing DID run.
-
-Each gate now self-checks its own liveness - test_wxlm asserts it parsed a
-non-zero number of static_asserts, loader_fuzz asserts a case-count floor and
-that both halves of its containment property ran, format_test asserts a check
-floor, test_host asserts readelf returned symbols. A gate that self-checks does
-not need a second gate watching it, and that is the right shape: we have now
-seen that a watcher is exactly as disarmable as the watched.
-
-But there is one thing a gate CANNOT detect about itself: whether anything
-invokes it. That is not a hypothetical. `tools/format_test` was written on
-2026-09-03 in commit 73596ed, specifically so the WIIXL_LOG formatter would have
-a real test - and no build script referenced it until 2026-09-04. It passed
-every time it was run by hand and had never once run as part of a build. A gate
-nothing calls is the limit case: it cannot fail, because it cannot execute.
-
-So this file checks exactly the two properties a gate cannot check about itself:
-
-  1. Every gate is invoked by every build script that should invoke it.
-  2. That invocation's exit code is tested, so a failing gate fails the build.
-
-Nothing else belongs here. Anything a gate can assert about itself, it should.
-
-Run by the build; no arguments. Exit 0 means every gate is wired and guarded.
-"""
+"""Asserts every build gate is wired into test runners and checked for failure."""
 
 import os
 import re
@@ -39,18 +9,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 # (script, [(gate token that must appear, human name)])
-#
-# ONE PLACE, BECAUSE VERIFYING IS NOT BUILDING.
-#
-# These gates used to be spread across build_cemu and build_switch, which made
-# "build a host" and "verify the tree" the same command: you could not have
-# either without the other, and a build script also deployed, so the only way to
-# run the gates was to publish a host. The build scripts build one host for one
-# game now and nothing else. Everything below moved to test.bat / test.sh.
-#
-# The audit itself did not change shape, and this is exactly the moment it is
-# for: gates being moved between files is precisely when one gets dropped and
-# nothing notices.
 WIRING = [
     ("test.bat", [
         ("test_host.py",            "test_host"),
@@ -90,12 +48,7 @@ WIRING = [
     ]),
 ]
 
-# Gates whose scripts must exist at all. A path that silently stops existing is
-# the same failure one directory up.
-# Floors on this file's OWN numbers. It reports three counts and floored none of
-# them: deleting a row from WIRING would have dropped the count and still
-# printed success. A gate that checks other gates for liveness and has none of
-# its own is the joke writing itself.
+# Minimum count floors to guard against accidental deletion of entries.
 EXPECTED_MIN_INVOCATIONS = 35
 EXPECTED_MIN_SCRIPTS = 32
 
@@ -136,13 +89,7 @@ MUST_EXIST = [
 
 
 def code_lines(text, comment):
-    """Lines with the comment lines removed, paired with their index.
-
-    Comments must not count as invocations. This checker got that wrong on its
-    first run: its own explanatory comment in build_cemu.bat mentioned
-    scripts/audit_gates.py, so the file appeared to invoke a gate it did not
-    call. A substring search over a whole file finds prose as readily as code.
-    """
+    """Lines with comment lines removed, paired with their index."""
     out = []
     for i, line in enumerate(text.replace("\r\n", "\n").split("\n")):
         if line.strip().startswith(comment):
@@ -156,22 +103,12 @@ def invokes(text, token, comment):
 
 
 def guarded_bat(text, token):
-    """Is the line invoking `token` followed by an errorlevel test?
-
-    cmd has no `set -e`; a gate whose exit code nobody reads is wired in and
-    still cannot fail the build.
-    """
+    """Check if the line invoking `token` is followed by an errorlevel check."""
     lines = text.replace("\r\n", "\n").split("\n")
     for i, line in code_lines(text, "::"):
         if token.lower() not in line.lower():
             continue
         for follow in lines[i + 1:i + 6]:
-            # Both cmd idioms count. "if errorlevel N" means "errorlevel >= N",
-            # which is FALSE for the negative value a crashing process leaves -
-            # so the codebase moved to an explicit NEQ 0 test. This recognises
-            # the old form too, because a guard that only knows one spelling
-            # reports a guarded gate as unguarded, which is what it did the
-            # moment the sweep landed.
             if re.search(r"if\s+errorlevel\s+[12]", follow, re.I):
                 return True
             if re.search(r"if\s+%ERRORLEVEL%\s+NEQ\s+0", follow, re.I):
@@ -181,19 +118,7 @@ def guarded_bat(text, token):
 
 
 def guarded_sh(text, token):
-    """Bash builds run under `set -e`, so a bare invocation already aborts.
-
-    An invocation inside a `set +e` region must test the captured status
-    instead.
-
-    This tracks the actual errexit state by scanning from the top of the file,
-    rather than looking for "set +e" inside a window around the invocation. Two
-    window sizes were tried and both were wrong in opposite directions: a small
-    one could not see loader_fuzz's `exit 1` ten lines below its banner and
-    reported a false failure; a large one saw loader_fuzz's `set +e` from
-    test_wxlm six lines above and reported a different false failure. A window
-    approximates the property; the state IS the property.
-    """
+    """Check if token invocation is guarded by errexit or explicit status check."""
     lines = text.replace("\r\n", "\n").split("\n")
     code = dict(code_lines(text, "#"))
 
@@ -207,9 +132,7 @@ def guarded_sh(text, token):
                 errexit = False
             elif token in code[i]:
                 if errexit:
-                    return True              # a failure aborts the script
-                # errexit is off here, so the status has to be captured and
-                # acted on explicitly. Look forward to the matching `set -e`.
+                    return True
                 rest = []
                 for j in range(i + 1, len(lines)):
                     rest.append(lines[j])
@@ -283,10 +206,7 @@ def main():
                     "           A gate that cannot fail the build is decoration."
                     % (script, human))
 
-    # A build script that calls other build scripts has to reach them. See
-    # CALLERS: a bare name is resolved through cmd's current-directory search,
-    # which is off on some machines, and the script then fails before running
-    # anything at all.
+    # Ensure scripts invoked by caller scripts are referenced with %~dp0 paths.
     for script, expected in CALLERS:
         path = os.path.join(ROOT, script)
         if not os.path.exists(path):
@@ -311,8 +231,6 @@ def main():
             else:
                 checked_guards += 1
 
-    # The split, not just the sum: every invocation found must also be guarded,
-    # and the tables must not have shrunk.
     if checked_invocations < EXPECTED_MIN_INVOCATIONS:
         failures.append(
             "  only %d gate invocations were checked, expected at least %d - the\n"

@@ -1,32 +1,10 @@
 #!/usr/bin/env python3
-"""Parsing PowerPC relocations out of readelf, for the host and for modules.
-
-ONE implementation, imported by both scripts/deploy.py (the host payload) and
-scripts/wxlm.py (.wxlm modules), because they are the same problem and a second
-implementation is a second thing to get wrong.
-
-It was already gotten wrong once, in exactly the way duplication invites.
-wxlm.py said in its own comments that it reused deploy.py's logic; it did not,
-it reimplemented it, and it dropped the ADDEND. Every R_PPC_ADDR16_HA/LO pair
-then resolved to its section's base address instead of the symbol it named, so
-in the first module ever loaded every string literal pointed at the first string
-in .rodata - the module ran, called its logger six times, and printed the same
-line five times over. Nothing crashed. The count was right. Only the content was
-wrong, which is the hardest kind of failure to see.
-
-WHY THE HALVES CARRY S+A RATHER THAN BEING PATCHED IN PLACE. An R_PPC_ADDR32
-site already holds its own base-0 target, so the value can be read back out of
-the payload and rebased. A 16-bit half cannot: it is half an address, and HA
-additionally folds in a sign-extension carry from the low half. So each half
-entry carries the relocation's own fully-resolved S+Addend, and the target is
-recomputed from scratch at load time against S+Addend+base.
-"""
+"""Parsing PowerPC relocations out of readelf, for the host and modules."""
 
 import re
 import subprocess
 
-# The relocation kinds that become runtime fixups, and the kind code each maps
-# to in the (kind << 24 | offset, value) encoding both emitters produce.
+# Relocation fixup kinds: (kind << 24 | offset, value).
 KIND_ADDR32 = 0
 KIND_HA = 1
 KIND_HI = 2
@@ -73,13 +51,7 @@ class Reloc:
 
 
 def read(readelf_cmd, elf_path, skip_debug=True):
-    """Every relocation in `elf_path` that could become a runtime fixup.
-
-    Debug sections are skipped by default. They carry R_PPC_ADDR32 relocations
-    whose offsets are relative to the debug section, not the flat binary, so
-    applying them corrupts arbitrary words of the payload - which happened once,
-    and the resulting garbage jump crashed Cemu's recompiler at boot.
-    """
+    """Every relocation in `elf_path` that could become a runtime fixup."""
     out = subprocess.check_output([readelf_cmd, "-rW", elf_path], text=True)
     relocs = []
     section = ""
@@ -115,8 +87,7 @@ def read(readelf_cmd, elf_path, skip_debug=True):
                 sym_value = 0
         if len(parts) >= 5:
             sym_name = parts[4]
-            # "Sym.Name + Addend" (or "- Addend"): the addend is the last token,
-            # and dropping it is the bug this module exists to prevent.
+            # "Sym.Name + Addend" (or "- Addend").
             if len(parts) >= 6 and parts[-2] in ("+", "-"):
                 sign = -1 if parts[-2] == "-" else 1
                 try:

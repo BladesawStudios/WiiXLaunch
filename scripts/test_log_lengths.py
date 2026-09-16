@@ -1,28 +1,5 @@
 #!/usr/bin/env python3
-"""Refuses a WIIXL_LOG whose format string alone exceeds the per-line cap.
-
-WIIXL_LOG truncates at kMaxLogTextLen (200) and used to do it silently, so a
-message that ran over simply stopped mid-sentence and read like a message that
-ended there. For a diagnostic that is the worst possible failure mode, because
-the half that gets discarded is the half saying what to do about it. A boot cut
-two patch refusals off at "not the game; the" and "would corrupt a func", and
-neither line looked truncated.
-
-Four messages were over the cap when this was written - two added that same day,
-and two older ones including the PC-relative prologue refusal, which had never
-been SEEN truncated only because that path is not taken on a normal boot. It
-would have been, the first time it mattered.
-
-THIS IS A LOWER BOUND, deliberately and unavoidably. The format string is the
-shortest the output can be: every %u, %p and %02X expands to something at least
-as long as the specifier it replaces, and a single %s can be arbitrarily long.
-So a literal already over the cap is GUARANTEED to truncate, but staying under
-it guarantees nothing. That is why include/wiixlaunch/debug_log.hpp also marks a
-truncated line with [..CUT] at runtime - this gate catches what can be known at
-build time, and the marker catches everything else where it happens.
-
-Run by the build; no arguments.
-"""
+"""Check that WIIXL_LOG format strings do not exceed the per-line cap (kMaxLogTextLen = 200)."""
 
 import io
 import os
@@ -34,9 +11,7 @@ CAP = 200
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(HERE)
 
-# A floor, so a scan that stops finding calls fails instead of passing over
-# nothing. Fourth rule in docs/framework/modules.md: a checker that examines zero things
-# reports success exactly like one that examined everything.
+# Minimum call floor to guard against broken scanning.
 EXPECTED_MIN_CALLS = 150
 
 SKIP_DIRS = (".git", os.sep + "build", os.sep + "deploy", "__pycache__")
@@ -46,11 +21,7 @@ CALL = re.compile(r"WIIXL_LOG\s*\(")
 
 
 def format_string_of(call_text):
-    """The leading run of adjacent string literals - the format string.
-
-    Adjacent literals are concatenated by the compiler, which is how every
-    message here is written; the run ends at the first comma outside a literal.
-    """
+    """Concatenate leading adjacent string literals in call_text."""
     parts = []
     pos = 0
     while True:

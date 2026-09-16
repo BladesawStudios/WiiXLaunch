@@ -1,21 +1,6 @@
-// Host-side tests for the central hook manager.
-//
-// WHAT THIS CAN AND CANNOT PROVE, said plainly, because the difference matters.
-//
-// It CANNOT execute PowerPC. It does not prove the chain runs; the boot log
-// does that. What it proves is that the manager CONSTRUCTED the chain
-// correctly - that every jump it emitted decodes to the address it should, that
-// the real prologue was captured exactly once and byte-for-byte, and that call
-// order is what was specified. That is the "correct by construction, not by
-// luck" half, and it is checkable natively by decoding instructions.
-//
-// The old chaining could not have been tested this way at all, because it had
-// no model to check: whether it worked depended on what bytes happened to be at
-// the target when the second hook installed.
-//
-// Every assertion decodes real emitted instructions. Nothing here reads the
-// manager's bookkeeping and calls that agreement - the bookkeeping is the thing
-// under test.
+// Host-side tests for central hook manager.
+// Decodes emitted instructions to verify chain construction, prologue capture,
+// and dispatch order without requiring PowerPC execution.
 
 #include <cstdio>
 #include <cstring>
@@ -33,8 +18,7 @@ namespace MC = WiiXLaunch::ModContext;
 static int g_checks = 0;
 static int g_failures = 0;
 
-// A floor, so a suite that shrinks cannot report success over what is left of
-// itself. See the fourth rule in docs/framework/modules.md.
+// Minimum check count floor.
 static const int kExpectedChecks = 90;
 
 // Section bookkeeping: how many checks each block contributed.
@@ -78,13 +62,10 @@ static void eq_addr(const char* what, uintptr_t got, uintptr_t want) {
     }
 }
 
-// A stand-in for a game function. 64-bit hosts hand out addresses far above
-// what a 32-bit long jump can encode, so the manager's emitted jumps are
-// checked against the low 32 bits - which is exactly what the instruction pair
-// can carry, and what the real payload uses.
+// Mock function target for instruction encoding checks.
 alignas(64) static uint32_t g_Target[16];
 
-// What the tick callbacks below recorded, and in what order.
+// Tick callback records.
 static char g_TickOrder[64];
 static uint32_t g_TickOrderLen = 0;
 static char g_SeenInFlight[3][WiiXLaunch::Tick::kOwnerLen];
@@ -93,16 +74,11 @@ static uint32_t g_SeenCount = 0;
 static void RecordTick(char mark) {
     if (g_TickOrderLen + 1 < sizeof(g_TickOrder)) g_TickOrder[g_TickOrderLen++] = mark;
     g_TickOrder[g_TickOrderLen] = 0;
-    // Who does the dispatcher SAY is running, from inside the call? This is the
-    // field a hang leaves behind, so it has to be correct while the tick runs -
-    // checking it afterwards would prove nothing about a freeze.
     if (g_SeenCount < 3) {
         const char* who = WiiXLaunch::Tick::InFlight().owner;
-        uint32_t i = 0;
-        for (; i + 1 < WiiXLaunch::Tick::kOwnerLen && who[i]; ++i) {
-            g_SeenInFlight[g_SeenCount][i] = who[i];
-        }
-        g_SeenInFlight[g_SeenCount][i] = 0;
+        std::strncpy(g_SeenInFlight[g_SeenCount], who ? who : "",
+                     sizeof(g_SeenInFlight[g_SeenCount]) - 1);
+        g_SeenInFlight[g_SeenCount][sizeof(g_SeenInFlight[g_SeenCount]) - 1] = '\0';
         ++g_SeenCount;
     }
 }
@@ -113,7 +89,7 @@ static void TickB() { RecordTick('B'); }
 static uintptr_t Addr(const void* p) { return reinterpret_cast<uintptr_t>(p); }
 static uint32_t Low(uintptr_t a) { return static_cast<uint32_t>(a); }
 
-// An ordinary, relocatable prologue: stwu/mflr/stw/li - nothing PC-relative.
+// Relocatable prologue: stwu/mflr/stw/li.
 static void FillPrologue() {
     g_Target[0] = 0x9421FFE0u;   // stwu r1,-32(r1)
     g_Target[1] = 0x7C0802A6u;   // mflr r0
@@ -122,26 +98,8 @@ static void FillPrologue() {
     for (int i = 4; i < 16; ++i) g_Target[i] = 0x60000000u;  // nop
 }
 
-// ---------------------------------------------------------------------------
-// An INDEPENDENT oracle for "is this instruction position-independent?"
-//
-// The obvious test would be to assert IsPcRelativeBranch(insn) equals
-// (opcode is 16 or 18) && AA == 0. That is the implementation restated, and by
-// the third rule in docs/framework/modules.md it can only confirm what the code already
-// believes.
-//
-// So the property is re-derived from what the ISA says a branch DOES. PowerPC
-// computes a branch target as:
-//
-//     AA == 0   NIA = CIA + EXTS(displacement || 0b00)      (relative)
-//     AA == 1   NIA =       EXTS(displacement || 0b00)      (absolute)
-//
-// An instruction is position-dependent exactly when moving it changes where it
-// goes. So: decode the target at two different addresses and compare. Nothing
-// here mentions opcode 16 or 18 as a CLASSIFICATION - they appear only as the
-// encodings whose target is computed, which is ISA fact, not a restatement of
-// the function under test.
-// ---------------------------------------------------------------------------
+// Independent oracle for position-dependent branch classification based on
+// PowerPC ISA target calculation (relative vs absolute).
 
 static const uint64_t kNotABranch = 0xFFFFFFFFFFFFFFFFull;
 
@@ -697,15 +655,11 @@ int main() {
         ok("registration order is call order - modA registered first",
            g_TickOrder[0] == 'A');
 
-        // --- the field a hang leaves behind ----------------------------------
-        //
-        // This is the whole reason the marker exists: "my game freezes with
-        // these mods installed" has to name a module. Checked from INSIDE the
-        // callbacks, because that is the only moment it matters.
+        // Verify in-flight owner matches active callback.
         ok("in-flight named modA while modA's tick ran",
-           g_SeenCount >= 1 && std::strcmp(g_SeenInFlight[0], "modA") == 0);
+            g_SeenCount >= 1 && std::strcmp(g_SeenInFlight[0], "modA") == 0);
         ok("in-flight named modB while modB's tick ran",
-           g_SeenCount >= 2 && std::strcmp(g_SeenInFlight[1], "modB") == 0);
+            g_SeenCount >= 2 && std::strcmp(g_SeenInFlight[1], "modB") == 0);
         if (g_SeenCount >= 2 &&
             (std::strcmp(g_SeenInFlight[0], "modA") != 0 ||
              std::strcmp(g_SeenInFlight[1], "modB") != 0)) {
@@ -714,18 +668,15 @@ int main() {
         }
 
         ok("in-flight is cleared between dispatches",
-           T::InFlight().owner[0] == '\0');
+            T::InFlight().owner[0] == '\0');
         ok("depth returns to zero", T::InFlight().depth == 0);
         ok("the sequence advanced once per tick call",
-           T::InFlight().sequence == seqBefore + 4u);
+            T::InFlight().sequence == seqBefore + 4u);
         ok("the record carries its magic so a dump can find it",
-           T::InFlight().magic == T::kInFlightMagic);
+            T::InFlight().magic == T::kInFlightMagic);
         ok("dispatches were counted", T::Dispatches() == 2);
 
-        // --- a registered tick with nothing driving it ------------------------
-        //
-        // The state a host with no game module is in. It must be visible, not
-        // inferred from a mod that quietly does nothing.
+        // Tick source registration.
         ok("no source is nominated by default", T::SourceName() == nullptr);
         T::NominateSource("test harness");
         ok("a nominated source is recorded",

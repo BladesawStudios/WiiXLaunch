@@ -1,28 +1,17 @@
-// Checks wiixlaunch/mod_config.h against files a user might actually write.
+// Test suite for wiixlaunch/mod_config.h against user-authored configuration files.
 //
-// The parser exists so that a mod's limits can be changed without rebuilding it,
-// which means the inputs are written BY HAND by people who have never seen the
-// grammar. So the cases here are not "does it read 45" - they are the ways a
-// hand-written file goes wrong: a trailing comment, a missing space, a key that
-// is a prefix of another key, a value that is a word, a file with no trailing
-// newline, CRLF from Notepad.
-//
-// The module-side imports are DEFINED here rather than stubbed away, which is
-// what lets the test drive Load(): ModReadFile hands back whatever text the case
-// wants, so the parser is exercised through its real entry point instead of
-// through a back door that only the test uses.
+// Verifies parser handling of spacing variations, comments, prefix collisions,
+// line endings (CRLF/LF), missing keys, and invalid values.
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
 
-// --- the imports mod_config.h binds ----------------------------------------
+// Test stubs for mod_config.h imports.
 static const char* g_File = nullptr;
 static bool        g_FileMissing = false;
 
 extern "C" void wiixl_import__wiixl_core__Log(const char* text) {
-    // Quiet by default; the parser logs on every malformed value and the point
-    // of the test is the value it returns, not the noise on the way.
     (void)text;
 }
 
@@ -32,7 +21,7 @@ extern "C" int32_t wiixl_import__wiixl_core__ModReadFile(const char* path,
     (void)path;
     if (g_FileMissing || !g_File) return -1;
     const uint32_t n = static_cast<uint32_t>(std::strlen(g_File));
-    if (n >= maxSize) return static_cast<int32_t>(n);   // over the limit; refused
+    if (n >= maxSize) return static_cast<int32_t>(n);
     std::memcpy(buffer, g_File, n);
     return static_cast<int32_t>(n);
 }
@@ -68,7 +57,7 @@ static WiiXLaunch::Config Load(const char* text) {
 int main() {
     std::printf("config_test - mod_config.h against hand-written files\n");
 
-    // --- the ordinary case --------------------------------------------------
+    // Standard key-value pairs.
     {
         auto c = Load("rooms = 60\nparts = 46\n");
         Eq("rooms = 60", c.GetInt("rooms", 45), 60);
@@ -77,24 +66,21 @@ int main() {
         Eq("file reports loaded", c.Loaded() ? 1 : 0, 1);
     }
 
-    // --- spacing, because people type what they like ------------------------
+    // Spacing variations.
     {
         auto c = Load("rooms=60\n   parts   =   46   \n");
         Eq("no spaces around =", c.GetInt("rooms", 0), 60);
         Eq("spaces everywhere", c.GetInt("parts", 0), 46);
     }
 
-    // --- comments -----------------------------------------------------------
+    // Comments (#, ;, //).
     {
         auto c = Load("# rooms = 99\n; parts = 99\n// parts = 98\nrooms = 60\n");
         Eq("hash-commented line is not read", c.GetInt("rooms", 0), 60);
         Eq("semicolon and slash comments are not read", c.GetInt("parts", 21), 21);
     }
 
-    // --- a key that is a PREFIX of another ----------------------------------
-    //
-    // "rooms" must not match "rooms_extra", and looking only at the first five
-    // characters is exactly how a naive parser gets this wrong.
+    // Prefix key collisions.
     {
         auto c = Load("rooms_extra = 99\nrooms = 60\n");
         Eq("a longer key is not matched by its prefix", c.GetInt("rooms", 0), 60);
@@ -173,10 +159,7 @@ int main() {
         Eq("absent file gives every fallback", c.GetInt("rooms", 45), 45);
     }
 
-    // --- a file over the limit is refused ENTIRELY --------------------------
-    //
-    // Half a config is a config with silently missing keys, which is worse than
-    // no config at all because the defaults then look like settings.
+    // Files exceeding size limit are rejected completely.
     {
         static char big[WiiXLaunch::Config::kMaxBytes + 64];
         std::memset(big, ' ', sizeof(big) - 1);
@@ -187,13 +170,7 @@ int main() {
         Eq("oversize file reads nothing", c.GetInt("rooms", 45), 45);
     }
 
-    // --- .ini section headers -----------------------------------------------
-    //
-    // The convention is config.ini, and that extension invites [Section]
-    // headers. They are not scopes: a key is matched across the whole file and
-    // the first hit wins. Load() says so in the log; what is asserted here is
-    // the behaviour the warning describes, because a warning nobody reads
-    // beside a parser that does something else is worse than either alone.
+    // .ini section headers (ignored; keys resolve globally first-match).
     {
         auto c = Load("[General]\nrooms = 60\n");
         Eq("a decorative section does not break the key after it",
@@ -201,8 +178,7 @@ int main() {
         Eq("the section line is not itself a key", c.GetInt("General", 7), 7);
     }
     {
-        // The shape the warning exists for: same key, two sections. FIRST wins,
-        // which is why the log has to say the sections were not scopes.
+        // First occurrence wins across sections.
         auto c = Load("[rooms]\nlimit = 45\n[parts]\nlimit = 60\n");
         Eq("duplicate key across sections resolves to the first",
            c.GetInt("limit", 0), 45);

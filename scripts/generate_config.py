@@ -31,33 +31,11 @@ def generate_config(requested=None):
 
     title_id = switch_cfg.get("title_id", "01007EF00011E000").lower()
 
-    # DOES A PATCH OUTLIVE THE BOOT.
-    #
-    # The sample patch mod exists to demonstrate all three outcomes on a host
-    # nobody is playing, so the demo host puts every declared patch back between
-    # LoadAll and RunPhase - the game runs modified for microseconds and then
-    # does not. patches.hpp said, in a comment, that a host shipping real patch
-    # mods must delete that call. A comment telling you to edit code is a setting
-    # that has not been written down yet.
+    # Patch persistence control.
     patches_cfg = cfg.get("patches", {})
     patches_persist = bool(patches_cfg.get("persist", False))
 
-    # WHERE THE SWITCH HOST LOADS MODULES.
-    #
-    # 0 means exl_main, before the game's own main - the earliest point there
-    # is, and right wherever it works. It does not work on every SDK: nn::fs
-    # has no allocator until the application installs one, so on nnSdk 15.x the
-    # first mount calls through a null pointer. A target that hits that names
-    # the game function to defer to instead, and the host hooks it.
-    # WHEN the Switch host loads modules.
-    #
-    #   exl_main   before the game's own main. The earliest there is, and right
-    #              wherever it works.
-    #   fs_ready   at the first file the GAME opens. nn::fs is unusable until
-    #              nnSdk installs its allocator during init, and on 15.x that is
-    #              after a subsdk runs - so the mount dies on a null pointer.
-    #              Waiting for a real file open is a fact about the filesystem
-    #              rather than a guess about which game function runs when.
+    # Switch host module load point (exl_main vs fs_ready).
     load_point_names = {"exl_main": 0, "fs_ready": 1}
     load_point = switch_cfg.get("load_point", "exl_main")
     if load_point not in load_point_names:
@@ -74,17 +52,7 @@ def generate_config(requested=None):
     os.makedirs(gen_switch_dir, exist_ok=True)
 
     debug_def = "#define EXL_DEBUG" if is_debug else ""
-    # A DROP-IN FOR exlaunch's OWN source/program/setting.hpp, which is what
-    # build_switch.bat now copies it over. It has to match that file's shape,
-    # not just its values: common.hpp is where ALIGN_UP and PAGE_SIZE come from,
-    # and the sanity asserts below are exlaunch's, kept because the numbers they
-    # check are now ours.
-    #
-    # THIS WAS GENERATED AND NEVER USED. The Switch build staged exlaunch's copy
-    # and compiled against JitSize 0x1000 - twenty hook trampolines - while this
-    # file said 0x10000. Nothing noticed until a mod installed twenty-six hooks
-    # and exl::hook aborted on AllocForTrampoline. The whole "memory" block of a
-    # target was inert on Switch.
+    # Drop-in configuration for exlaunch source/program/setting.hpp.
     setting_hpp_content = f"""#pragma once
 
 #include "common.hpp"
@@ -116,20 +84,7 @@ namespace exl::setting {{
         f.write(setting_hpp_content)
     print(f"[ConfigGen] Generated {setting_hpp_path}")
 
-    # A SEPARATE HEADER, because generated_setting.hpp also defines
-    # exl::setting - and on Switch exlaunch's own program/setting.hpp defines
-    # that too, so anything including both gets a redefinition error. Host
-    # settings that every platform needs live here, where nothing else does.
-    # --- game identity -----------------------------------------------------
-    #
-    # A build's bytes are the least ambiguous name it has, so the host CRCs a
-    # slice of the running game and matches it against the names this target
-    # has enrolled. A target that declares nothing gets zeroes, and
-    # game_version.hpp reports "cannot fingerprint" rather than pretending.
-    #
-    # The Switch entry is an OFFSET and the Wii U entry an ADDRESS, for the same
-    # reason every other pair in this project is split that way: an NSO is
-    # relocated every launch and no constant here could name an address in it.
+    # Game identity fingerprinting settings.
     ident = cfg.get("identity", {}) or {}
 
     def _num(v, default=0):
@@ -147,9 +102,7 @@ namespace exl::setting {{
     wu_len = _num(id_wu.get("length"))
 
     def _known(platform):
-        # A TERMINATED array, not a counted one. A zero-length C array is not
-        # valid, and an empty `known` list is the normal state for a target
-        # nobody has enrolled a build for yet.
+        # Null-terminated known build fingerprint list.
         rows = []
         for e in ident.get("known", []) or []:
             if (e.get("platform") or "").lower() != platform:
@@ -276,34 +229,19 @@ namespace WiiXLaunch::Host {{
 
     root_dir_unix = root_dir.replace('\\', '/')
 
-    # Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw), added as
-    # submodules by mods that want them - not part of base WiiXLaunch, so
-    # only picked up if actually present. Scoped to the "wiixlaunch-*" name
-    # so this doesn't also pull in the Wii U-only vendor/wut, vendor/wups,
-    # etc., which have their own top-level include/ dirs but are wired up
-    # through their own dedicated Makefile flow instead.
+    # Optional WiiXLaunch game module includes.
     module_includes, chosen, ignored = target_mod.module_includes(root_dir, cfg)
     if chosen:
         print("[ConfigGen] game module(s): %s" % ", ".join(chosen))
     else:
         print("[ConfigGen] no game module - base surfaces only")
     if ignored:
-        # NAMED, because a module sitting in vendor/ and not being built for
-        # this target is exactly the kind of thing someone loses an afternoon to.
         print("[ConfigGen] present in vendor/ but NOT built for this target: %s"
               % ", ".join(ignored))
 
     module_flags = "".join(f' -I"{inc}"' for inc in module_includes)
 
-    # An escape hatch for bisecting, from the environment rather than from
-    # wiixlaunch.json: a define you are toggling to find a crash is not a
-    # property of the project and should not be committed to find out.
-    #
-    #   set WIIXL_EXTRA_DEFINES=-DWIIXL_NO_DEMO
-    #   build_switch.bat
-    #
-    # Echoed at generation time, because a flag that silently changes what was
-    # built is how you end up debugging a binary you did not think you made.
+    # WIIXL_EXTRA_DEFINES environment variable overrides.
     extra = os.environ.get("WIIXL_EXTRA_DEFINES", "").strip()
     if extra:
         print(f"[ConfigGen] WIIXL_EXTRA_DEFINES={extra}")
@@ -344,23 +282,7 @@ namespace WiiXLaunch::WiiUConfig {{
         f.write(wiiu_hpp_content)
     print(f"[ConfigGen] Generated {wiiu_hpp_path}")
 
-    # --- Cemu entry hook -----------------------------------------------------
-    #
-    # The bootstrap in src/cemu/bootstrap.cpp is base framework code and must
-    # not contain a game address, so the two game-specific values it needs come
-    # from here:
-    #
-    #   entry_hook              where the pack redirects into the code cave
-    #   entry_hook_instruction  the instruction that redirect overwrites, which
-    #                           the bootstrap has to replay before branching
-    #                           back to entry_hook + 4
-    #
-    # For BotW v208 the entry hook is 0x03098928, which holds `mflr r0`
-    # (0x7C0802A6) - the prologue of the game's FS bring-up function.
-    #
-    # Emitted as macros rather than constexpr values because the bootstrap
-    # pastes them into an asm() block by stringification, and asm cannot see
-    # C++ constants.
+    # Cemu entry hook configuration.
     entry_hook = cemu_cfg.get("entry_hook", "0x00000000")
     entry_instr = cemu_cfg.get("entry_hook_instruction", "0x00000000")
     entry_hook_val = int(str(entry_hook), 16)

@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""WIIXL_DECLARE_PATCH_CROSS emits the right architecture's record, and only it.
-
-`targetAddr` is one 32-bit field that means an absolute address on Wii U and
-Cemu and an offset from the module base on Switch, and the origin/replacement
-bytes are machine code for two different instruction sets.
-WIIXL_DECLARE_PATCH_CROSS takes both triples and lets the preprocessor pick. A
-macro that picked wrong - or silently emitted nothing - would produce a module
-that builds, packs, loads, and is refused at boot on somebody else's console.
-
-So this compiles a fixture that uses the macro, once with each toolchain, and
-reads the `.wxlm.patches` section straight out of the two ELFs.
-
-THE ORACLE IS THE DECLARATION, NOT THE MACRO. The expected values below are
-written out independently; nothing re-uses the header's own selection logic to
-decide what the answer should be. A test that asked the macro what the macro
-does could only ever agree with it. The ELF is parsed here rather than through
-scripts/wxlm.py for the same reason, and because wxlm.py validates records as
-well as reading them - a fixture is not a shippable module.
-
-Run from the repo root:
-
-    python scripts/test_patch_decl.py
-"""
+"""Verify WIIXL_DECLARE_PATCH_CROSS emits the target architecture's record correctly."""
 
 import os
 import struct
@@ -31,7 +9,6 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# The fixture, and the answer, written independently of each other.
 SWITCH_ADDR = 0x01B299EC
 SWITCH_ORIGIN = (0xE1, 0x01, 0x80, 0x52)      # mov w1,#15   little-endian
 SWITCH_DATA = (0xA1, 0x05, 0x80, 0x52)        # mov w1,#45
@@ -66,13 +43,7 @@ extern "C" __attribute__((used)) void WiiXLaunch_ModEntry() {}
 
 
 def find_compiler(kind):
-    """The compiler for a kind, or (None, tried) if none of the candidates exist.
-
-    Looks where the rest of the build looks. devkitpro_env sets DKP_PPC_GXX and
-    DKP_ROOT on Windows; DEVKITPRO is the POSIX convention. Reporting every path
-    tried matters because "not installed" and "installed somewhere else" want
-    different fixes and an unqualified "not found" tells you neither.
-    """
+    """Find the compiler for a kind, or (None, tried) if none exist."""
     exe = "powerpc-eabi-g++" if kind == "ppc" else "aarch64-none-elf-g++"
     sub = "devkitPPC" if kind == "ppc" else "devkitA64"
 
@@ -96,8 +67,6 @@ def find_compiler(kind):
 def build(kind, workdir):
     exe, tried = find_compiler(kind)
     if exe is None:
-        # A MISSING TOOLCHAIN IS A FAILURE, NOT A SKIP. Both are already hard
-        # requirements of the scripts that run this gate.
         return None, "compiler not found; tried:\n      " + "\n      ".join(tried)
 
     defines = (["-DWIIXL_CEMU=1", "-D__CEMU__=1", "-msdata=none"] if kind == "ppc"
@@ -119,13 +88,7 @@ def build(kind, workdir):
 
 
 def elf_section(path, want):
-    """(bytes, endian) for one section, or (None, endian) if it is not there.
-
-    A minimal section-header walk, so this gate needs no readelf and no objcopy.
-    Endianness comes from the ELF itself rather than from an assumption about
-    which toolchain produced it - the record's uint32 fields are written in the
-    target's byte order, and that is the same order the header declares.
-    """
+    """(bytes, endian) for one section, or (None, endian) if not found."""
     with open(path, "rb") as f:
         blob = f.read()
     if blob[:4] != b"\x7fELF":

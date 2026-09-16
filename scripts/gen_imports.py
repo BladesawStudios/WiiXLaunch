@@ -1,45 +1,9 @@
 #!/usr/bin/env python3
 """Emit the import headers a .wxlm includes, from the surface tables themselves.
 
-THE BOUNDARY THIS CLOSES.
-
-Everything else a module does is checked. Surface presence is checked by name,
-version by major/minor, the payload by CRC32, relocations by count, patches by
-reading the target back, hooks by decoding the prologue. The SIGNATURE OF AN
-IMPORT is checked by nobody - a mod hand-writes
-
-    extern int32_t wiixl_import__botw_player__ActorGetLife(uint32_t handle);
-
-matching the surface by eye, and getting it wrong compiles clean, links clean,
-packs clean, loads clean, and corrupts the stack at run time. It is the one
-boundary a mod author touches constantly and the only one with nothing behind
-it.
-
-The surface already knows the answer:
-
-    WIIXL_SURFACE_SYMBOL("ActorGetLife", &ActorGetLife)
-
-names the exported symbol and points at the function whose real signature is a
-few lines above it. So nobody should be typing it twice.
-
-DECLARING IS NOT IMPORTING. The generated header declares every symbol on the
-surface, because a declaration nothing references costs nothing. Binding one -
-which is what actually creates the undefined reference wxlm.py turns into an
-import - is opt-in per symbol through the generated macro:
-
-    namespace P { WXL_USE_botw_player(ActorGetLife); }
-    ...
-    P::ActorGetLife(handle);
-
-so a mod that uses two symbols imports two, not the whole surface.
-
-USAGE
-
+Usage:
     python scripts/gen_imports.py            # write the headers
     python scripts/gen_imports.py --check    # fail if they are out of date
-
---check is the gate. Generated files that drift from their source are the same
-failure class as a stale comment: they read as authoritative and are not.
 """
 import io
 import os
@@ -48,9 +12,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Where the surfaces live, and where the generated headers go. A mod builds with
-# -I <wiixlaunch>/include already, so <wiixlaunch/imports/botw_player.h> just
-# works.
+# Where surface headers live and where generated headers are emitted.
 SOURCES = [
     os.path.join(ROOT, "include", "wiixlaunch", "loader"),
     os.path.join(ROOT, "vendor", "wiixlaunch-botw", "include", "wiixlaunch", "botw", "surfaces"),
@@ -58,33 +20,17 @@ SOURCES = [
 ]
 OUT_DIR = os.path.join(ROOT, "include", "wiixlaunch", "imports")
 
-# A surface is one `namespace Whatever { ... }` block carrying a name, a version
-# and a symbol table. Several share a file (base_surfaces.hpp holds four).
 NAME = re.compile(r'constexpr const char\* k\w*(?:Name|Surface)\s*=\s*"([\w.]+)"')
 MAJOR = re.compile(r'constexpr uint16_t k\w*VersionMajor\s*=\s*(\d+)')
 MINOR = re.compile(r'constexpr uint16_t k\w*VersionMinor\s*=\s*(\d+)')
 SYMBOL = re.compile(r'WIIXL_SURFACE_SYMBOL\(\s*"(\w+)"\s*,\s*&(\w+)\s*\)')
-# The function a symbol points at. Parameters are scanned with BALANCED parens
-# rather than matched with [^)]*, because a function-pointer parameter contains
-# its own: CoreRegisterTick(void (*fn)()) is the case that caught this, and the
-# generator refusing to emit a header missing a symbol is what surfaced it.
 FUNC_HEAD = re.compile(r'extern "C" inline\s+([\w:*&<> ]+?)\s*\b(\w+)\s*\(')
 
-
-# A section banner, not documentation: `// --- injection ------------`.
 BANNER = re.compile(r'^//\s*-{2,}')
 
 
 def doc_above(body, index):
-    """The comment block immediately above a definition, if there is one.
-
-    The surface explains WHY a symbol behaves as it does - "a frame count rather
-    than an open-ended hold, because a mod that sets a button and crashes should
-    not leave the game holding it forever" - and a mod author holding only the
-    SDK could not read any of it. Throwing that away and keeping the signature
-    left the generated headers technically complete and useless for deciding
-    what to call.
-    """
+    """The comment block immediately above a definition, if there is one."""
     lines = body[:index].split("\n")
     out = []
     for line in reversed(lines[:-1]):
@@ -134,15 +80,7 @@ def namespace_blocks(text):
 
 
 # --- type aliases -----------------------------------------------------------
-#
-# A surface spells a handle `ActorHandle`, which resolves through
-# ActorHandles::Handle to uint32_t. The MOD has never heard of either name, so a
-# header repeating the surface's spelling does not compile - which is the exact
-# failure this generator exists to prevent, one level down.
-#
-# Resolving to the primitive is also the honest rendering: the surface ABI
-# carries primitives and opaque handles only, so uint32_t IS what crosses. The
-# original spelling is kept in a comment so the header still reads.
+# Resolve types and aliases to C primitive types for ABI boundary.
 ALIAS = re.compile(r'^\s*using (\w+)\s*=\s*([^;]+);', re.M)
 
 PRIMITIVES = {
@@ -154,13 +92,7 @@ PRIMITIVES = {
 
 
 def collect_aliases(paths):
-    """Two maps: simple aliases to substitute, and callback types to declare.
-
-    `using Handle = uint32_t;` can be swapped in wherever it appears.
-    `using ModFrameFn = void (*)();` cannot - splicing it into `ModFrameFn fn`
-    would require moving the parameter's name inside the parens - so it is
-    emitted as a using-declaration in the header that needs it.
-    """
+    """Two maps: simple aliases to substitute, and callback types to declare."""
     simple, callbacks = {}, {}
     for path in paths:
         text = io.open(path, encoding="utf-8", errors="replace").read()
@@ -174,12 +106,7 @@ def collect_aliases(paths):
 
 
 def _unqualify(text):
-    """`impl::ModFrameFn` -> `ModFrameFn`.
-
-    A surface writes types with whatever qualification is in scope where it is
-    defined. None of that scope exists in a mod, so the qualifier is noise here -
-    and leaving it in made the resolver reject `impl` as an unknown type.
-    """
+    """`impl::ModFrameFn` -> `ModFrameFn`."""
     return re.sub(r'\b\w+::', '', text)
 
 
