@@ -38,7 +38,7 @@
 
 namespace WiiXLaunch::Patches {
 
-constexpr uint32_t kMaxPatches = 32;
+constexpr uint32_t kMaxPatches = 128;
 constexpr uint32_t kOwnerLen = 17;
 
 // An enum, not a bool: a malformed record, an origin mismatch, and a
