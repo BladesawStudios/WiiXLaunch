@@ -30,8 +30,16 @@ echo "Building Cemu payload (PowerPC)..."
   -D__CEMU__=1 -DWIIXL_CEMU=1 \
   -I include -I build/generated/include "${MODULE_FLAGS[@]}" \
   -nostartfiles -T scripts/cemu.ld -Wl,-q \
-  src/main.cpp src/wiiu_plugin.cpp \
+  src/main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
   -o build/wiixlaunch_cemu
 
-python3 scripts/deploy.py
-echo "Cemu build complete!"
+# THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
+#
+# It used to also run every gate, build the six example modules and call
+# scripts/deploy.py. Three different jobs behind one command: you could not
+# build a host without also publishing one, and a deploy writes the WHOLE mods
+# directory, so building for one game could overwrite another game's modules.
+#
+#   gates and example modules -> test.sh
+#   packaging and installing  -> python3 scripts/deploy.py --target <name>
+echo "Cemu host built: build/wiixlaunch_cemu"

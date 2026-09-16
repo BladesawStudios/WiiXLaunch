@@ -2,22 +2,14 @@
 
 // System (wall-clock) time.
 //
-// Wii U (Aroma/WUPS): coreinit is linked, so OSGetTime/OSTicksToCalendarTime
-// are just called. That is the console's RTC - the clock the user set in
-// System Settings, in local time.
+// Wii U: OSGetTime/OSTicksToCalendarTime, called directly (coreinit is
+// linked) - the console's RTC in local time. Cemu: same two functions,
+// reached through the `import.coreinit.<Name>` shims in
+// src/cemu/cemu_time.asm, since the payload has no import table to link
+// coreinit into; under Cemu these read the host PC clock. Switch: monotonic
+// only, nn::time is not wired up.
 //
-// Cemu: the payload is a raw codecave blob, never a real RPL module, so it has
-// no import table and coreinit cannot be linked. Both functions are reached
-// through the `import.coreinit.<Name>` tail-call shims in
-// src/cemu/cemu_time.asm, resolved by Cemu's own patch assembler - the same
-// mechanism cemu_logging.asm uses for OSReport. Under Cemu those land on its
-// HLE coreinit, which is backed by the host clock, so this reads PC time.
-//
-// Switch: monotonic only. nn::time is not wired up, so IsWallClockAvailable()
-// answers false rather than inventing a date.
-//
-// Ticks are the raw Espresso timebase, matching coreinit's OSTime, so values
-// here interoperate with any OSTime read out of the game.
+// Ticks are the raw Espresso timebase, matching coreinit's OSTime.
 
 #include <cstdint>
 #include <cstddef>
@@ -29,10 +21,10 @@
 
 #if WIIXL_CEMU
 extern "C" {
-    // Patched by scripts/deploy.py at deploy time with the offset of
-    // wiixlaunch_cemu_time_shim_table; left at 0 in the compiled ELF, so a
-    // zero here means "deploy has not run" and the shims must not be called.
-    __attribute__((section(".data"))) inline uint32_t g_CemuTimeShimTableOffset = 0;
+    // Patched by scripts/deploy.py with the offset of
+    // wiixlaunch_cemu_time_shim_table; 0 means deploy hasn't run and the
+    // shims must not be called.
+    __attribute__((section(".data"), used)) inline uint32_t g_CemuTimeShimTableOffset = 0;
 }
 #endif
 

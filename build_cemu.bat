@@ -1,14 +1,30 @@
 @echo off
 setlocal enabledelayedexpansion
 
+
+:: WHICH GAME THIS HOST IS FOR.
+::
+::   build_cemu.bat            the default target
+::   build_cemu.bat totk       targets/totk.json
+::
+:: Set before anything else runs, so generate_config and deploy cannot disagree
+:: about it - they both resolve through scripts/target.py and both print what
+:: they got. A build that silently picks a target is the same class of problem
+:: as a gate nothing invokes.
+if not "%~1"=="" set "WIIXL_TARGET=%~1"
+
 call scripts\devkitpro_env.bat
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 echo Generating config...
 python scripts\generate_config.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 if not exist build mkdir build
+:: Module resources are staged fresh every build; a directory left from a
+:: module that has been renamed or removed would otherwise be deployed
+:: forever and silently join the mods directory.
+if exist build\moddata rmdir /s /q build\moddata
 
 :: Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
 :: base WiiXLaunch, picked up automatically if this mod added one as a
@@ -44,9 +60,18 @@ echo Building Cemu payload (PowerPC)...
   -D__CEMU__=1 -DWIIXL_CEMU=1 ^
   -I include -I build\generated\include %MODULE_FLAGS% ^
   -nostartfiles -T scripts\cemu.ld -Wl,-q ^
-  src\main.cpp src\wiiu_plugin.cpp ^
+  src\main.cpp src\wiiu_plugin.cpp src\cemu\bootstrap.cpp ^
   -o build\wiixlaunch_cemu
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
-python scripts\deploy.py
-echo Cemu build complete!
+:: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
+::
+:: It used to also run every gate, build the six example modules and call
+:: scripts/deploy.py. Three different jobs behind one command: you could not
+:: build a host without also publishing one, and a deploy writes the WHOLE mods
+:: directory, so building for one game could overwrite another game's modules.
+::
+::   gates and example modules -> test.bat
+::   packaging and installing  -> python scripts\deploy.py --target <name>
+echo Cemu host built: build\wiixlaunch_cemu
+exit /b 0

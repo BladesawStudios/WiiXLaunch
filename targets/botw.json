@@ -1,0 +1,68 @@
+{
+  "project": {
+    "name": "WiiXLaunch_BotW",
+    "version": "1.0.0",
+    "author": "Modder",
+    "description": "Cross-platform Breath of the Wild Mod powered by WiiXLaunch",
+    "debug": true
+  },
+  "memory": {
+    "heap_size": "0x50000",
+    "jit_size": "0x10000",
+    "inline_pool_size": "0x10000",
+    "log_buffer_size": 512
+  },
+  "identity": {
+    "//": "The slice the host CRCs to name this build. READ-ONLY DATA, never .text - .text is what mods rewrite, so a fingerprint over it would identify the installed mod set as much as the build. Enrol a build by pasting the fingerprint the boot log prints into `known`.",
+    "//switch": "Offset from where exlaunch says read-only data starts, not from the module base - the host asks rather than making this file carry an address. 0x600000 lands in .rodata.1 string constants; read at 0x7101e03000 in the v1.5.0 main it is UTF-8 text and `ssao_is_depth_full`. A smaller offset would land in .rela.dyn, which begins only 0x50 bytes into the RO segment.",
+    "switch": {
+      "offset": "0x600000",
+      "length": 4096
+    },
+    "//wiiu": "An ADDRESS, because the host cannot find its own image bounds on Wii U or Cemu - the same reason Patches::InGameImage returns true instead of checking. .rodata is 0x10000000-0x10462BBB in the v208 RPX; 0x10200000 holds GameData flag names (IsGet_Item_InsectGet_K ...), which are ASCII, differ per build, and carry no relocated pointers. The RPX was confirmed to be v208 first: 0x02000030 holds 7C 9E 23 78 and 0x02000034 holds 7C 7F 1B 79, the two instructions examples/patch_mod documents.",
+    "wiiu": {
+      "address": "0x10200000",
+      "length": 4096
+    },
+    "known": [
+      {
+        "name": "1.5.0",
+        "platform": "switch",
+        "fingerprint": "0xA982D2BC"
+      },
+      {
+        "name": "v208",
+        "platform": "wiiu",
+        "fingerprint": "0xB8FC33E3"
+      }
+    ]
+  },
+  "switch": {
+    "title_id": "01007EF00011E000",
+    "title_id_range_min": "0x0100000000010000",
+    "title_id_range_max": "0x01ffffffffffffff",
+    "subsdk_name": "subsdk9",
+    "load_kind": "Module",
+    "system_resource_size": "0x00000000",
+    "main_thread_stack_size": "0x00100000",
+    "main_thread_priority": 44,
+    "default_cpu_id": 0,
+    "mount_path": "/mnt/sdcard"
+  },
+  "wiiu": {
+    "plugin_name": "WiiXLaunch_BotW.wps",
+    "target_title_ids": [
+      "00050000101C9400",
+      "00050000101C9500",
+      "00050000101C9300"
+    ]
+  },
+  "cemu": {
+    "entry_hook": "0x03098928",
+    "entry_hook_instruction": "0x7C0802A6",
+    "graphic_pack_path": "The Legend of Zelda: Breath of the Wild/Mods/WiiXLaunch",
+    "graphic_pack_version": "V208",
+    "module_matches": "0x6267BFD0"
+  },
+  "samples": true
+}

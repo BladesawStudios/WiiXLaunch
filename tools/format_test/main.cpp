@@ -1,0 +1,170 @@
+// Host-side tests for WIIXL_LOG's FormatText implementation extracted from debug_log.hpp.
+
+#include <cstdio>
+#include <cstring>
+#include <cstdint>
+#include <cstdarg>
+
+#include "formatter_extract.hpp"
+
+static int g_failures = 0;
+static int g_checks = 0;
+
+// Minimum check floors (global and per-section).
+static const int kExpectedChecks = 25;
+static int g_SectionBase = 0;
+static const char* g_CurrentSection = "";
+static int g_SectionFloorFailures = 0;
+
+static void BeginSection(const char* name) {
+    g_SectionBase = 0;
+    g_CurrentSection = name;
+}
+
+static void SectionStart(const char* name);
+static void SectionEnd(int atLeast);
+
+static uint32_t FormatOneArg(char* out, uint32_t cap, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    const uint32_t n = WiiXLaunch::Debug::FormatText(out, cap, fmt, ap);
+    va_end(ap);
+    return n;
+}
+
+static void check(const char* expect, const char* fmt, ...) {
+    char out[256];
+    va_list ap;
+    va_start(ap, fmt);
+    uint32_t n = WiiXLaunch::Debug::FormatText(out, sizeof(out) - 1, fmt, ap);
+    va_end(ap);
+    out[n] = '\0';
+
+    ++g_checks;
+    const bool ok = std::strcmp(out, expect) == 0;
+    if (ok) {
+        std::printf("  ok    %-22s -> \"%s\"\n", fmt, out);
+    } else {
+        ++g_failures;
+        std::printf("  FAIL  %-22s -> \"%s\"  (expected \"%s\")\n", fmt, out, expect);
+    }
+}
+
+static void SectionStart(const char* name) {
+    g_SectionBase = g_checks;
+    g_CurrentSection = name;
+}
+
+static void SectionEnd(int atLeast) {
+    const int ran = g_checks - g_SectionBase;
+    if (ran < atLeast) {
+        ++g_SectionFloorFailures;
+        std::printf("  FAIL  section '%s' ran %d checks, expected at least %d\n",
+                    g_CurrentSection, ran, atLeast);
+    }
+}
+
+int main() {
+    // Unbuffered stdout so crashes preserve diagnostic output.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
+    (void)BeginSection;
+    SectionStart("width");
+    std::printf("width and zero-padding (unsupported until they silently broke a hex dump):\n");
+    check("05",       "%02X", 5);
+    check("AB",       "%02X", 0xAB);
+    check("0F 1E 2D", "%02X %02X %02X", 0x0F, 0x1E, 0x2D);
+    check("0000002d", "%08x", 0x2d);
+    check("  42",     "%4d", 42);
+    check("0042",     "%04d", 42);
+    check("-042",     "%04d", -42);
+    check("00ff",     "%04x", 255);
+
+    // A width narrower than the value must not truncate it.
+    check("123456",   "%2d", 123456);
+
+    SectionEnd(9);
+    SectionStart("argument alignment");
+    std::printf("\nargument alignment after a width specifier:\n");
+    // The original bug consumed no argument for %02X, so everything after it
+    // read the previous slot. This is the regression test for that.
+    check("01 then 2", "%02X then %d", 1, 2);
+    check("A=0A B=17", "A=%02X B=%d", 10, 17);
+
+    SectionEnd(2);
+    SectionStart("unchanged behaviour");
+    std::printf("\nunchanged behaviour:\n");
+    check("42",       "%d", 42);
+    check("-42",      "%d", -42);
+    check("2A",       "%X", 42);
+    check("2a",       "%x", 42);
+    check("1BAA54C",  "%X", 29009228);
+    check("100%",     "100%%");
+    check("hi 7",     "hi %d", 7);
+    check("s=ok",     "s=%s", "ok");
+    check("u=7",      "u=%u", 7u);
+
+    SectionEnd(9);
+    SectionStart("float precision");
+    std::printf("\nfloat precision (was always supported - guard against regressing it):\n");
+    check("1.5",      "%.1f", 1.5);
+    check("3.14",     "%.2f", 3.14159);
+
+    SectionEnd(2);
+    SectionStart("unknown conversions");
+    std::printf("\nunknown conversions are echoed, not swallowed:\n");
+    check("%q",       "%q", 1);
+
+    SectionEnd(1);
+    SectionStart("truncation is visible");
+    std::printf("\ntruncation announces itself rather than ending mid-sentence:\n");
+    {
+        // Over-length output should be marked as truncated.
+        char out[64];
+        char big[200];
+        for (int i = 0; i < 199; ++i) big[i] = 'x';
+        big[199] = 0;
+
+        const uint32_t n = FormatOneArg(out, sizeof(out) - 1, "%s", big);
+        out[n] = 0;
+        ++g_checks;
+        const bool marked = n == sizeof(out) - 1 &&
+                            std::strstr(out, "[..CUT]") != nullptr;
+        if (marked) {
+            std::printf("  ok    over-long output is marked [..CUT]\n");
+        } else {
+            ++g_failures;
+            std::printf("  FAIL  over-long output was not marked: \"%s\"\n", out);
+        }
+
+        // Output fitting within capacity should remain unmodified.
+        char small[64];
+        const uint32_t m = FormatOneArg(small, sizeof(small) - 1, "%s", "short");
+        small[m] = 0;
+        ++g_checks;
+        if (std::strcmp(small, "short") == 0) {
+            std::printf("  ok    output that fits is left alone\n");
+        } else {
+            ++g_failures;
+            std::printf("  FAIL  short output was altered: \"%s\"\n", small);
+        }
+    }
+    SectionEnd(2);
+
+    g_failures += g_SectionFloorFailures;
+
+    std::printf("\n%d checks, %d failures\n", g_checks, g_failures);
+
+    if (g_checks < kExpectedChecks) {
+        std::printf("FORMAT TESTS DISARMED: only %d of the expected %d checks ran.\n"
+                    "A suite that shrinks silently reports success over whatever is\n"
+                    "left of it.\n", g_checks, kExpectedChecks);
+        return 1;
+    }
+
+    std::printf("%s (%d checks: width, argument alignment, unchanged conversions, "
+                "float precision, unknown specifiers, truncation marker)\n",
+                g_failures == 0 ? "ALL FORMAT TESTS PASS" : "FORMAT TESTS FAILED",
+                g_checks);
+    return g_failures != 0;
+}

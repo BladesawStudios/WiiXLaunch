@@ -12,7 +12,13 @@ namespace Backend {
 
     extern "C" uintptr_t g_CodeCaveBase;
     extern "C" {
-        __attribute__((section(".data"))) inline uint32_t g_CemuHeapOffset = 0;
+        // `used` for the same reason as the relocation globals below: the only
+        // writer is scripts/deploy.py, which the compiler cannot see. Without it
+        // a build where nothing happens to call CemuHeapBase() - a host with no
+        // main.cpp, which is what stage 4 makes normal - drops the symbol, deploy
+        // has nothing to patch, and the heap base silently reads as the code-cave
+        // base with no offset. Found by scripts/test_host.py.
+        __attribute__((section(".data"), used)) inline uint32_t g_CemuHeapOffset = 0;
 
         // Runtime relocation table, patched by scripts/deploy.py.
         //
@@ -65,85 +71,32 @@ namespace Backend {
     constexpr uintptr_t kCemuCodeCaveEnd  = kCemuCodeCaveAddr + kCemuCodeCaveSize;
     constexpr uintptr_t kCemuCodeAreaAddr = 0x02000000;   // the game's code; documentation only
 
-    // A game layer can install its own allocator here - BotW, for instance, has
-    // a MEM1 allocator inside the RPX that is not bounded by any of the above.
-    // Its address is a per-game fact, so the address stays in the game's own
-    // module and only the function pointer crosses into the framework. Null
-    // (the default) means the built-in code-cave heap below.
-    using HeapProvider = void* (*)(size_t size, size_t align);
-    __attribute__((section(".data"))) inline HeapProvider g_HeapProvider = nullptr;
-
-    // Set before the first allocation. Allocations already handed out by the
-    // previous provider stay valid - nothing here is ever freed - but mixing
-    // the two mid-run means the heap statistics only describe the built-in one.
-    inline void SetHeapProvider(HeapProvider provider) { g_HeapProvider = provider; }
-    inline HeapProvider GetHeapProvider() { return g_HeapProvider; }
-
-    // Built-in code-cave heap state.
-    __attribute__((section(".data"))) inline size_t g_HeapAllocated = 0;
-    __attribute__((section(".data"))) inline size_t g_HeapRefusedBytes = 0;
-    __attribute__((section(".data"))) inline uint32_t g_HeapRefusedCount = 0;
-    // A voluntary cap below the wall, for a mod that would rather fail early
-    // than find out at 0x02000000. 0 = use the whole distance to the wall.
-    __attribute__((section(".data"))) inline size_t g_HeapLimitOverride = 0;
-
-    inline void SetHeapLimit(size_t bytes) { g_HeapLimitOverride = bytes; }
-
+    // WHERE THE ALLOCATABLE MEMORY STARTS, AND NOTHING ELSE.
+    //
+    // This header used to own the whole heap: CemuHeapLimit, CemuHeapUsed,
+    // CemuHeapRemaining, CemuHeapExhausted, AllocCemuHeap, a HeapProvider hook
+    // and a SetHeapLimit override. All of it is gone, deliberately and without
+    // a compatibility shim.
+    //
+    // The reason is the bug it kept reachable. Every caller in the project -
+    // the loader, the GX2 layer, the BotW heap shim - called CemuHeapLimit()
+    // and then did its own bookkeeping against the answer, and each of them
+    // believed it had the whole distance to the wall to itself. That is how two
+    // allocators end up handing out the same bytes. Leaving a wrapper here
+    // would have kept every one of those callers compiling and kept the overlap
+    // reachable, just harder to see.
+    //
+    // The single owner is WiiXLaunch::Arena (include/wiixlaunch/loader/arena.hpp).
+    // It reads this base, works out the distance to kCemuCodeCaveEnd itself,
+    // and hands out host allocations from one end and module grants from the
+    // other. The host allocates with Arena::AllocHost; a mod allocates through
+    // wiixl.core's Alloc and can never reach past its own grant.
+    //
+    // The name stays CemuHeapBase because deploy.py patches g_CemuHeapOffset by
+    // name and scripts/test_host.py pins it; it means "first byte past the
+    // payload", which is exactly what the arena needs.
     inline uintptr_t CemuHeapBase() {
         return g_CodeCaveBase + g_CemuHeapOffset;
-    }
-
-    // Bytes between the heap base and the wall, after any voluntary cap. 0 if
-    // the base is not known yet or is already past the wall - in which case
-    // every allocation is refused rather than guessed at.
-    inline size_t CemuHeapLimit() {
-        const uintptr_t base = CemuHeapBase();
-        if (base == 0 || base >= kCemuCodeCaveEnd) return 0;
-        size_t toWall = static_cast<size_t>(kCemuCodeCaveEnd - base);
-        if (g_HeapLimitOverride != 0 && g_HeapLimitOverride < toWall) {
-            toWall = g_HeapLimitOverride;
-        }
-        return toWall;
-    }
-
-    inline size_t CemuHeapUsed() { return g_HeapAllocated; }
-    inline size_t CemuHeapRemaining() {
-        const size_t limit = CemuHeapLimit();
-        return limit > g_HeapAllocated ? limit - g_HeapAllocated : 0;
-    }
-    // True once anything has been refused. The framework cannot log from here
-    // without dragging the logging headers into the backend, so a caller that
-    // gets a null pointer should report this.
-    inline bool CemuHeapExhausted() { return g_HeapRefusedCount != 0; }
-
-    // The built-in allocator: a bump pointer, bounded, never freed. Returns
-    // null when the request would cross the limit - it used to return a pointer
-    // regardless, which meant an over-allocating mod silently wrote through the
-    // end of the cave area and into whatever Cemu had placed after it.
-    inline void* AllocCemuHeapRaw(size_t size, size_t align) {
-        if (align == 0) align = 256;
-        const uintptr_t base = CemuHeapBase();
-        const size_t limit = CemuHeapLimit();
-        if (limit == 0) {
-            g_HeapRefusedBytes += size;
-            g_HeapRefusedCount++;
-            return nullptr;
-        }
-        const uintptr_t current = base + g_HeapAllocated;
-        const uintptr_t aligned = (current + (align - 1)) & ~static_cast<uintptr_t>(align - 1);
-        const size_t end = static_cast<size_t>(aligned - base) + size;
-        if (end > limit || end < g_HeapAllocated) {      // second test: overflow
-            g_HeapRefusedBytes += size;
-            g_HeapRefusedCount++;
-            return nullptr;
-        }
-        g_HeapAllocated = end;
-        return reinterpret_cast<void*>(aligned);
-    }
-
-    inline void* AllocCemuHeap(size_t size, size_t align = 256) {
-        if (g_HeapProvider) return g_HeapProvider(size, align);
-        return AllocCemuHeapRaw(size, align);
     }
 
     inline void* AllocateTrampoline(size_t size) {

@@ -2,19 +2,19 @@
 setlocal
 
 call scripts\devkitpro_env.bat
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 echo Generating config...
 python scripts\generate_config.py
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: The plugin filename lives in exactly one place - wiiu.plugin_name in
-:: wiixlaunch.json - and is read from there rather than repeated here. It feeds
+:: the active target in targets/ - and is read from there rather than repeated
 :: the Makefile's TARGET (passed on the command line below) and the copy step at
 :: the end; hardcoding it in either spot is how it drifts on a rename.
-for /f "usebackq delims=" %%i in (`python -c "import json;print(json.load(open('wiixlaunch.json'))['wiiu']['plugin_name'])"`) do set "WPS_NAME=%%i"
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py wiiu.plugin_name`) do set "WPS_NAME=%%i"
 if not defined WPS_NAME (
-    echo [WiiXLaunch] Could not read wiiu.plugin_name from wiixlaunch.json
+    echo [WiiXLaunch] Could not read wiiu.plugin_name from this target
     exit /b 1
 )
 :: Makefile's TARGET is the same name without the .wps extension
@@ -46,11 +46,20 @@ copy /y scripts\wiiu\Makefile "%STAGE%\Makefile" > nul
 echo Building for Wii U (PowerPC)...
 set STAGEFWD=%STAGE:\=/%
 "%DKP_BASH%" -lc "cd '%STAGEFWD%' && make TARGET='%WPS_TARGET%'"
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
 if not exist build\wiiu mkdir build\wiiu
 copy /y "%STAGE%\%WPS_NAME%" build\wiiu\%WPS_NAME% > nul
-if errorlevel 1 exit /b 1
+if %ERRORLEVEL% NEQ 0 exit /b 1
 
-python scripts\deploy.py
-echo Wii U build complete!
+:: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
+::
+:: It used to also run every gate, build the six example modules and call
+:: scripts/deploy.py. Three different jobs behind one command: you could not
+:: build a host without also publishing one, and a deploy writes the WHOLE mods
+:: directory, so building for one game could overwrite another game's modules.
+::
+::   gates and example modules -> test.bat
+::   packaging and installing  -> python scripts\deploy.py --target <name>
+echo Wii U host built: build\wiiu\%WPS_NAME%
+exit /b 0

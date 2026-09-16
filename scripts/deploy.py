@@ -4,9 +4,16 @@ import json
 import os
 import re
 import shutil
+import argparse
+
 import sys
 import subprocess
 import struct
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import target as target_mod
+
+import ppc_relocs
 
 def find_devkitppc_tool(name):
     """Resolve a devkitPPC binary without hardcoding the install location.
@@ -40,14 +47,13 @@ def find_devkitppc_tool(name):
 
 def main():
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_path = os.path.join(root_dir, "wiixlaunch.json")
 
-    if not os.path.exists(config_path):
-        print(f"Error: Could not find config at {config_path}")
-        sys.exit(1)
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    # Target configuration resolver.
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--target", default=None,
+                    help="host target name; targets/<name>.json")
+    args = ap.parse_args()
+    target_name, config = target_mod.resolve(root_dir, args.target)
 
     project_name = config.get("project", {}).get("name", "Mod")
     switch_cfg = config.get("switch", {})
@@ -61,11 +67,21 @@ def main():
     deploy_dir = os.path.join(root_dir, "deploy")
     switch_deploy_dir = os.path.join(deploy_dir, "switch", "atmosphere", "contents", switch_title_id, "exefs")
     wiiu_deploy_dir = os.path.join(deploy_dir, "wiiu", "wiiu", "environments", "aroma", "plugins")
-    cemu_deploy_dir = os.path.join(deploy_dir, "cemu", "graphicPacks", f"WiiXLaunch_{project_name}")
+    # Pack folder matches project name.
+    cemu_deploy_dir = os.path.join(deploy_dir, "cemu", "graphicPacks", project_name)
 
     os.makedirs(switch_deploy_dir, exist_ok=True)
-    os.makedirs(wiiu_deploy_dir, exist_ok=True)
-    os.makedirs(cemu_deploy_dir, exist_ok=True)
+    # Check if target platform section is declared.
+    def declares(section):
+        return any(not k.startswith("//") for k in config.get(section, {}))
+
+    want_wiiu = declares("wiiu")
+    want_cemu = declares("cemu")
+
+    if want_wiiu:
+        os.makedirs(wiiu_deploy_dir, exist_ok=True)
+    if want_cemu:
+        os.makedirs(cemu_deploy_dir, exist_ok=True)
 
     print("==========================================")
     print(f" WiiXLaunch Deployment Packager for [{project_name}]")
@@ -93,10 +109,89 @@ def main():
     deploy_or_placeholder(build_switch_npdm, os.path.join(switch_deploy_dir, "main.npdm"),
                           "# WiiXLaunch Switch NPDM\n", "Switch")
 
-    build_wiiu_wps = os.path.join(root_dir, "build", "wiiu", plugin_name)
+    # --- Switch modules -----------------------------------------------------
+    #
+    # NOTHING DEPLOYED THESE. build_mod.py --target switch has been writing
+    # .wxlm files to build/switch-mods/ since Switch support landed, the loader
+    # has been enumerating sd:/WiiXLaunch/mods/ for just as long, and no step
+    # connected the two - the modules that ran on Switch got there because
+    # somebody copied them by hand. The build was green throughout, because a
+    # deploy that ships no modules and a deploy that ships the wrong ones look
+    # identical from inside the build.
+    #
+    # Target- and title-scoped switch mods directory.
+    switch_mods_src = os.path.join(root_dir, "build", target_name, "switch-mods")
+    switch_mods_dst = os.path.join(deploy_dir, "switch", "WiiXLaunch", "mods",
+                                   switch_title_id)
+    os.makedirs(switch_mods_dst, exist_ok=True)
+    switch_modules = sorted(f for f in os.listdir(switch_mods_src)
+                            if f.endswith(".wxlm")) if os.path.isdir(switch_mods_src) else []
 
-    deploy_or_placeholder(build_wiiu_wps, os.path.join(wiiu_deploy_dir, plugin_name),
-                          "# WiiXLaunch Wii U Aroma WPS Plugin\n", "Wii U")
+    # Remove stale modules from deploy directory.
+    switch_ids = {m[:-len(".wxlm")] for m in switch_modules}
+    for old_name in sorted(os.listdir(switch_mods_dst)):
+        old_path = os.path.join(switch_mods_dst, old_name)
+        if old_name.endswith(".wxlm") and old_name not in switch_modules:
+            os.remove(old_path)
+            print(f"[Switch] Removed stale module {old_name}")
+        # ...AND ITS RESOURCES. Pruning only the .wxlm left the directory of
+        # files beside it, so a module removed from a build kept a folder in
+        # everyone's install forever - and on a host shared between games, one
+        # game's leftovers sat in the other's mods directory looking deliberate.
+        elif os.path.isdir(old_path) and old_name not in switch_ids:
+            shutil.rmtree(old_path)
+            print(f"[Switch] Removed stale resources {old_name}/")
+
+    if switch_modules:
+        print(f"[Switch] {len(switch_modules)} module(s) -> "
+              f"WiiXLaunch/mods/{switch_title_id}/ on the SD card, in the lexical "
+              f"order the loader will load them:")
+        for i, name in enumerate(switch_modules, 1):
+            src = os.path.join(switch_mods_src, name)
+            shutil.copy2(src, os.path.join(switch_mods_dst, name))
+            print(f"[Switch]   {i}. {name} ({os.path.getsize(src)} bytes)")
+
+        # Per-module resource directories, same as the Cemu pack. A module
+        # that reads a file of its own reads it from mods/<id>/ on whichever
+        # platform it is running, so shipping them on one and not the other
+        # would make the same module work in Cemu and fail on hardware.
+        # Beside the modules it belongs to. This still named the shared
+        # directory after the .wxlm files moved to a per-target one, so a
+        # target deployed its own modules and another target's resources.
+        switch_moddata = os.path.join(switch_mods_src, "moddata")
+        if os.path.isdir(switch_moddata):
+            for mod_id in sorted(os.listdir(switch_moddata)):
+                src_dir = os.path.join(switch_moddata, mod_id)
+                if not os.path.isdir(src_dir):
+                    continue
+                dst_dir = os.path.join(switch_mods_dst, mod_id)
+                if os.path.isdir(dst_dir):
+                    shutil.rmtree(dst_dir)
+                shutil.copytree(src_dir, dst_dir)
+                files = sum(len(f) for _r, _d, f in os.walk(dst_dir))
+                print(f"[Switch]   resources -> "
+                      f"WiiXLaunch/mods/{switch_title_id}/{mod_id}/ "
+                      f"({files} file(s))")
+    else:
+        print("[Switch] No .wxlm in build/switch-mods/ - the SD card gets no modules. "
+              "These are built by scripts/build_mod.py --target switch, which is a "
+              "SEPARATE build from the Cemu one and produces a different binary.")
+
+
+    if want_wiiu:
+        build_wiiu_wps = os.path.join(root_dir, "build", "wiiu", plugin_name)
+        deploy_or_placeholder(build_wiiu_wps,
+                              os.path.join(wiiu_deploy_dir, plugin_name),
+                              "# WiiXLaunch Wii U Aroma WPS Plugin\n", "Wii U")
+    else:
+        print("[Wii U] this target declares no wiiu section - nothing to build")
+
+    if not want_cemu:
+        print("[Cemu] this target declares no cemu section - nothing to build")
+        print("")
+        print("Deployment structures ready in:")
+        print(f" - Switch (Console / Ryujinx / Yuzu): {switch_deploy_dir}")
+        return
 
     cemu_cfg = config.get("cemu", {})
     gp_path = cemu_cfg.get("graphic_pack_path", f"{project_name}/Mods/WiiXLaunch")
@@ -105,7 +200,7 @@ def main():
 
     cemu_rules_content = f"""[Definition]
 titleIds = {wiiu_tids}
-name = "{project_name} (WiiXLaunch Cemu Pack)"
+name = "{project_name}"
 path = "{gp_path}"
 version = 7
 """
@@ -157,76 +252,42 @@ version = 7
 
         # Full 32-bit absolute words: reading the already-linked (base-0) value
         # and adding the runtime delta directly is exact, no extra info needed.
-        readelf_out = subprocess.check_output([readelf_cmd, "-r", elf_path], text=True)
+        # Relocations, parsed by scripts/ppc_relocs.py - the same code
+        # scripts/wxlm.py uses for modules, because the host payload and a
+        # module are the same problem.
+        #
+        # They were separate implementations once, and the copy dropped the
+        # ADDEND: every ADDR16_HA/LO pair resolved to its section base instead
+        # of the symbol it named. Nothing crashed - the first module to load
+        # simply printed the same string five times, because every literal
+        # pointed at the start of .rodata.
+        #
+        # deploy.py keeps its own policy on top:
+        #
+        #   The bootstrap range is EXCLUDED. WiiXLaunch_Cemu_Init hand-computes
+        #   its own runtime-vs-link-time delta from @h/@l immediates that are
+        #   deliberately left as raw link-time constants; "fixing" them like any
+        #   other absolute reference would double-apply the delta and zero out
+        #   g_CodeCaveBase. cemu.ld brackets that range for exactly this.
         reloc_offsets = []
-        # Split 16-bit absolute-address halves (from `lis`/`addis`+`ori`/`addi`
-        # pairs materializing an absolute address in code, e.g. libm's rodata
-        # constant loads - see the sqrtf crash this was added to fix). Unlike
-        # ADDR32, these can't be fixed by adding delta to the bits already
-        # baked into the instruction (that's only half the real address, and
-        # HA additionally bakes in a sign-extension rounding adjustment) - so
-        # each entry instead carries the relocation's own fully-resolved
-        # S+Addend, and the target half is recomputed from scratch at deploy
-        # time against (S+Addend+delta).
         lo_entries, ha_entries, hi_entries = [], [], []
-        # Only relocations for sections that actually end up in the flat
-        # binary may be turned into runtime fixups. Debug sections (.rela.
-        # debug_info etc., present whenever the payload is compiled with -g)
-        # also carry R_PPC_ADDR32 relocs, but their offsets are relative to
-        # the debug sections - applying them would corrupt arbitrary words of
-        # the payload at those offsets. (This happened: the resulting garbage
-        # jump crashed Cemu's recompiler at boot.)
-        current_section = ""
-        for line in readelf_out.splitlines():
-            parts = line.strip().split()
-            if line.startswith("Relocation section"):
-                m = re.search(r"'([^']+)'", line)
-                current_section = m.group(1) if m else ""
+
+        for r in ppc_relocs.read(readelf_cmd, elf_path):
+            if bootstrap_start <= r.offset < bootstrap_end:
                 continue
-            if ".debug" in current_section:
-                continue
-            if "R_PPC_ADDR32" in line or "R_PPC_RELATIVE" in line:
-                if len(parts) >= 1:
-                    offset = int(parts[0], 16)
-                    # The bootstrap keeps raw link-time constants on purpose;
-                    # excluded here for the same reason as the 16-bit halves.
-                    if not (bootstrap_start <= offset < bootstrap_end):
-                        reloc_offsets.append(offset)
-                continue
-            for rtype, bucket in (("R_PPC_ADDR16_LO", lo_entries),
-                                   ("R_PPC_ADDR16_HA", ha_entries),
-                                   ("R_PPC_ADDR16_HI", hi_entries)):
-                if rtype in line and len(parts) >= 5:
-                    offset = int(parts[0], 16)
-                    if bootstrap_start <= offset < bootstrap_end:
-                        break
-                    sym_value = int(parts[3], 16)
-                    # "Sym.Name + Addend" (or "- Addend") is everything from
-                    # parts[4] onward; addend is always the last token.
-                    addend_tok = parts[-1]
-                    sign = -1 if (len(parts) >= 6 and parts[-2] == "-") else 1
-                    addend = sign * int(addend_tok, 16)
-                    s_plus_a = (sym_value + addend) & 0xFFFFFFFF
-                    bucket.append((offset, s_plus_a))
-                    break
+            if r.type in ("R_PPC_ADDR32", "R_PPC_RELATIVE"):
+                reloc_offsets.append(r.offset)
+            elif r.type == "R_PPC_ADDR16_LO":
+                lo_entries.append((r.offset, r.s_plus_a))
+            elif r.type == "R_PPC_ADDR16_HA":
+                ha_entries.append((r.offset, r.s_plus_a))
+            elif r.type == "R_PPC_ADDR16_HI":
+                hi_entries.append((r.offset, r.s_plus_a))
 
         num_relocs = len(reloc_offsets)
         binary_size = len(payload_data)
         entry_hook = int(cemu_cfg.get("entry_hook", "0x00000000"), 16)
 
-        # --- Runtime relocation table ------------------------------------
-        #
-        # The payload used to be relocated here against a hardcoded code cave
-        # address. Cemu assigns code caves sequentially in graphic-pack load
-        # order, so that address depends on which packs the user has enabled
-        # and on the Cemu version - nothing this script can determine, and a
-        # value that is right on one machine and wrong on the next.
-        #
-        # Wrong meant every absolute address in the payload was off by the same
-        # delta: hooks jumped that far past their callbacks into unrelated
-        # code, globals read the wrong memory, and WIIXL_LOG resolved a bogus
-        # shim table so nothing was logged to explain it.
-        #
         # So the payload now ships linked at base 0 and relocates itself. Each
         # entry is a header word of (kind << 24 | offset) plus the relocation's
         # link-time target; WiiXLaunch_Cemu_Relocate adds the real load address
@@ -315,29 +376,182 @@ version = 7
             with open(asm_file_path, "r", encoding="utf-8") as f:
                 asm_text = f.read()
 
+            rel_path = os.path.relpath(asm_file_path, root_dir)
+            is_module_asm = rel_path.replace(chr(92), "/").startswith("vendor/")
+
+            # An .asm that declares an offset symbol must have it resolve, OR
+            # not be emitted at all. The table is only reachable through the C++
+            # global named here, patched with the table's offset - so shipping
+            # the table without the symbol means shipping bytes nothing can
+            # call, and every call through it reads a null pointer. Silent at
+            # build time, silent at boot.
+            #
+            # There are two ways the symbol can be missing, and they need
+            # different answers:
+            #
+            #   BASE (src/cemu/*.asm) - the host always needs these, and
+            #   src/cemu/bootstrap.cpp includes the umbrella precisely so their
+            #   globals are always emitted. Missing means something is wrong:
+            #   hard error.
+            #
+            #   MODULE (vendor/wiixlaunch-*/src/cemu/*.asm) - a project may
+            #   legitimately vendor a module and not use it, in which case the
+            #   header declaring the global is never included and the symbol
+            #   genuinely should not exist. Emitting its shim table anyway is
+            #   just dead weight in a shared 4 MB code cave. Skip the file and
+            #   say so.
+            #
+            # Symbols referenced only from assembly tables must be declared used.
             m = offset_symbol_re.search(asm_text)
             if m:
-                symbol_addr = sym_dict.get(m.group(1))
-                if symbol_addr is not None and symbol_addr + 4 <= len(payload_buf):
-                    struct.pack_into(">I", payload_buf, symbol_addr, running_offset)
+                symbol_name = m.group(1)
+                symbol_addr = sym_dict.get(symbol_name)
 
-            rel_path = os.path.relpath(asm_file_path, root_dir)
+                if symbol_addr is None and is_module_asm:
+                    # Check if module was compiled in via g_WiiXLaunchModule_<name>.
+                    module_name = None
+                    parts = rel_path.replace(chr(92), "/").split("/")
+                    for part in parts:
+                        if part.startswith("wiixlaunch-"):
+                            module_name = part[len("wiixlaunch-"):]
+                            break
+
+                    marker = f"g_WiiXLaunchModule_{module_name}" if module_name else None
+                    module_is_used = marker is not None and marker in sym_dict
+
+                    if module_is_used:
+                        raise RuntimeError(
+                            f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name}, but that "
+                            f"symbol is not in {os.path.basename(elf_path)} - while the module "
+                            f"IS compiled into this build ({marker} is present).\n"
+                            f"  So this is a dropped symbol, not an unused module. Its shim "
+                            f"table would ship in the code cave with nothing able to call it, "
+                            f"and every call through it would read a null pointer.\n"
+                            f"  Almost certainly {symbol_name} is missing "
+                            f"__attribute__((used)), or the header declaring it is no longer "
+                            f"included by anything in the module.")
+
+                    if marker is None:
+                        print(f"[Cemu] Skipping {rel_path}: could not work out which module it "
+                              f"belongs to, and {symbol_name} is absent. Expected the path to "
+                              f"contain a 'wiixlaunch-<name>' directory.")
+                    else:
+                        print(f"[Cemu] Skipping {rel_path}: module '{module_name}' is vendored "
+                              f"but not compiled into this build ({marker} absent), so its shim "
+                              f"table would be dead weight in the code cave.")
+                    continue
+
+                if symbol_addr is None:
+                    raise RuntimeError(
+                        f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name}, but there "
+                        f"is no such symbol in {os.path.basename(elf_path)}.\n"
+                        f"  This is base framework asm, so the host always needs it - "
+                        f"src/cemu/bootstrap.cpp includes the umbrella so these globals are "
+                        f"always emitted.\n"
+                        f"  Usually the header declaring {symbol_name} lost its include, or "
+                        f"the global is missing __attribute__((used)) - an inline variable no "
+                        f"translation unit odr-uses is never emitted.")
+
+                if symbol_addr + 4 > len(payload_buf):
+                    raise RuntimeError(
+                        f"{rel_path} declares WIIXL_OFFSET_SYMBOL: {symbol_name} at "
+                        f"0x{symbol_addr:X}, which is past the end of the {len(payload_buf)}-byte "
+                        f"payload.\n"
+                        f"  The offset cannot be written, so the shim table would ship "
+                        f"unreachable. Check that the global lives in a section the flat binary "
+                        f"actually contains (see scripts/cemu.ld).")
+
+                struct.pack_into(">I", payload_buf, symbol_addr, running_offset)
+
             cemu_included_asm_content += f"\n# --- Included from {rel_path} ---\n"
             cemu_included_asm_content += asm_text + "\n"
             running_offset += count_asm_words(asm_text) * 4
 
-        # Patch g_CemuHeapOffset directly into payload
+        # Patch g_CemuHeapOffset directly into payload.
+        #
+        # Strict, for the same reason the shim offsets are: this was the last
+        # silent skip in this script. A missing symbol here does not fail the
+        # build - it ships a payload whose heap base is the code-cave base with
+        # no offset, so the first allocation hands back memory overlapping the
+        # payload's own code. There is no diagnostic; things simply get
+        # corrupted later.
         heap_offset_sym = sym_dict.get("g_CemuHeapOffset")
-        if heap_offset_sym is not None and heap_offset_sym + 4 <= len(payload_buf):
-            struct.pack_into(">I", payload_buf, heap_offset_sym, running_offset)
+        if heap_offset_sym is None:
+            raise RuntimeError(
+                "g_CemuHeapOffset is not in %s, so the payload's heap base cannot be "
+                "patched.\n"
+                "  Everything allocated at runtime would come out of the payload's own "
+                "code. The global lives in include/wiixl_cemu_backend.hpp and is "
+                "__attribute__((used)); a build missing it is one where no translation "
+                "unit included that header at all." % os.path.basename(elf_path))
+        if heap_offset_sym + 4 > len(payload_buf):
+            raise RuntimeError(
+                "g_CemuHeapOffset is at 0x%X, past the end of the %d-byte payload - it is "
+                "not in a section the flat binary contains (see scripts/cemu.ld)."
+                % (heap_offset_sym, len(payload_buf)))
+        struct.pack_into(">I", payload_buf, heap_offset_sym, running_offset)
 
         payload_data = bytes(payload_buf)
+
+        # --- Load point (build-time nomination) ---
+        #
+        # A project declares one with WIIXL_DECLARE_LOAD_POINT(addr) (see
+        # include/wiixlaunch/loader/load_point.hpp) and provides a stub named
+        # WiiXLaunch_LoadPointStub. Both are read out of the ELF here: the
+        # declared game address becomes an `.origin` patch in this pack, and the
+        # stub's offset in the payload becomes the branch target label.
+        #
+        # Deliberately NOT a runtime patch. The load point sits inside a
+        # function Cemu may already have recompiled by the time the payload
+        # runs, and only the host pack should ever write into game memory.
+        # Emitting it here removes both questions.
+        #
+        # No declaration means no load point: nothing is emitted and the reason
+        # is printed. That is the correct state for a host with no game module,
+        # not a silent boot that does nothing.
+        load_point_addr = 0
+        load_point_stub_offset = None
+        lp_addr_sym = sym_dict.get("g_WiiXLaunchLoadPointAddr")
+        lp_stub_sym = sym_dict.get("WiiXLaunch_LoadPointStub")
+        if lp_addr_sym is not None and lp_addr_sym + 4 <= len(payload_data):
+            load_point_addr = struct.unpack_from(">I", payload_data, lp_addr_sym)[0]
+
+        if load_point_addr != 0 and lp_stub_sym is None:
+            raise RuntimeError(
+                f"A load point is declared at 0x{load_point_addr:08X} "
+                f"(g_WiiXLaunchLoadPointAddr), but there is no WiiXLaunch_LoadPointStub "
+                f"symbol to branch to.\n"
+                f"  WIIXL_DECLARE_LOAD_POINT requires a stub with that exact name - "
+                f"deploy.py places the branch target label by looking it up.")
+        if load_point_addr == 0 and lp_stub_sym is not None:
+            raise RuntimeError(
+                "WiiXLaunch_LoadPointStub exists but no load point address is declared "
+                "(g_WiiXLaunchLoadPointAddr absent or zero).\n"
+                "  The stub would sit in the codecave and never be reached. Declare where "
+                "it is branched from with WIIXL_DECLARE_LOAD_POINT(addr).")
+
+        if load_point_addr != 0:
+            load_point_stub_offset = lp_stub_sym
+            if load_point_stub_offset % 4 != 0 or load_point_stub_offset >= binary_size:
+                raise RuntimeError(
+                    f"WiiXLaunch_LoadPointStub is at 0x{load_point_stub_offset:X}, which is not "
+                    f"a 4-byte-aligned offset inside the {binary_size}-byte payload.")
+            print(f"[Cemu] Load point 0x{load_point_addr:08X} -> stub at payload "
+                  f"+0x{load_point_stub_offset:X}")
+        else:
+            print("[Cemu] No load point declared (no WIIXL_DECLARE_LOAD_POINT in this build) "
+                  "- modules will not be loaded")
 
         cemu_asm_content += f"# --- WiiXLaunch C++ Payload (linked at 0, relocates itself on entry) ---\n"
         cemu_asm_content += ".origin = codecave\n"
         cemu_asm_content += "wiixlaunch_codecave_start:\n"
         cemu_asm_content += "wiixlaunch_binary:\n"
         for i in range(0, binary_size, 4):
+            # The load-point branch needs a label Cemu's assembler can resolve.
+            # The stub lives inside the payload blob rather than in one of the
+            # .asm files, so its label is planted at its offset here.
+            if load_point_stub_offset is not None and i == load_point_stub_offset:
+                cemu_asm_content += "wiixlaunch_loadpoint_stub:\n"
             word = struct.unpack(">I", payload_data[i:i+4])[0]
             cemu_asm_content += f"  .int 0x{word:08X}\n"
 
@@ -355,9 +569,20 @@ version = 7
         # the end of the cave, and past 0x01C00000, the end of Cemu's code-cave
         # area, which is not mapped at all.
         #
-        # The payload's heap runs from g_CemuHeapOffset (patched above) to that
+        # The payload's arena runs from g_CemuHeapOffset (patched above) to that
         # 0x01C00000 boundary and is bounded at runtime, so nothing needs to be
-        # reserved here. See Backend::AllocCemuHeap in include/wiixl_cemu_backend.hpp.
+        # reserved here. See WiiXLaunch::Arena in
+        # include/wiixlaunch/loader/arena.hpp - it reads this base, works out the
+        # distance to the wall itself, and is the only allocator in the payload.
+
+        if load_point_addr != 0:
+            # One instruction, exactly like the entry hook below. The stub is
+            # responsible for executing the single displaced instruction and
+            # branching back to load_point_addr + 4.
+            cemu_asm_content += (f"\n# Load Point: redirect 0x{load_point_addr:08X} -> "
+                                 f"wiixlaunch_loadpoint_stub\n")
+            cemu_asm_content += f".origin = 0x{load_point_addr:08X}\n"
+            cemu_asm_content += f"  b wiixlaunch_loadpoint_stub\n\n"
 
         if entry_hook != 0:
             cemu_asm_content += f"\n# Entry Hook: redirect 0x{entry_hook:08X} -> wiixlaunch_codecave_start\n"
@@ -375,12 +600,86 @@ version = 7
             f.write(cemu_asm_content)
         print(f"[Cemu] Generated Graphic Pack files -> {cemu_deploy_dir}")
 
+    # Stage 1 load-point probe test file (content/WiiXLaunch/mods/probe.bin).
+    WIIXL_CONTENT_DIR = "WiiXLaunch"
+    probe_dir = os.path.join(cemu_deploy_dir, "content", WIIXL_CONTENT_DIR, "mods")
+    os.makedirs(probe_dir, exist_ok=True)
+    probe_path = os.path.join(probe_dir, "probe.bin")
+    probe_magic = b"WXLP"
+    probe_body = probe_magic + b"ROBE stage-1 load point probe file. "
+    probe_body += bytes(range(0x10)) * 2
+    probe_body = probe_body[:64].ljust(64, b"\x00")
+    with open(probe_path, "wb") as f:
+        f.write(probe_body)
+    print(f"[Cemu] Load-point probe file -> content/WiiXLaunch/mods/probe.bin "
+          f"({len(probe_body)} bytes, magic {probe_magic.decode()})")
+
+    # Copy all built .wxlm modules in lexical order.
+    build_dir = os.path.join(root_dir, "build")
+    modules = sorted(f for f in os.listdir(build_dir)
+                     if f.endswith(".wxlm")) if os.path.isdir(build_dir) else []
+
+    # Stale modules from an earlier build must not survive into this pack.
+    for old_name in sorted(os.listdir(probe_dir)):
+        if old_name.endswith(".wxlm") and old_name not in modules:
+            os.remove(os.path.join(probe_dir, old_name))
+            print(f"[Cemu] Removed stale module {old_name} from the pack")
+
+    if modules:
+        print(f"[Cemu] {len(modules)} module(s) -> content/WiiXLaunch/mods/, "
+              f"in the lexical order the loader will load them:")
+        for i, name in enumerate(modules, 1):
+            src = os.path.join(build_dir, name)
+            shutil.copy2(src, os.path.join(probe_dir, name))
+            print(f"[Cemu]   {i}. {name} ({os.path.getsize(src)} bytes)")
+
+        # Per-module resource directories (mods/<id>/).
+        moddata = os.path.join(build_dir, "moddata")
+        if os.path.isdir(moddata):
+            for mod_id in sorted(os.listdir(moddata)):
+                src_dir = os.path.join(moddata, mod_id)
+                if not os.path.isdir(src_dir):
+                    continue
+                dst_dir = os.path.join(probe_dir, mod_id)
+                if os.path.isdir(dst_dir):
+                    shutil.rmtree(dst_dir)
+                shutil.copytree(src_dir, dst_dir)
+                files = sum(len(f) for _r, _d, f in os.walk(dst_dir))
+                print(f"[Cemu]   resources -> content/WiiXLaunch/mods/{mod_id}/ "
+                      f"({files} file(s))")
+    else:
+        print("[Cemu] No .wxlm in build/ - the pack ships no module, and the loader "
+              "will log that it found nothing to load")
+
     # Package src/resources into content/WiiXLaunch/ for Cemu graphic pack
     resources_src = os.path.join(root_dir, "src", "resources")
-    resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")
+    resources_dst = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch",
+                                 "mods", "_host")
     if os.path.exists(resources_src):
         pack_script = os.path.join(root_dir, "scripts", "pack_resources.py")
         subprocess.run([sys.executable, pack_script, resources_src, resources_dst], check=True)
+
+        # Clean up legacy un-namespaced host resources.
+        legacy_dir = os.path.join(cemu_deploy_dir, "content", "WiiXLaunch")
+        for name in sorted(os.listdir(resources_dst)):
+            stale = os.path.join(legacy_dir, name)
+            if os.path.isfile(stale):
+                os.remove(stale)
+                print(f"[Cemu] Removed {name} from the pre-namespacing location; "
+                      f"it lives under mods/_host/ now")
+
+    # Enforce canonical path casing (case-sensitive on target consoles/Linux).
+    content_root = os.path.join(cemu_deploy_dir, "content")
+    if os.path.isdir(content_root):
+        for entry in os.listdir(content_root):
+            if entry.lower() == WIIXL_CONTENT_DIR.lower() and entry != WIIXL_CONTENT_DIR:
+                raise RuntimeError(
+                    f"Graphic pack content directory is named '{entry}', but the canonical "
+                    f"spelling is '{WIIXL_CONTENT_DIR}'.\n"
+                    f"  Wii U's filesystem is case-sensitive; this builds fine here and fails "
+                    f"to find its files on hardware and on Linux Cemu.\n"
+                    f"  Rename {content_root}{os.sep}{entry} to "
+                    f"{content_root}{os.sep}{WIIXL_CONTENT_DIR}.")
 
     print("\nDeployment structures ready in:")
     print(f" - Switch (Console / Ryujinx / Yuzu): {switch_deploy_dir}")

@@ -1,7 +1,4 @@
-// WUPS plugin glue - Wii U (Aroma) only. This is what makes the built .wps a
-// loadable plugin: Aroma reads the WUPS_PLUGIN_* metadata sections and calls
-// INITIALIZE_PLUGIN() at plugin load, which is our one entry into
-// WiiXLaunch_Init().
+// WUPS plugin glue for Wii U (Aroma).
 #include <wiixlaunch/platform.hpp>
 
 #if WIIXL_WIIU
@@ -13,7 +10,24 @@
 #include <wiixlaunch/generated_wiiu_config.hpp>
 #include <wiixlaunch/wiiu/wiiu_backend.hpp>
 #include <wiixlaunch/time.hpp>
+#include <wiixlaunch/loader/loader.hpp>
+#include <wiixlaunch/loader/core_surface.hpp>
+#include <wiixlaunch/loader/arena.hpp>
+#include <wiixlaunch/patches.hpp>
+// Host::PatchesPersist - whether declared patches outlive the load.
+#include <wiixlaunch/generated_host.hpp>
+#include <coreinit/cache.h>
+#include <coreinit/memdefaultheap.h>
 #include <cstdio>
+
+// Heap-allocated arena for loaded modules.
+constexpr uint32_t kWiiUArenaSize = 2u * 1024u * 1024u;
+
+// Flush data cache and invalidate instruction cache after loading modules.
+static void WiiUFlush(uintptr_t addr, uint32_t size) {
+    DCFlushRange(reinterpret_cast<void*>(addr), size);
+    ICInvalidateRange(reinterpret_cast<void*>(addr), size);
+}
 
 WUPS_PLUGIN_NAME(WUPS_PLUGIN_NAME_STR);
 WUPS_PLUGIN_DESCRIPTION(WUPS_PLUGIN_DESCRIPTION_STR);
@@ -79,6 +93,7 @@ INITIALIZE_PLUGIN() {
     }
 }
 
+// Wii U load point: runs when title starts and filesystem is ready.
 ON_APPLICATION_START() {
     s_NotifyInitStatus = NotificationModule_InitLibrary();
 
@@ -87,6 +102,48 @@ ON_APPLICATION_START() {
     snprintf(msg, sizeof(msg), "WiiXLaunch: active (%lu hooks, init %s)",
              (unsigned long)B::g_PatchOkCount, B::g_BackendInitOk ? "ok" : "FAILED");
     NotificationModule_AddInfoNotification(msg);
+
+    // Allocate module arena from default heap and configure flush hook.
+    void* arena = MEMAllocFromDefaultHeapEx(kWiiUArenaSize, 64);
+    if (arena) {
+        WiiXLaunch::Arena::SetReservation(reinterpret_cast<uintptr_t>(arena),
+                                          kWiiUArenaSize);
+        WiiXLaunch::Loader::SetFlushHook(&WiiUFlush);
+        WIIXL_LOG("[loader] arena %u B at %p", kWiiUArenaSize, arena);
+    } else {
+        WIIXL_LOG("[loader] could not allocate a %u B arena from the default "
+                  "heap - every module will be refused for memory, and that is "
+                  "this plugin's fault rather than theirs.", kWiiUArenaSize);
+    }
+
+    WIIXL_LOG("[loader] host ABI v%u, format v%u",
+              WiiXLaunch::Core::kAbiVersion, WiiXLaunch::Wxlm::kFormatVersion);
+    WiiXLaunch::Surface::LogRegistered();
+
+    const uint32_t loaded = WiiXLaunch::Loader::LoadAll("WiiXLaunch/mods");
+
+    // Verify declared patches and restore them unless configured to persist.
+    WiiXLaunch::Patches::VerifyApplied();
+    if constexpr (!WiiXLaunch::Host::PatchesPersist) {
+        WiiXLaunch::Patches::RestoreAll();
+    } else {
+        WIIXL_LOG("Patch: this host keeps declared patches (patches.persist), so "
+                  "they are verified and LEFT IN PLACE");
+    }
+    WiiXLaunch::Patches::LogState();
+
+    if (loaded != 0) {
+        WiiXLaunch::Loader::RunPhase(WiiXLaunch::Wxlm::Phase::Load);
+        snprintf(msg, sizeof(msg), "WiiXLaunch: %lu module(s) loaded",
+                 (unsigned long)loaded);
+        NotificationModule_AddInfoNotification(msg);
+    } else {
+        // A module that was found and REJECTED must not report as an absent
+        // one. Only the loader knows which happened, and the lines above say.
+        WIIXL_LOG("[loader] no modules loaded. The game boots normally either way; "
+                  "if the directory is simply empty that is the default state of a "
+                  "fresh host, and the lines above say which it was.");
+    }
 }
 
 #endif

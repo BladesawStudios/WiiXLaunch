@@ -1,0 +1,128 @@
+{
+  "project": {
+    "name": "WiiXLaunch_TotK",
+    "version": "1.0.0",
+    "author": "Mindstormman",
+    "description": "WiiXLaunch host for Tears of the Kingdom 1.2.1",
+    "debug": true
+  },
+  "memory": {
+    "heap_size": "0x50000",
+    "jit_size": "0x10000",
+    "inline_pool_size": "0x10000",
+    "log_buffer_size": 512
+  },
+  "identity": {
+    "//": "As botw.json - read-only data, never .text. Switch only; there is no Wii U Tears of the Kingdom.",
+    "//switch": "0x800000 from the start of read-only data, and the offset is constrained by the SMALLEST build, not the one in front of you. 1.0.0-1.3.0 carry ~23.6 MB of read-only data and 1.4.0-1.4.3 only ~10.1 MB, so the first choice of 0xC00000 was past the end on every 1.4.x - which the host's own bounds check would have reported as 'cannot fingerprint' rather than hashing garbage, but it would have meant no 1.4.x could ever be enrolled. 0x800000 is in range for all twelve with 1.7 MB to spare, and produces twelve distinct fingerprints - checked, not assumed.",
+    "//sections": "This lands in .rela.dyn on 1.0-1.3 and in unwind data on 1.4.x, because the section layout moved. That is fine and is not the same concern as hashing .text: relocation entries are MODULE-RELATIVE, so unlike the absolute pointers in a vtable they do not change with the load base. The requirement is that the bytes be immutable at runtime and differ per build, and both hold.",
+    "switch": {
+      "offset": "0x800000",
+      "length": 4096
+    },
+    "known": [
+      {
+        "name": "1.2.1",
+        "platform": "switch",
+        "fingerprint": "0x181D91D8",
+        "build_id": "9B4E43650501A4D4489B4BBFDB740F26AF3CF850"
+      },
+      {
+        "name": "1.0.0",
+        "platform": "switch",
+        "fingerprint": "0x3BDA566B",
+        "build_id": "082CE09B06E33A123CB1E2770F5F9147709033DB"
+      },
+      {
+        "name": "1.0.1",
+        "platform": "switch",
+        "fingerprint": "0xC1404ED7",
+        "build_id": "184008D8DF6F356B65D6142ED71FEC17AF6AE967"
+      },
+      {
+        "name": "1.1.0",
+        "platform": "switch",
+        "fingerprint": "0x975A39A9",
+        "build_id": "D5AD6AC71EF53E3E52417C1B81DBC9B4142AA3B3"
+      },
+      {
+        "name": "1.1.1",
+        "platform": "switch",
+        "fingerprint": "0x5ABB81DD",
+        "build_id": "168DD518D925C7A327677286E72FEDA833314919"
+      },
+      {
+        "name": "1.1.2",
+        "platform": "switch",
+        "fingerprint": "0xC045FF85",
+        "build_id": "9A10ED9435C06733DA597D8094D9000AB5D3EE60"
+      },
+      {
+        "name": "1.2.0",
+        "platform": "switch",
+        "fingerprint": "0xBFDDB060",
+        "build_id": "6F32C68DD3BC7D77AA714B80E92A096A737CDA77"
+      },
+      {
+        "name": "1.4.0",
+        "platform": "switch",
+        "fingerprint": "0x95320A30",
+        "build_id": "6265F94D606242CE730EF721A8037DDA8E4BFC63"
+      },
+      {
+        "name": "1.4.1",
+        "platform": "switch",
+        "fingerprint": "0x26C65193",
+        "build_id": "965EAB9CEB8EB867F747DA772022C95065C9B927"
+      },
+      {
+        "name": "1.4.2",
+        "platform": "switch",
+        "fingerprint": "0xEEAD6F44",
+        "build_id": "5CB42B1CF25469FB0635FD046453D843C18BC8AB"
+      },
+      {
+        "name": "1.4.3",
+        "platform": "switch",
+        "fingerprint": "0x3773378F",
+        "build_id": "277178B7DBA1B6D4949A84778D4ABC58B31B34F5"
+      }
+    ],
+    "//names": "WHERE THESE NAMES CAME FROM, because a name is not evidence. Only 1.2.1 is corroborated: its build_id is the one Ryujinx reported for the session it loaded and called v1.2.1. Every other name is the name of the folder its dump sat in. The build_id on each row is the check - it is what a loader prints, so any row can be confirmed against a boot log later without this tool or the dumps.",
+    "//no-1.3.0": "RESOLVED: 1.3.0 was a leaked update that never shipped, and its main is byte-identical to 1.2.1s - so it changed data and reused the executable. It is left unenrolled because enrolling it would collide with 1.2.1 on the same fingerprint, and that collision would be correct rather than a problem: the EXECUTABLE is what offsets depend on, there is one of them, and a 1.3.0 game is already recognised as 1.2.1 with every address right."
+  },
+  "modules": [],
+  "patches": {
+    "persist": true
+  },
+  "switch": {
+    "title_id": "0100F2C0115B6000",
+    "title_id_range_min": "0x0100F2C0115B6000",
+    "title_id_range_max": "0x0100F2C0115B6000",
+    "subsdk_name": "subsdk9",
+    "load_kind": "Module",
+    "system_resource_size": "0x01000000",
+    "optimize_memory_allocation": true,
+    "extra_service_access": [
+      "ectx:aw",
+      "mnpp:app",
+      "ngct:u",
+      "notif:a"
+    ],
+    "main_thread_stack_size": "0x00100000",
+    "main_thread_priority": 44,
+    "default_cpu_id": 0,
+    "mount_path": "/mnt/sdcard",
+    "//": "system_resource_size and extra_service_access must match TOTK 1.2.1's own main.npdm - the game's memory init fails at boot if the size is 0, and exlaunch's generic service list omits four that TOTK grants itself.",
+    "//load_point": "exl_main is too early on this SDK. nn::fs has no allocator until nnSdk installs one during init, so MountSdCardForDebug calls through a null pointer and dies in nn::fs::fsa::Register. 'fs_ready' waits for the first time the GAME opens a file, which is a fact about the filesystem rather than a guess about which game function runs when - hooking nninitStartup by offset did nothing, because that address is a PLT thunk main uses for its own calls and nnSdk goes straight to the real definition.",
+    "load_point": "fs_ready"
+  },
+  "wiiu": {
+    "//": "There is no Wii U Tears of the Kingdom. Nothing to build."
+  },
+  "cemu": {
+    "//": "Cemu runs Wii U titles. Nothing to build."
+  },
+  "//samples": "The example mods under examples/ are the framework's own and two of them are BotW's - e_player needs botw.player, c_patch carries BotW addresses. The loader refuses them by name on this host, which is the mechanism working, but they do not belong in a TOTK install and shipping them means a deploy can overwrite the mods that do.",
+  "samples": false
+}

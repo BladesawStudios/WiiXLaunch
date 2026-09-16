@@ -2,32 +2,69 @@
 
 # WiiXLaunch
 
-WiiXLaunch is a cross-platform C++ hooking framework for **Nintendo Switch**, **Nintendo Wii U** (Aroma/WUPS), and **Cemu**. You write a hook once, in normal C++, and it builds for all three targets.
+A cross-platform C++ hooking framework for Nintendo Switch, Nintendo Wii U
+(Aroma/WUPS), and Cemu.
 
-The framework hides the differences between three very different hooking mechanisms behind one API:
+| I want to... | go to |
+|---|---|
+| Write a mod (`.wxlm`) against a built host | [SDK: Getting started](sdk/getting-started.md) |
+| Build or change the host, a game module, or the loader | [Framework: Setup](framework/setup.md) |
 
-* **Switch**: exlaunch's inline ARM64 hooking engine, patched into the game's NSO at load time.
-* **Wii U**: WUPS + libfunctionpatcher, which replaces a function in the running RPX by title ID.
-* **Cemu**: a hand-written PowerPC code cave, injected via a graphic pack patch.
+## Host hooks vs. mod hooks
 
-## Where to go next
+Host code (`src/main.cpp`, compiled into the payload) installs a hook with
+`WIIXL_HOOK_DEFINE_TRAMPOLINE` and a compile-time `(switchOffset, wiiuOffset)`
+pair. See [Framework: Hooks](framework/hooks.md).
 
-* [Setting Up](setup.md) - installing the toolchains, configuring `wiixlaunch.json`, building and deploying for each platform.
-* [Hooks](hooks.md) - writing `WIIXL_HOOK_DEFINE_TRAMPOLINE` hooks, finding offsets, raw memory patches.
-* [Debugging](debugging.md) - `WIIXL_LOG`, and how it reaches you differently on each platform.
-* [Cemu code cave relocation](cemu-relocation.md) - how the payload finds its own load address, and why it has to.
-* [Modules](modules.md) - optional, game-specific APIs (e.g. [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)) added as submodules on top of the base framework.
-* [Graphics Injection](graphics-injection.md) - drawing your own textures and meshes into a game's render loop via `BotW::NVN` (Switch) and `BotW::GX2` (Wii U/Cemu).
+A `.wxlm` mod does not use that macro. It calls one runtime import,
+`wiixl_core:InstallHook(target, callback)`, resolved at load time against a
+surface registry. See [SDK: Hooks, patches and runtime](sdk/hooks-patches-and-runtime.md).
+
+Both dispatch into the same hook registry and the same three platform
+backends: exlaunch, WUPS/libfunctionpatcher, and a Cemu trampoline pool.
+Conflicts are reported the same way everywhere. Host macros will not compile
+inside a `.wxlm`.
 
 ## Layout
 
-* `src/` - your mod code. Starts at `WiiXLaunch_Init()` in `main.cpp`.
-* `include/wiixlaunch/` - the framework itself.
-* `vendor/` - exlaunch, wut, WUPS, libfunctionpatcher (git submodules).
-* `scripts/` - config generation and packaging.
-* `tools/` - host-side developer tools (see [Debugging](debugging.md)).
-* `wiixlaunch.json` - the one file that describes your mod: name, target title IDs, memory sizes.
+* `src/`: the host. Entry point `WiiXLaunch_Init()` in `main.cpp`.
+* `include/wiixlaunch/`: the framework, used only when building the host.
+* `sdk/`: the committed mod SDK. Generated import headers, the freestanding
+  runtime, `build_mod.py` (includes `--init`), and `wxlm.py`. See
+  [sdk/README.md](../sdk/README.md).
+* `examples/`: reference `.wxlm` mods, built by `test.bat`.
+* `targets/<game>.json`: one file per game. Host build settings, title IDs,
+  which game module to compile in.
+* `vendor/`: exlaunch, wut, WUPS, libfunctionpatcher, libnotifications, game
+  modules. Framework-only, git submodules.
+* `scripts/`: config generation, the `.wxlm` writer, packaging, test gates.
+* `tools/`: host-side developer tools and test binaries.
+* `docs/framework/`: building and changing the host.
+* `docs/sdk/`: writing, building, and shipping a `.wxlm` mod.
 
-## Graphics injection R&D
+## Platform status
 
-This project is a sandbox for the in-game UI/graphics-pipeline injection work described in [wiixlaunch-botw](https://github.com/TKVSC-Team/wiixlaunch-botw)'s TODO.md - see [Graphics Injection](graphics-injection.md) for the current API and how it works on each platform.
+| Platform | Host builds | Mods loaded and run |
+|---|---|---|
+| Cemu | yes | yes |
+| Switch | yes | yes (under Ryujinx) |
+| Wii U | yes | not yet, needs Aroma on real hardware |
+
+See [Framework: Setup, known gaps](framework/setup.md#known-gaps).
+
+## License
+
+GPL-3.0. See [LICENSE](../LICENSE).
+
+## Credits
+
+* [ExLaunch](https://github.com/shadowninja108/exlaunch): AArch64 inline
+  hooking, NSO loading, memory patching for Switch.
+* [WiiUPluginSystem (WUPS)](https://github.com/wiiu-env/WiiUPluginSystem):
+  plugin architecture and Aroma integration for Wii U.
+* [libfunctionpatcher](https://github.com/wiiu-env/libfunctionpatcher):
+  PowerPC function patching and page permissions for Wii U.
+* [libnotifications](https://github.com/wiiu-env/libnotifications): on-screen
+  notifications used by `WIIXL_LOG` on Wii U.
+* [wut](https://github.com/devkitPro/wut): C/C++ headers and OS bindings for
+  Wii U homebrew.

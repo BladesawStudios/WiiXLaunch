@@ -1,6 +1,9 @@
 #pragma once
 
 #include "platform.hpp"
+// The formatter is its own header so a module can have it too - a .wxlm
+// cannot include this file.
+#include <wiixlaunch/format.hpp>
 #include <cstdint>
 #include <cstdarg>
 
@@ -10,13 +13,7 @@
 #elif WIIXL_WIIU
 #include <notifications/notifications.h>
 #elif WIIXL_CEMU
-// Optional: only present when the BotW module (vendor/wiixlaunch-botw) is
-// installed. Base WiiXLaunch's own ring buffer below works without it -
-// this just adds a relay to the real OSReport when it's available.
-#if __has_include(<wiixlaunch/botw/platform/cemu_logging.hpp>)
-#include <wiixlaunch/botw/platform/cemu_logging.hpp>
-#define WIIXL_HAS_BOTW_CEMU_LOGGING 1
-#endif
+#include <wiixlaunch/cemu/cemu_logging.hpp>
 #endif
 
 // Platform-specific logging: Switch (SvcLogger), Wii U (toast), Cemu (ring buffer).
@@ -58,111 +55,7 @@ inline void WriteRingEntry(const char* text, int len) {
 
 #endif // WIIXL_CEMU
 
-// Libc-free formatter (no crt0 in Cemu); supports %s, %p, %d, %u, %x/%X, %f, %%.
-namespace impl {
 
-inline void AppendChar(char* buf, uint32_t& len, uint32_t cap, char c) {
-    if (len < cap) buf[len++] = c;
-}
-
-inline void AppendStr(char* buf, uint32_t& len, uint32_t cap, const char* s) {
-    if (!s) s = "(null)";
-    while (*s) AppendChar(buf, len, cap, *s++);
-}
-
-inline void AppendUInt(char* buf, uint32_t& len, uint32_t cap, unsigned long long value, int base, bool upper) {
-    char digits[24];
-    int n = 0;
-    if (value == 0) digits[n++] = '0';
-    while (value != 0) {
-        int d = static_cast<int>(value % static_cast<unsigned>(base));
-        digits[n++] = d < 10 ? static_cast<char>('0' + d) : static_cast<char>((upper ? 'A' : 'a') + d - 10);
-        value /= static_cast<unsigned>(base);
-    }
-    while (n > 0) AppendChar(buf, len, cap, digits[--n]);
-}
-
-inline void AppendInt(char* buf, uint32_t& len, uint32_t cap, long long value) {
-    if (value < 0) {
-        AppendChar(buf, len, cap, '-');
-        AppendUInt(buf, len, cap, static_cast<unsigned long long>(-value), 10, false);
-    } else {
-        AppendUInt(buf, len, cap, static_cast<unsigned long long>(value), 10, false);
-    }
-}
-
-inline void AppendFloat(char* buf, uint32_t& len, uint32_t cap, double value, int precision) {
-    if (precision < 0) precision = 6;
-    if (precision > 9) precision = 9; // keeps pow10 well within unsigned long long range
-    if (value < 0) {
-        AppendChar(buf, len, cap, '-');
-        value = -value;
-    }
-    unsigned long long pow10 = 1;
-    for (int i = 0; i < precision; i++) pow10 *= 10;
-    unsigned long long scaled = static_cast<unsigned long long>(value * static_cast<double>(pow10) + 0.5);
-    unsigned long long intPart = scaled / pow10;
-    AppendUInt(buf, len, cap, intPart, 10, false);
-    if (precision > 0) {
-        AppendChar(buf, len, cap, '.');
-        unsigned long long fracPart = scaled - intPart * pow10;
-        unsigned long long divisor = pow10 / 10;
-        for (int i = 0; i < precision; i++) {
-            unsigned long long digit = (fracPart / divisor) % 10;
-            AppendChar(buf, len, cap, static_cast<char>('0' + digit));
-            divisor /= 10;
-        }
-    }
-}
-
-}
-
-// Shared libc-free formatter; cap should leave room for null terminator.
-inline uint32_t FormatText(char* text, uint32_t cap, const char* fmt, va_list args) {
-    uint32_t len = 0;
-
-    for (const char* p = fmt; *p != '\0'; p++) {
-        if (*p != '%') {
-            impl::AppendChar(text, len, cap, *p);
-            continue;
-        }
-        p++;
-        if (*p == '\0') break;
-        if (*p == '%') {
-            impl::AppendChar(text, len, cap, '%');
-            continue;
-        }
-
-        int precision = -1;
-        if (*p == '.') {
-            p++;
-            precision = 0;
-            while (*p >= '0' && *p <= '9') {
-                precision = precision * 10 + (*p - '0');
-                p++;
-            }
-        }
-
-        switch (*p) {
-            case 'd': case 'i': impl::AppendInt(text, len, cap, va_arg(args, int)); break;
-            case 'u': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 10, false); break;
-            case 'x': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 16, false); break;
-            case 'X': impl::AppendUInt(text, len, cap, va_arg(args, unsigned int), 16, true); break;
-            case 'p':
-                impl::AppendStr(text, len, cap, "0x");
-                impl::AppendUInt(text, len, cap, reinterpret_cast<uintptr_t>(va_arg(args, void*)), 16, false);
-                break;
-            case 's': impl::AppendStr(text, len, cap, va_arg(args, const char*)); break;
-            case 'f': impl::AppendFloat(text, len, cap, va_arg(args, double), precision); break;
-            default:
-                impl::AppendChar(text, len, cap, '%');
-                impl::AppendChar(text, len, cap, *p);
-                break;
-        }
-    }
-
-    return len;
-}
 
 inline void DebugPrint(const char* fmt, ...) {
     char text[kMaxLogTextLen];
@@ -183,27 +76,18 @@ inline void DebugPrint(const char* fmt, ...) {
 #elif WIIXL_CEMU
     WriteRingEntry(text, len);
 
-#if WIIXL_HAS_BOTW_CEMU_LOGGING
-    // Guard before resolving. CemuLoggingShimTable() is
-    // g_CodeCaveBase + g_CemuLoggingShimTableOffset and ResolveCemuLogging
-    // dereferences it unconditionally - unlike cemu_net.hpp's ResolveCemuNet,
-    // which checks CemuNetAvailable() first. Both values are zero until
-    // deploy.py patches them, so calling this before that happens reads
-    // through a null pointer and takes the process down. That is reachable
-    // three ways: a host build (tools/ws_test compiles this header as the Cemu
-    // target), a log emitted before the codecave base is computed, and a build
-    // with src/cemu/cemu_logging.asm removed.
-    //
-    // The ring buffer above is written either way, so nothing is lost when
-    // this is skipped - tools that read the ring still see the entry.
-    if (WiiXLaunch::Backend::g_CodeCaveBase != 0 && ::g_CemuLoggingShimTableOffset != 0) {
+    // Guarded: CemuLoggingAvailable() is false until deploy.py patches the
+    // shim offset and the bootstrap computes the codecave base, and
+    // resolving before then would deref a null pointer. The ring buffer is
+    // written either way, so nothing is lost when this is skipped.
+    if (WiiXLaunch::Backend::CemuLoggingAvailable()) {
         using OSReportFn = void (*)(const char*, ...);
         auto osReport = WiiXLaunch::Backend::ResolveCemuLogging<OSReportFn>(WiiXLaunch::Backend::CemuLogImport::OSReport);
         if (osReport) {
+            // OSReport line-buffers and only flushes on '\n'.
             osReport("%s\n", text);
         }
     }
-#endif // WIIXL_HAS_BOTW_CEMU_LOGGING
 #endif
 }
 
