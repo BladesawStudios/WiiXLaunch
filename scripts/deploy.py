@@ -269,11 +269,24 @@ version = 7
         #   deliberately left as raw link-time constants; "fixing" them like any
         #   other absolute reference would double-apply the delta and zero out
         #   g_CodeCaveBase. cemu.ld brackets that range for exactly this.
+        #
+        #   References to UNDEFINED symbols are EXCLUDED. They are weak (a
+        #   strong one would not have linked), their value is 0, and 0 is an
+        #   absolute answer, not an offset into the payload. newlib guards every
+        #   optional hook with `lis/addi rX,__syscall_malloc_lock; cmpwi rX,0;
+        #   beqlr; b __syscall_malloc_lock` - rebasing the lis/addi pair turned
+        #   rX into the load address, the guard passed, and the PC-relative `b`
+        #   to 0 landed on offset 0: WiiXLaunch_Cemu_Init. The first malloc in
+        #   the host (botw.actor Query's std::vector) re-ran the boot entry
+        #   mid-game, which then "returned" into the game's init at 0x0309892c.
+        undefined = ppc_relocs.read_undefined_symbols(readelf_cmd, elf_path)
         reloc_offsets = []
         lo_entries, ha_entries, hi_entries = [], [], []
 
         for r in ppc_relocs.read(readelf_cmd, elf_path):
             if bootstrap_start <= r.offset < bootstrap_end:
+                continue
+            if r.sym_name in undefined:
                 continue
             if r.type in ("R_PPC_ADDR32", "R_PPC_RELATIVE"):
                 reloc_offsets.append(r.offset)

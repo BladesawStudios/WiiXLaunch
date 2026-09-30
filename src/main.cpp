@@ -11,11 +11,20 @@
 #define WIIXL_HAVE_GAME_MODULE 1
 #endif
 
-// Optional graphics demo for BotW.
-#if __has_include(<wiixlaunch/botw/botw.hpp>) && !defined(WIIXL_NO_DEMO)
+// The BotW graphics layer, and the logo demo drawn with it.
+//
+// Two different things, which one flag used to control together. GX2::Init /
+// NVN::Init installs the swap hook - the frame source behind wiixl.core's
+// RegisterTick and the botw.gfx / botw.gui draw callbacks - so a host built
+// with WIIXL_NO_DEMO lost every per-frame mod callback along with the logo.
+// WIIXL_NO_DEMO now removes the logo and nothing else.
+#if __has_include(<wiixlaunch/botw/botw.hpp>)
 #include <wiixlaunch/botw/botw.hpp>
-#define WIIXL_BOTW_DEMO 1
+#define WIIXL_BOTW_GRAPHICS 1
 using namespace WiiXLaunch::BotW;
+#if !defined(WIIXL_NO_DEMO)
+#define WIIXL_BOTW_DEMO 1
+#endif
 #endif
 
 #if WIIXL_BOTW_DEMO
@@ -58,6 +67,27 @@ extern "C" void WiiXLaunch_Init() {
     if (!WiiXLaunch::Backend::InitWiiUBackend()) return;
 #elif WIIXL_CEMU
     if (!WiiXLaunch::Backend::InitCemuBackend()) return;
+
+    // newlib's heap, for anything in the host that reaches malloc - operator
+    // new, and so every std::vector (botw.actor's Query builds one).
+    //
+    // Left alone, _sbrk_r starts at __end__ and grows until it meets the stack
+    // pointer. In a code cave that is the arena: the host's own allocations
+    // and every module's grant sit exactly where the first malloc lands, and
+    // nothing notices until one of them is overwritten. A block of its own,
+    // with fake_heap_end set, turns that into malloc returning null.
+    {
+        constexpr uint32_t kNewlibHeapSize = 128 * 1024;
+        extern char* fake_heap_start;
+        extern char* fake_heap_end;
+        char* heap = static_cast<char*>(WiiXLaunch::Arena::AllocHost(kNewlibHeapSize, 32));
+        if (heap) {
+            fake_heap_start = heap;
+            fake_heap_end = heap + kNewlibHeapSize;
+        } else {
+            WIIXL_LOG("WiiXLaunch: no arena for newlib's heap - host malloc will fail");
+        }
+    }
 #endif
 
     WIIXL_LOG("WiiXLaunch: init OK");
@@ -87,9 +117,16 @@ extern "C" void WiiXLaunch_Init() {
     WiiXLaunch::Time::FormatNow(clock, sizeof(clock));
     WIIXL_LOG("WiiXLaunch: system clock %s", clock);
 
-#if WIIXL_BOTW_DEMO
+#if WIIXL_BOTW_GRAPHICS
 #if WIIXL_SWITCH
     NVN::Init();
+#elif WIIXL_CEMU
+    GX2::Init();
+#endif
+#endif // WIIXL_BOTW_GRAPHICS
+
+#if WIIXL_BOTW_DEMO
+#if WIIXL_SWITCH
     NVN::RegisterDrawCallback(OnRender);
     // Deferred until the game initializes the NVN device.
     NVN::OnInitialized([]() {
@@ -99,7 +136,6 @@ extern "C" void WiiXLaunch_Init() {
                   reinterpret_cast<void*>(g_LogoTexture));
     });
 #elif WIIXL_CEMU
-    GX2::Init();
     GX2::RegisterDrawCallback(OnRender);
     GX2::OnInitialized([]() {
         g_LogoTexture = GX2::LoadTexture("WiiXLaunch/mods/_host/logo.bin");
