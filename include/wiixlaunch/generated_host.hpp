@@ -23,8 +23,11 @@ namespace WiiXLaunch::Host {
     // 0 = exl_main, before the game's main.
     // 1 = the first file the game opens, for an SDK whose filesystem is not
     //     usable that early. See the target's //load_point note.
-    constexpr int SwitchLoadPoint = 1;
-    constexpr char SwitchLoadPointName[] = "fs_ready";
+    // 2 = right after the game's own romfs mount succeeds, so romfs is
+    //     readable through the game's mount. Falls back to 1 if that mount
+    //     cannot be hooked.
+    constexpr int SwitchLoadPoint = 2;
+    constexpr char SwitchLoadPointName[] = "romfs_mounted";
 
     // false: declared patches are verified and then RESTORED between LoadAll and
     // RunPhase, so the sample patch mod demonstrates its three outcomes without

@@ -215,7 +215,15 @@ inline bool EnsureFSClient() {
         // `Result` is a bare u32 typedef in these bindings, not a class; auto
         // sidesteps which spelling this vendored copy uses.
         const auto r = nn::fs::MountSdCardForDebug(kSwitchMount);
-        g_FSClientReady = (r == 0);
+        // 2002-0060 MountNameAlreadyExists: another subsdk mounted the card
+        // under the same name first (UltraCam does, on TotK). It is the SD
+        // card either way, so read through that mount rather than refuse.
+        constexpr unsigned kMountNameAlreadyExists = 0x7802;
+        g_FSClientReady = (r == 0 || static_cast<unsigned>(r) == kMountNameAlreadyExists);
+        if (static_cast<unsigned>(r) == kMountNameAlreadyExists) {
+            WIIXL_LOG("WiiXLaunch: '%s:' is already mounted by another module - "
+                      "reading the SD card through it", kSwitchMount);
+        }
         if (!g_FSClientReady) {
             WIIXL_LOG("WiiXLaunch: could not mount the SD card as '%s:' (result 0x%X). "
                       "Nothing on the card is readable or writable, which is not the "

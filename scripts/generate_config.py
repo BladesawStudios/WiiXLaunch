@@ -35,8 +35,8 @@ def generate_config(requested=None):
     patches_cfg = cfg.get("patches", {})
     patches_persist = bool(patches_cfg.get("persist", False))
 
-    # Switch host module load point (exl_main vs fs_ready).
-    load_point_names = {"exl_main": 0, "fs_ready": 1}
+    # Switch host module load point (exl_main, fs_ready or romfs_mounted).
+    load_point_names = {"exl_main": 0, "fs_ready": 1, "romfs_mounted": 2}
     load_point = switch_cfg.get("load_point", "exl_main")
     if load_point not in load_point_names:
         sys.stderr.write(
@@ -140,6 +140,9 @@ namespace WiiXLaunch::Host {{
     // 0 = exl_main, before the game's main.
     // 1 = the first file the game opens, for an SDK whose filesystem is not
     //     usable that early. See the target's //load_point note.
+    // 2 = right after the game's own romfs mount succeeds, so romfs is
+    //     readable through the game's mount. Falls back to 1 if that mount
+    //     cannot be hooked.
     constexpr int SwitchLoadPoint = {load_point_id};
     constexpr char SwitchLoadPointName[] = "{load_point}";
 

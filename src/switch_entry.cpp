@@ -15,8 +15,8 @@
 
 #include <lib/util/sys/jit.hpp>
 #include <lib.hpp>
-// rtld::lookup_global_auto - the game's allocator, by name. See RomCacheAlloc.
-#include <rtld.hpp>
+// Elf64_Dyn / Elf64_Sym for MainExport.
+#include <elf.h>
 
 // Not declared by vendor/exlaunch (upstream, not patched here). All three are
 // in BotW 1.5.0's sdk dynamic symbol table - checked by decompressing
@@ -49,12 +49,58 @@ static void SwitchFlush(uintptr_t, uint32_t) {
 // runs: at exl_main the SD mount already allocates through it inside
 // nn::fs::fsa::Register (the call that crashed on TotK, which is why TotK
 // loads at fs_ready instead).
+//
+// NOT through rtld::lookup_global_auto. That walks
+// nn::ro::detail::g_pAutoLoadList as if it were the list itself, which is
+// only true when exlaunch IS rtld (as_rtld). Seen from a subsdk it is an
+// 8-byte POINTER to the list - both BotW 1.5.0's and TotK's sdk export it
+// with size 8, g_pManualLoadList right after - so the walk starts from the
+// wrong variable and faults (TotK 1.2.1: Ryujinx dies with 0xC0000005 right
+// after the surface list). Main's own export table is read instead; both
+// games' main exports aligned_alloc and free.
 // ---------------------------------------------------------------------------
+
+// An exported symbol of the game's main, from the loaded image: MOD0 ->
+// .dynamic -> dynsym/dynstr. .dynamic's addresses are module-relative; rtld
+// does not rewrite them. 0 if it is not exported.
+static uintptr_t MainExport(const char* name) {
+    const uintptr_t base = exl::util::GetMainModuleInfo().m_Total.m_Start;
+    const uintptr_t mod0 = base + *reinterpret_cast<const uint32_t*>(base + 4);
+    if (*reinterpret_cast<const uint32_t*>(mod0) != 0x30444F4D) return 0;   // "MOD0"
+    const auto* dyn = reinterpret_cast<const Elf64_Dyn*>(
+        mod0 + *reinterpret_cast<const int32_t*>(mod0 + 4));
+
+    const Elf64_Sym* symtab = nullptr;
+    const char*      strtab = nullptr;
+    const uint32_t*  hash   = nullptr;
+    for (; dyn->d_tag != DT_NULL; ++dyn) {
+        const uintptr_t p = base + dyn->d_un.d_ptr;
+        if (dyn->d_tag == DT_SYMTAB) symtab = reinterpret_cast<const Elf64_Sym*>(p);
+        if (dyn->d_tag == DT_STRTAB) strtab = reinterpret_cast<const char*>(p);
+        if (dyn->d_tag == DT_HASH)   hash   = reinterpret_cast<const uint32_t*>(p);
+    }
+    if (!symtab || !strtab) return 0;
+    // nchain is the symbol count; without DT_HASH, dynstr follows dynsym.
+    const uintptr_t count = hash ? hash[1]
+        : (reinterpret_cast<uintptr_t>(strtab) > reinterpret_cast<uintptr_t>(symtab)
+               ? (reinterpret_cast<uintptr_t>(strtab) - reinterpret_cast<uintptr_t>(symtab)) /
+                     sizeof(Elf64_Sym)
+               : 0);
+    for (uintptr_t i = 1; i < count; ++i) {
+        const Elf64_Sym& s = symtab[i];
+        if (s.st_shndx == SHN_UNDEF || s.st_value == 0) continue;
+        if (std::strcmp(strtab + s.st_name, name) == 0) return base + s.st_value;
+    }
+    return 0;
+}
 using FnAlignedAlloc = void* (*)(unsigned long, unsigned long);
 using FnFree         = void  (*)(void*);
 
 static void*         s_RomCache     = nullptr;
 static FnFree        s_RomCacheFree = nullptr;
+
+// The game's own MountRom behind the hook installed by HookGameMountRom.
+static uint32_t (*volatile s_OrigMountRom)(const char*, void*, unsigned long) = nullptr;
 
 // Mounts romfs for the load if the game has not mounted it already. Every
 // failure leaves the SD card as the only source and says why.
@@ -66,16 +112,18 @@ static void MountRomForLoad() {
         return;
     }
 
+    // The log formatter has no %lu; every size here is far below 4 GB.
     unsigned long size = 0;
     const auto q = nn::fs::QueryMountRomCacheSize(&size);
     if (q != 0 || size == 0) {
-        WIIXL_LOG("[romfs] QueryMountRomCacheSize failed (result 0x%X, size %lu) - "
-                  "romfs NOT read, SD card only", static_cast<unsigned>(q), size);
+        WIIXL_LOG("[romfs] QueryMountRomCacheSize failed (result 0x%X, size %u) - "
+                  "romfs NOT read, SD card only", static_cast<unsigned>(q),
+                  static_cast<unsigned>(size));
         return;
     }
 
-    const auto alloc = reinterpret_cast<FnAlignedAlloc>(rtld::lookup_global_auto("aligned_alloc"));
-    const auto freeFn = reinterpret_cast<FnFree>(rtld::lookup_global_auto("free"));
+    const auto alloc  = reinterpret_cast<FnAlignedAlloc>(MainExport("aligned_alloc"));
+    const auto freeFn = reinterpret_cast<FnFree>(MainExport("free"));
     if (!alloc || !freeFn) {
         // Both or neither: a buffer that cannot be given back is 2.5 MB the
         // game never sees again.
@@ -87,8 +135,8 @@ static void MountRomForLoad() {
 
     s_RomCache = alloc(0x10, size);
     if (!s_RomCache) {
-        WIIXL_LOG("[romfs] the game's allocator refused %lu B for the romfs cache - "
-                  "romfs NOT read, SD card only", size);
+        WIIXL_LOG("[romfs] the game's allocator refused %u B for the romfs cache - "
+                  "romfs NOT read, SD card only", static_cast<unsigned>(size));
         return;
     }
     s_RomCacheFree = freeFn;
@@ -102,8 +150,8 @@ static void MountRomForLoad() {
         return;
     }
     FSI::g_RomLoadMounted = true;
-    WIIXL_LOG("[romfs] mounted as '%s:' for the load, %lu B cache borrowed from "
-              "the game's heap", FSI::kRomLoadMount, size);
+    WIIXL_LOG("[romfs] mounted as '%s:' for the load, %u B cache borrowed from "
+              "the game's heap", FSI::kRomLoadMount, static_cast<unsigned>(size));
 }
 
 static void UnmountRomAfterLoad() {
@@ -123,8 +171,16 @@ static void UnmountRomAfterLoad() {
 
 // The game's own MountRom, observed so reads after the load can go through
 // the mount the game keeps for itself. Whatever it is called; the host never
-// assumes a name.
-static uint32_t (*volatile s_OrigMountRom)(const char*, void*, unsigned long) = nullptr;
+// assumes a name. (s_OrigMountRom is defined above MountRomForLoad.)
+//
+// Under the romfs_mounted load point it is also where modules load: the game
+// mounts romfs itself (TotK: "content", inside sead::FileDeviceMgr's setup,
+// before any game logic), so the load reads romfs through that mount and
+// needs no cache of its own - TotK's is 23.7 MB, which the game's allocator
+// refuses at the earlier fs_ready point.
+static void RunLoader();
+static bool s_LoadDone = false;
+static bool s_InLoader = false;
 
 extern "C" uint32_t WiiXLaunch_MountRomHook(const char* name, void* cache, unsigned long size) {
     const auto orig = s_OrigMountRom;
@@ -136,6 +192,15 @@ extern "C" uint32_t WiiXLaunch_MountRomHook(const char* name, void* cache, unsig
         WIIXL_LOG("[romfs] the game mounted romfs as '%s:'%s", name ? name : "?",
                   FSI::g_GameRomMounted ? " - mod reads go through it from now on"
                                         : ", a name too long to route - NOT used");
+        if constexpr (WiiXLaunch::Host::SwitchLoadPoint == 2) {
+            if (!s_LoadDone && !s_InLoader) {
+                s_LoadDone = true;
+                s_InLoader = true;
+                WIIXL_LOG("[loader] romfs is mounted - loading now");
+                RunLoader();
+                s_InLoader = false;
+            }
+        }
     }
     return r;
 }
@@ -146,14 +211,15 @@ static bool InsideSelf(uintptr_t target) {
     return target >= self.m_Start && target < self.GetEnd();
 }
 
-static void HookGameMountRom() {
+// True if the game's mounts will be seen.
+static bool HookGameMountRom() {
     const uintptr_t target = reinterpret_cast<uintptr_t>(
         static_cast<Result (*)(const char*, void*, unsigned long)>(&nn::fs::MountRom));
     if (InsideSelf(target)) {
         WIIXL_LOG("[romfs] nn::fs::MountRom resolved to %p inside THIS module - not "
                   "hooked. After the load, mod reads fall back to the SD card only.",
                   reinterpret_cast<void*>(target));
-        return;
+        return false;
     }
     s_OrigMountRom = reinterpret_cast<uint32_t (*)(const char*, void*, unsigned long)>(
         exl::hook::Hook(reinterpret_cast<void*>(target),
@@ -161,7 +227,9 @@ static void HookGameMountRom() {
     if (!s_OrigMountRom) {
         WIIXL_LOG("[romfs] the MountRom hook returned no original - every romfs "
                   "mount the game makes will FAIL. This is not recoverable here.");
+        return false;
     }
+    return true;
 }
 
 static void RunLoader() {
@@ -277,9 +345,8 @@ static void RunLoader() {
 
 // On SDKs where the filesystem is not ready at exl_main (e.g. TOTK), defer
 // loading until the game's first file open.
+// (s_LoadDone / s_InLoader are declared above the MountRom hook.)
 static void (*volatile s_OrigOpenFile)(void*, const char*, int) = nullptr;
-static bool s_LoadDone = false;
-static bool s_InLoader = false;
 
 extern "C" uint32_t WiiXLaunch_OpenFileHook(void* handle, const char* path, int mode) {
     // Guard against recursion when loading modules.
@@ -299,11 +366,21 @@ extern "C" uint32_t WiiXLaunch_OpenFileHook(void* handle, const char* path, int 
 extern "C" void WiiXLaunch_SwitchLoadPoint() {
     // Before either load point, so a game that mounts romfs before its first
     // file open (the fs_ready case) is seen doing it.
-    HookGameMountRom();
+    const bool seesRomMount = HookGameMountRom();
 
     if constexpr (WiiXLaunch::Host::SwitchLoadPoint == 0) {
         RunLoader();
         return;
+    }
+
+    if constexpr (WiiXLaunch::Host::SwitchLoadPoint == 2) {
+        if (seesRomMount) {
+            WIIXL_LOG("[loader] deferred (romfs_mounted): modules load when the game "
+                      "mounts romfs, and read it through the game's mount.");
+            return;
+        }
+        WIIXL_LOG("[loader] romfs_mounted needs the MountRom hook, which is not "
+                  "installed - falling back to fs_ready.");
     }
 
     // Resolve imported nn::fs::OpenFile from nnSdk.

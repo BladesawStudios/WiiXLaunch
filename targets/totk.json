@@ -115,7 +115,8 @@
     "mount_path": "/mnt/sdcard",
     "//": "system_resource_size and extra_service_access must match TOTK 1.2.1's own main.npdm - the game's memory init fails at boot if the size is 0, and exlaunch's generic service list omits four that TOTK grants itself.",
     "//load_point": "exl_main is too early on this SDK. nn::fs has no allocator until nnSdk installs one during init, so MountSdCardForDebug calls through a null pointer and dies in nn::fs::fsa::Register. 'fs_ready' waits for the first time the GAME opens a file, which is a fact about the filesystem rather than a guess about which game function runs when - hooking nninitStartup by offset did nothing, because that address is a PLT thunk main uses for its own calls and nnSdk goes straight to the real definition.",
-    "load_point": "fs_ready"
+    "//load_point_romfs": "'romfs_mounted' (2026-09-30) replaces fs_ready: with TKMM's UltraCam subsdk the first file open is UltraCam's, before the game's heap exists, so a romfs mount of our own (23.7 MB cache) is refused. The game mounts romfs as 'content' in sead::FileDeviceMgr's setup (1.2.1: 0x71009041e4), before any game logic; loading right after it reads romfs through that mount. Falls back to fs_ready if MountRom cannot be hooked.",
+    "load_point": "romfs_mounted"
   },
   "wiiu": {
     "//": "There is no Wii U Tears of the Kingdom. Nothing to build."
