@@ -2,7 +2,7 @@
 
 #include "common.hpp"
 
-#define EXL_MODULE_NAME "WiiXLaunch_BotW"
+#define EXL_MODULE_NAME "WiiXLaunch_TotK"
 #define EXL_DEBUG
 #define EXL_USE_FAKEHEAP
 

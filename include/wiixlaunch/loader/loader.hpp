@@ -1026,7 +1026,8 @@ inline bool DirectoryExists(const char* dir) {
 
 inline uint32_t ListWxlm(const char* dir, char names[][kMaxNameLen], uint32_t cap) {
     if (!FS::impl::EnsureFSClient()) {
-        WIIXL_LOG("[loader] cannot enumerate %s - the SD card is not mounted", dir);
+        WIIXL_LOG("[loader] cannot enumerate %s - neither romfs nor the SD card is "
+                  "mounted", dir);
         return 0;
     }
 

@@ -275,23 +275,69 @@ content/WiiXLaunch/mods/
 ### Per platform
 
 Wii U and Cemu: inside the game's own content, the only storage those hosts
-have. Switch: on the SD card, per title:
+have. Switch: in the game's romfs first, the same `WiiXLaunch/mods/` layout,
+installed through LayeredFS:
+
+```
+sd:/atmosphere/contents/01007EF00011E000/romfs/WiiXLaunch/mods/
+    houselimit.wxlm
+    houselimit/config.ini
+```
+
+The SD card is the fallback, per title:
 
 ```
 sd:/WiiXLaunch/mods/0100F2C0115B6000/        one game's modules
-    houselimit.wxlm
-    houselimit/config.ini
 sd:/WiiXLaunch/mods/01007EF00011E000/        another game's
 ```
 
-One SD card serves every game, so a flat directory would offer every game's
-modules to every host. Most crossovers are already refused by name (a
-missing game surface, a mismatched patch origin), but a module needing only
-base surfaces and raw offsets is refused by nothing. That's exactly the
-shape of a mod for a game with no module yet.
+The loader uses the first of these that exists, logs which, and reads only
+that one:
 
-The loader falls back to the flat `WiiXLaunch/mods/` if no per-title
-directory exists, and logs which it used.
+1. romfs `WiiXLaunch/mods`
+2. romfslite `WiiXLaunch/mods`
+3. the SD card's per-title directory
+4. the SD card's flat `WiiXLaunch/mods/`
+
+Romfslite is `sd:/atmosphere/contents/<TID>/romfslite/`. TKMM writes it,
+and an UltraCam-based `subsdk1` serves it by redirecting the game's file
+opens. Nothing in it is added to romfs, and directory listings aren't
+redirected, so the romfs check can't see it. The loader reads the folder
+straight off the SD card instead, for the whole session, so it doesn't
+depend on UltraCam. It tries the lowercase title ID first, then uppercase.
+Ryujinx doesn't implement romfslite itself, so a TKMM export in Ryujinx's
+`mods` folder isn't visible to the guest at all. Only an export to the
+emulated SD card's `atmosphere/contents` is.
+
+Romfs, romfslite and the per-title SD directory are all per-title by
+construction. The flat SD directory is not. One
+card serves every game, so it offers every game's modules to every host.
+Most crossovers are already refused by name (a missing game surface, a
+mismatched patch origin), but a module needing only base surfaces and raw
+offsets is refused by nothing. That's exactly the shape of a mod for a game
+with no module yet.
+
+#### How Switch reads romfs
+
+The host never keeps a romfs mount of its own. `nn::fs::MountRom` needs a
+cache the size of the whole romfs's metadata (about 2.5 MB for BotW, more
+with LayeredFS mods), which is too much to hold for a session. So
+`src/switch_entry.cpp`:
+
+1. Hooks `nn::fs::MountRom` at `exl_main` and records the name of the
+   game's own mount when it succeeds (`content` on BotW). No target file
+   carries that name.
+2. At the load point, mounts romfs as `wxlrom:`. The cache is borrowed from
+   the game's `aligned_alloc`, looked up by name because the host links
+   newlib's allocator locally. If the game has already mounted romfs (the
+   `fs_ready` case), it reads through that mount and skips this step.
+3. After `LoadAll` and the Load phase, unmounts `wxlrom:` and frees the
+   cache. From then on, reads resolve through the game's mount.
+
+Paths stay relative (`WiiXLaunch/mods/...`) and are resolved on every call,
+romfs before SD. Only a mount that is live gets offered, because nn::fs
+aborts on a path it cannot route. Writes go only to `sd:`. If any step
+fails, the log names it and the host continues on the SD card alone.
 
 ### Two reads, not one with a fallback
 

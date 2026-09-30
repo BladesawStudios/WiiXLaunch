@@ -72,3 +72,4 @@ tools/nvn_swizzle_test/*.obj
 tools/config_test/config_test.exe
 tools/config_test/config_test
 tools/config_test/*.obj
+LICENSE-REVISED.md

@@ -70,6 +70,52 @@ inline uint32_t g_StagedReads = 0;
 // because it appears in every path this builds.
 constexpr const char* kSwitchMount = "sd";
 
+#if WIIXL_SWITCH
+// ROMFS FIRST, SD SECOND. Modules ship in the title's romfs (through LayeredFS
+// on hardware, the romfs mod folder on an emulator), which is per-title by
+// construction; the SD card stays as the fallback for reads and is the ONLY
+// destination for writes, because romfs is read-only.
+//
+// Two romfs mounts, never both offered at once:
+//   - kRomLoadMount, the host's own, alive only from before LoadAll until the
+//     Load phase has run. Its cache is the size of the whole romfs's metadata
+//     (~2.5 MB for BotW, more with LayeredFS mods) and is freed on unmount.
+//   - the GAME's own mount, recorded when the game's MountRom succeeds
+//     (src/switch_entry.cpp hooks it). The name is whatever the game chose -
+//     "content" on BotW - so no target file has to carry it. Costs nothing.
+//
+// A mount is offered only while it is live. nn::fs aborts on paths it cannot
+// route (see HasMountName below), so "try it and see" is not available here.
+constexpr const char* kRomLoadMount = "wxlrom";
+inline bool g_RomLoadMounted = false;
+inline char g_GameRomMount[32] = {};
+inline bool g_GameRomMounted = false;
+inline bool g_SdMountTried = false;
+
+// The romfs mount reads go through right now, or null if there is none.
+inline const char* RomMount() {
+    if (g_RomLoadMounted) return kRomLoadMount;
+    if (g_GameRomMounted) return g_GameRomMount;
+    return nullptr;
+}
+
+inline void NoteGameRomMount(const char* name) {
+    if (!name || g_GameRomMounted) return;
+    uint32_t i = 0;
+    for (; name[i] && i + 1 < sizeof(g_GameRomMount); ++i) g_GameRomMount[i] = name[i];
+    g_GameRomMount[i] = '\0';
+    g_GameRomMounted = (i > 0 && !name[i]);   // a truncated name routes nowhere
+}
+
+// "sd:" followed by anything - the one mount a write may land on.
+inline bool IsSdPath(const char* p) {
+    if (!p) return false;
+    uint32_t i = 0;
+    for (; kSwitchMount[i]; ++i) if (p[i] != kSwitchMount[i]) return false;
+    return p[i] == ':';
+}
+#endif
+
 // nn::fs ABORTS THE PROCESS for a path with no mount name. It does not return
 // a Result: FindFileSystem calls nn::diag Abort, the game dies, and the log
 // ends with ResultFsInvalidMountName (2002-6065) and a guest stack trace.
@@ -106,13 +152,23 @@ inline void Candidates(const char* path, char storage[3][256], const char* out[4
     out[0] = path;
     out[1] = out[2] = out[3] = nullptr;
 #if WIIXL_SWITCH
-    // A Switch has no /vol/content: the game's files are in romfs, the
-    // host's are on the SD card, so only SD forms are offered.
-    if (path && path[0] != '\0') {
-        concat2(storage[0], 256, "sd:/", path);
-        concat2(storage[1], 256, "sd:/atmosphere/contents/WiiXLaunch/", path);
-        out[1] = storage[0];
-        out[2] = storage[1];
+    // A Switch has no /vol/content. Romfs first, then the SD card - and each
+    // only while it is mounted (see RomMount above). A path that already
+    // names a mount is offered only as given: prefixing it would build
+    // "sd:/wxlrom:/..." and hand nn::fs a path it may abort on.
+    if (path && path[0] != '\0' && !HasMountName(path)) {
+        if (const char* rom = RomMount()) {
+            char prefix[40];
+            concat2(prefix, sizeof(prefix), rom, ":/");
+            concat2(storage[0], 256, prefix, path);
+            out[1] = storage[0];
+        }
+        if (g_FSClientReady) {
+            concat2(storage[1], 256, "sd:/", path);
+            concat2(storage[2], 256, "sd:/atmosphere/contents/WiiXLaunch/", path);
+            out[2] = storage[1];
+            out[3] = storage[2];
+        }
     }
 #else
     if (path && path[0] != '/') {
@@ -152,19 +208,24 @@ inline bool EnsureFSClient() {
     return g_FSClientReady;
 #elif WIIXL_SWITCH
     // No client or command block here; what has to happen once is the
-    // mount. nn::fs paths are "<mount>:/...", so nothing resolves until
-    // this succeeds.
-    if (g_FSClientReady) return true;
-    // `Result` is a bare u32 typedef in these bindings, not a class; auto
-    // sidesteps which spelling this vendored copy uses.
-    const auto r = nn::fs::MountSdCardForDebug(kSwitchMount);
-    g_FSClientReady = (r == 0);
-    if (!g_FSClientReady) {
-        WIIXL_LOG("WiiXLaunch: could not mount the SD card as '%s:' (result 0x%X). "
-                  "Nothing on the card is readable, which is not the same as the "
-                  "files being absent.", kSwitchMount, static_cast<unsigned>(r));
+    // SD mount. Tried once: a mount that failed does not start working on
+    // the next call, and the log line below would repeat for every read.
+    if (!g_FSClientReady && !g_SdMountTried) {
+        g_SdMountTried = true;
+        // `Result` is a bare u32 typedef in these bindings, not a class; auto
+        // sidesteps which spelling this vendored copy uses.
+        const auto r = nn::fs::MountSdCardForDebug(kSwitchMount);
+        g_FSClientReady = (r == 0);
+        if (!g_FSClientReady) {
+            WIIXL_LOG("WiiXLaunch: could not mount the SD card as '%s:' (result 0x%X). "
+                      "Nothing on the card is readable or writable, which is not the "
+                      "same as the files being absent.%s", kSwitchMount,
+                      static_cast<unsigned>(r),
+                      RomMount() ? " Romfs is still readable." : "");
+        }
     }
-    return g_FSClientReady;
+    // Usable if EITHER is mounted: romfs alone serves every read.
+    return g_FSClientReady || RomMount() != nullptr;
 #else
     return true;
 #endif
@@ -503,7 +564,9 @@ inline bool WriteFile(const char* path, const void* buffer, size_t size, size_t*
     // ONE DESTINATION, NOT A SEARCH. Reading tries every candidate path because
     // the file is somewhere and the question is where; writing must not, or the
     // same call lands in a different place depending on what already exists.
-    // The SD form is the only one a host may write to.
+    // The SD form is the only one a host may write to - romfs is read-only,
+    // and it is the FIRST candidate for reads, so "first with a mount name"
+    // would now pick it.
     {
         char storage[3][256];
         const char* candidates[4];
@@ -512,12 +575,14 @@ inline bool WriteFile(const char* path, const void* buffer, size_t size, size_t*
         const char* dest = nullptr;
         for (uint32_t i = 0; i < 4u && !dest; ++i) {
             if (!candidates[i] || !candidates[i][0]) continue;
-            if (!impl::HasMountName(candidates[i])) continue;
+            if (!impl::IsSdPath(candidates[i])) continue;
             dest = candidates[i];
         }
         if (!dest) {
-            WIIXL_LOG("WiiXLaunch: WriteFile has no mounted destination for '%s'",
-                      path);
+            WIIXL_LOG("WiiXLaunch: WriteFile has no destination for '%s' - writes go "
+                      "only to the SD card (romfs is read-only), and %s", path,
+                      impl::g_FSClientReady ? "the path names another mount"
+                                            : "the SD card is not mounted");
             return false;
         }
 

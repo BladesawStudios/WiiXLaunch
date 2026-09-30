@@ -145,10 +145,19 @@ not relocate, no `phase 0` means it never ran.
 
 ```
 Wii U / Cemu   <graphic pack>/content/WiiXLaunch/mods/hello_mod.wxlm
-Switch         sd:/WiiXLaunch/mods/<TITLE ID>/hello_mod.wxlm
+Switch         <romfs>/WiiXLaunch/mods/hello_mod.wxlm         (preferred)
+               sd:/atmosphere/contents/<TITLE ID>/romfslite/WiiXLaunch/mods/hello_mod.wxlm
+                                                              (TKMM output)
+               sd:/WiiXLaunch/mods/<TITLE ID>/hello_mod.wxlm  (fallback)
 ```
 
-Switch paths are per title so one SD card can serve multiple games.
+On Switch, `<romfs>` is the game's romfs as a LayeredFS mod sees it:
+`sd:/atmosphere/contents/<TITLE ID>/romfs/` on hardware, or the `romfs/`
+folder of an emulator mod. That is already per title. Romfslite is where
+TKMM exports to. The SD card form is read only when neither of those has a
+`WiiXLaunch/mods`, and it carries the title ID so one
+card can serve several games. Anything a mod *writes* goes to the SD card,
+because romfs is read-only.
 
 ## mod.json
 

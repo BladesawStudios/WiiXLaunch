@@ -36,6 +36,11 @@ ALLOWED_NN_IMPORTS = {
     "nn::fs::WriteOption const&)",
     "nn::fs::FlushFile(nn::fs::FileHandle)",
     "nn::fs::SetFileSize(nn::fs::FileHandle, long)",
+    # Romfs for the load (src/switch_entry.cpp). All three confirmed in BotW
+    # 1.5.0's exefs/sdk dynamic symbol table.
+    "nn::fs::QueryMountRomCacheSize(unsigned long*)",
+    "nn::fs::MountRom(char const*, void*, unsigned long)",
+    "nn::fs::Unmount(char const*)",
     "nn::ro::detail::g_pAutoLoadList",
     "nn::ro::detail::g_LookupGlobalManualFunctionPointer",
 }
