@@ -1,6 +1,6 @@
 [submodule "vendor/exlaunch"]
 	path = vendor/exlaunch
-	url = https://github.com/shadowninja108/exlaunch.git
+	url = https://github.com/BladesawStudios/exlaunch.git
 [submodule "vendor/wut"]
 	path = vendor/wut
 	url = https://github.com/devkitPro/wut.git
