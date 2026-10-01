@@ -184,46 +184,41 @@ namespace WiiXLaunch::Host {{
     with open(wiixl_setting_path, "w", encoding="utf-8") as f:
         f.write(setting_hpp_content)
 
-    npdm_json = {
-        "name": proj_name,
-        "title_id": f"0x{title_id}",
-        "title_id_range_min": switch_cfg.get("title_id_range_min", "0x0100000000010000"),
-        "title_id_range_max": switch_cfg.get("title_id_range_max", "0x01ffffffffffffff"),
-        "main_thread_stack_size": switch_cfg.get("main_thread_stack_size", "0x00100000"),
-        "main_thread_priority": switch_cfg.get("main_thread_priority", 44),
-        "default_cpu_id": switch_cfg.get("default_cpu_id", 0),
-        "process_category": 0,
-        "is_retail": True,
-        "pool_partition": 0,
-        "is_64_bit": True,
-        "address_space_type": 3,
-        "filesystem_access": {
-            "permissions": "0xffffffffffffffff"
-        },
-        "service_access": switch_cfg.get("service_access", [
-            "acc:u0", "aoc:u", "apm", "appletOE", "audin:u", "audout:u", "audren:u",
-            "bsd:u", "caps:u", "csrng", "friend:u", "fsp-srv", "hid", "lm", "nifm:u",
-            "nvdrv", "pctl", "pl:u", "set", "sfdnsres", "ssl", "time:u", "vi:u"
-        ]),
-        "kernel_capabilities": [
-            {
-                "type": "kernel_flags",
-                "value": {
-                    "highest_thread_priority": 59,
-                    "lowest_thread_priority": 28,
-                    "lowest_cpu_id": 0,
-                    "highest_cpu_id": 2
-                }
-            },
-            {
-                "type": "application_type",
-                "value": 1
-            }
-        ]
-    }
+    # The NPDM REPLACES the game's own, so it must grant everything the game's
+    # does - an under-granted one still builds and still runs on Ryujinx, which
+    # does not enforce it, and fails on hardware. Start from exlaunch's stock
+    # config (the full syscall list, kernel version, handle table, debug flags)
+    # and override only what is about this project and this game. A hand-built
+    # list here once shipped with no syscalls at all.
+    exl_base_path = os.path.join(root_dir, "vendor", "exlaunch", "config.json")
+    with open(exl_base_path, "r", encoding="utf-8") as f:
+        npdm_json = json.load(f)
 
-    if "system_resource_size" in switch_cfg:
-        npdm_json["system_resource_size"] = switch_cfg["system_resource_size"]
+    npdm_json["name"] = proj_name
+    npdm_json["title_id"] = f"0x{title_id}"
+    npdm_json["title_id_range_min"] = switch_cfg.get("title_id_range_min", "0x0100000000010000")
+    npdm_json["title_id_range_max"] = switch_cfg.get("title_id_range_max", "0x01ffffffffffffff")
+    npdm_json["main_thread_stack_size"] = switch_cfg.get("main_thread_stack_size", "0x00100000")
+    npdm_json["main_thread_priority"] = switch_cfg.get("main_thread_priority", 44)
+    npdm_json["default_cpu_id"] = switch_cfg.get("default_cpu_id", 0)
+    # Header fields the game's own NPDM sets: copy them from the target, which
+    # takes them from the game (see the target file for where each came from).
+    for key in ("system_resource_size", "optimize_memory_allocation",
+                "disable_device_address_space_merge", "enable_alias_region_extra_size"):
+        if key in switch_cfg:
+            npdm_json[key] = switch_cfg[key]
+    # A target may replace the service list outright, or add to exlaunch's.
+    services = list(switch_cfg.get("service_access", npdm_json.get("service_access", [])))
+    for s in switch_cfg.get("extra_service_access", []):
+        if s not in services:
+            services.append(s)
+    npdm_json["service_access"] = services
+
+    syscalls = next((c["value"] for c in npdm_json.get("kernel_capabilities", [])
+                     if c.get("type") == "syscalls"), {})
+    print(f"[ConfigGen] NPDM: {len(services)} services, {len(syscalls)} syscalls, "
+          f"system_resource_size {npdm_json.get('system_resource_size')}, "
+          f"optimize_memory_allocation {npdm_json.get('optimize_memory_allocation')}")
 
     exl_json_path = os.path.join(gen_switch_dir, "config.json")
     with open(exl_json_path, "w", encoding="utf-8") as f:

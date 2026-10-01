@@ -101,19 +101,21 @@
     "title_id_range_max": "0x0100F2C0115B6000",
     "subsdk_name": "subsdk9",
     "load_kind": "Module",
-    "system_resource_size": "0x01000000",
+    "system_resource_size": "0x01800000",
     "optimize_memory_allocation": true,
+    "disable_device_address_space_merge": true,
     "extra_service_access": [
       "ectx:aw",
       "mnpp:app",
       "ngct:u",
-      "notif:a"
+      "notif:a",
+      "ngc:u"
     ],
     "main_thread_stack_size": "0x00100000",
     "main_thread_priority": 44,
     "default_cpu_id": 0,
     "mount_path": "/mnt/sdcard",
-    "//": "system_resource_size and extra_service_access must match TOTK 1.2.1's own main.npdm - the game's memory init fails at boot if the size is 0, and exlaunch's generic service list omits four that TOTK grants itself.",
+    "//": "The host NPDM replaces the game's, so these must match TotK's own main.npdm, read from all eleven builds' dumps: system_resource_size 0x1800000 (24 MB - the 16 MB here before was wrong; Ryujinx just doesn't enforce it), flags 0x37 = optimize_memory_allocation + disable_device_address_space_merge, and five services exlaunch's stock list lacks (ngc:u is new in 1.4.0). Every game syscall is in exlaunch's stock list, which generate_config.py now starts from.",
     "//load_point": "exl_main is too early on this SDK. nn::fs has no allocator until nnSdk installs one during init, so MountSdCardForDebug calls through a null pointer and dies in nn::fs::fsa::Register. 'fs_ready' waits for the first time the GAME opens a file, which is a fact about the filesystem rather than a guess about which game function runs when - hooking nninitStartup by offset did nothing, because that address is a PLT thunk main uses for its own calls and nnSdk goes straight to the real definition.",
     "//load_point_romfs": "'romfs_mounted' (2026-09-30) replaces fs_ready: with TKMM's UltraCam subsdk the first file open is UltraCam's, before the game's heap exists, so a romfs mount of our own (23.7 MB cache) is refused. The game mounts romfs as 'content' in sead::FileDeviceMgr's setup (1.2.1: 0x71009041e4), before any game logic; loading right after it reads romfs through that mount. Falls back to fs_ready if MountRom cannot be hooked.",
     "load_point": "romfs_mounted"
