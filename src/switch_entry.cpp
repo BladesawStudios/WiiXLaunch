@@ -348,9 +348,66 @@ static void RunLoader() {
 // (s_LoadDone / s_InLoader are declared above the MountRom hook.)
 static void (*volatile s_OrigOpenFile)(void*, const char*, int) = nullptr;
 
+// romfs_mounted's fallback for when the game's MountRom is never seen. TotK
+// with UltraCam: its RomfsLiteEX puts "content:" in place some other way, so
+// the hook is installed but never called and nothing loaded (2026-10-04, 1.2.1
+// on Ryujinx - fine with UltraCam disabled). Instead, the mount name of a path
+// the game opens is taken as romfs if it holds WiiXLaunch/mods. Probing that
+// name is safe: nn::fs aborts on an unknown mount, but the game is about to
+// open this very path, so the name is registered. The SD card is never taken -
+// it has WiiXLaunch/mods too, but per title, and it is not romfs.
+static bool     s_RomMountHooked = false;
+static char     s_ProbedMounts[8][32] = {};
+static uint32_t s_ProbedCount = 0;
+
+static bool GameRomMountFromPath(const char* path) {
+    namespace FSI = WiiXLaunch::FS::impl;
+    if (!path) return false;
+    char name[32];
+    uint32_t n = 0;
+    for (; path[n] && path[n] != ':' && path[n] != '/'; ++n) {
+        if (n + 1 >= sizeof(name)) return false;
+        name[n] = path[n];
+    }
+    if (n == 0 || path[n] != ':') return false;
+    name[n] = '\0';
+    if (std::strcmp(name, FSI::kSwitchMount) == 0 ||
+        std::strcmp(name, FSI::kRomLoadMount) == 0) return false;
+
+    for (uint32_t i = 0; i < s_ProbedCount; ++i)
+        if (std::strcmp(s_ProbedMounts[i], name) == 0) return false;
+    // Each name is probed once; past eight, nothing more is - this is a
+    // fallback, not worth an OpenDirectory on every file the game opens.
+    if (s_ProbedCount >= 8) return false;
+    std::strcpy(s_ProbedMounts[s_ProbedCount++], name);
+
+    char probe[64];
+    std::snprintf(probe, sizeof(probe), "%s:/WiiXLaunch/mods", name);
+    nn::fs::DirectoryHandle handle{};
+    if (nn::fs::OpenDirectory(&handle, probe, nn::fs::OpenDirectoryMode_File) != 0) {
+        WIIXL_LOG("[romfs] the game opened '%s' - '%s:' has no WiiXLaunch/mods, "
+                  "still waiting", path, name);
+        return false;
+    }
+    nn::fs::CloseDirectory(handle);
+    FSI::NoteGameRomMount(name);
+    WIIXL_LOG("[romfs] the game's MountRom was never seen (another module mounts "
+              "romfs its own way), but it opened '%s' and '%s:' holds "
+              "WiiXLaunch/mods - reading through it", path, name);
+    return FSI::g_GameRomMounted;
+}
+
 extern "C" uint32_t WiiXLaunch_OpenFileHook(void* handle, const char* path, int mode) {
-    // Guard against recursion when loading modules.
-    if (!s_LoadDone && !s_InLoader) {
+    if (WiiXLaunch::Host::SwitchLoadPoint == 2 && s_RomMountHooked) {
+        if (!s_LoadDone && !s_InLoader && GameRomMountFromPath(path)) {
+            s_LoadDone = true;
+            s_InLoader = true;
+            WIIXL_LOG("[loader] romfs found through a file open - loading now");
+            RunLoader();
+            s_InLoader = false;
+        }
+    } else if (!s_LoadDone && !s_InLoader) {
+        // Guard against recursion when loading modules.
         s_LoadDone = true;
         s_InLoader = true;
         WIIXL_LOG("[loader] filesystem is up (the game opened '%s') - loading now",
@@ -375,18 +432,28 @@ extern "C" void WiiXLaunch_SwitchLoadPoint() {
 
     if constexpr (WiiXLaunch::Host::SwitchLoadPoint == 2) {
         if (seesRomMount) {
+            // OpenFile is still hooked, as the fallback for a romfs mount the
+            // MountRom hook never sees (see GameRomMountFromPath).
+            s_RomMountHooked = true;
             WIIXL_LOG("[loader] deferred (romfs_mounted): modules load when the game "
-                      "mounts romfs, and read it through the game's mount.");
-            return;
+                      "mounts romfs, or failing that at its first file open on a "
+                      "mount holding WiiXLaunch/mods.");
+        } else {
+            WIIXL_LOG("[loader] romfs_mounted needs the MountRom hook, which is not "
+                      "installed - falling back to fs_ready.");
         }
-        WIIXL_LOG("[loader] romfs_mounted needs the MountRom hook, which is not "
-                  "installed - falling back to fs_ready.");
     }
 
     // Resolve imported nn::fs::OpenFile from nnSdk.
     const uintptr_t target =
         reinterpret_cast<uintptr_t>(&nn::fs::OpenFile);
 
+    if (InsideSelf(target) && s_RomMountHooked) {
+        WIIXL_LOG("[loader] nn::fs::OpenFile resolved to %p inside THIS module - no "
+                  "fallback; modules load only if the MountRom hook fires.",
+                  reinterpret_cast<void*>(target));
+        return;
+    }
     if (InsideSelf(target)) {
         WIIXL_LOG("[loader] nn::fs::OpenFile resolved to %p, which is inside THIS "
                   "module - that is a call stub, not nnSdk. Loading now and "
@@ -400,11 +467,13 @@ extern "C" void WiiXLaunch_SwitchLoadPoint() {
         exl::hook::Hook(reinterpret_cast<void*>(target),
                         reinterpret_cast<void*>(&WiiXLaunch_OpenFileHook), true));
 
-    WIIXL_LOG("[loader] deferred (%s): modules load at the first file the game "
-              "opens. nn::fs::OpenFile is at %p; this SDK has no usable "
-              "filesystem before then.",
-              WiiXLaunch::Host::SwitchLoadPointName,
-              reinterpret_cast<void*>(target));
+    if (!s_RomMountHooked) {
+        WIIXL_LOG("[loader] deferred (%s): modules load at the first file the game "
+                  "opens. nn::fs::OpenFile is at %p; this SDK has no usable "
+                  "filesystem before then.",
+                  WiiXLaunch::Host::SwitchLoadPointName,
+                  reinterpret_cast<void*>(target));
+    }
 
     if (!s_OrigOpenFile) {
         WIIXL_LOG("[loader] the hook returned no original - the game would lose "
