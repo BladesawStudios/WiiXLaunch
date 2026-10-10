@@ -1,31 +1,5 @@
 #!/usr/bin/env python3
-"""Parsing AArch64 relocations out of readelf, for .wxlm modules.
-
-The PowerPC counterpart is scripts/ppc_relocs.py and the two are deliberately
-NOT merged. They share a shape - read `readelf -rW`, hand back records - and
-almost nothing else: PowerPC needs four fixup kinds because a 32-bit address is
-built from instruction halves, while AArch64 needs exactly one, because
-everything else it does with an address is PC-relative.
-
-WHY ONE KIND IS ENOUGH, and it is the whole design:
-
-  * A64 code reaches its own data with `adrp` + `add`/`ldr :lo12:`. Both are
-    PC-relative, the linker has already resolved them, and they stay correct
-    when the image moves PROVIDED it moves by a whole number of pages. The
-    loader page-aligns aarch64 images for exactly this reason; nothing here has
-    to fix them up, and nothing could - there is no runtime information in an
-    adrp that says which symbol it meant.
-  * Branches (CALL26/JUMP26/CONDBR19/TSTBR14) are PC-relative within the module
-    and likewise survive the move untouched.
-  * What is left is absolute 64-bit data: vtables, function pointer tables,
-    .init_array entries, and the import pointers a mod declares. Those are
-    R_AARCH64_ABS64 and those are what the loader fixes.
-
-ANYTHING NOT ON THE LIST IS AN ERROR, not a skip. A relocation silently ignored
-is a wrong pointer at runtime with no diagnostic anywhere, which is the failure
-shape this project keeps paying for. If a compiler change starts emitting
-something new, this stops the build and names it.
-"""
+"""Parsing AArch64 relocations out of readelf, for .wxlm modules."""
 
 import re
 import subprocess
@@ -34,10 +8,7 @@ import subprocess
 # Absolute, and therefore the loader's problem.
 ABS64 = "R_AARCH64_ABS64"
 
-# PC-relative or already-resolved-within-the-module: correct after a
-# page-aligned move, so they need no runtime fixup. Listed BY NAME rather than
-# skipped by default, so that "we considered this and it needs nothing" is
-# distinguishable from "we have never seen this".
+# PC-relative or already-resolved relocations that need no runtime fixup.
 _NO_FIXUP = frozenset([
     # Code addressing a symbol: adrp gives the page, one of these adds the rest.
     "R_AARCH64_ADR_PREL_PG_HI21",
@@ -58,7 +29,7 @@ _NO_FIXUP = frozenset([
     "R_AARCH64_PREL16",
     "R_AARCH64_PREL32",
     "R_AARCH64_PREL64",
-    # Emitted for unwind tables and the like; nothing executes them.
+    # Emitted for unwind tables and metadata.
     "R_AARCH64_NONE",
     "R_AARCH64_NULL",
 ])
@@ -86,15 +57,7 @@ class Reloc:
 
 
 def read(readelf_cmd, elf_path, skip_debug=True):
-    """Every relocation in `elf_path`, ABS64 and no-fixup alike.
-
-    The caller decides what to do with each; returning the no-fixup ones too is
-    what lets it tell an unknown type from an ignorable one.
-
-    Debug sections are skipped for the same reason as on PowerPC: their offsets
-    are relative to the debug section rather than to the flat image, so acting
-    on one corrupts an unrelated word of the payload.
-    """
+    """Every relocation in `elf_path`, ABS64 and no-fixup alike."""
     out = subprocess.check_output([readelf_cmd, "-rW", elf_path], text=True)
     relocs = []
     section = ""
@@ -128,9 +91,7 @@ def read(readelf_cmd, elf_path, skip_debug=True):
                 sym_value = 0
         if len(parts) >= 5:
             sym_name = parts[4]
-            # "Sym.Name + Addend", where readelf writes the addend last. The
-            # PowerPC module lost exactly this once and every string literal in
-            # the first module ever loaded pointed at its section base.
+            # "Sym.Name + Addend", where readelf writes the addend last.
             if len(parts) >= 6 and parts[-2] in ("+", "-"):
                 try:
                     addend = int(parts[-1], 16)
@@ -157,10 +118,3 @@ def needs_fixup(rtype):
 
 def is_known(rtype):
     return rtype == ABS64 or rtype in _NO_FIXUP
-
-
-# There is deliberately no read_undefined_symbols here. Finding the symbols an
-# ELF references without defining is symbol-table parsing with nothing
-# architecture-specific in it, and ppc_relocs.read_undefined_symbols already
-# does it for deploy.py. A second copy would be a second thing to get wrong -
-# which is the exact mistake ppc_relocs.py's own header records.

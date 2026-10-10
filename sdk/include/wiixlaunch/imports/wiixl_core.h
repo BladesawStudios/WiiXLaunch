@@ -19,98 +19,56 @@
 
 extern "C" {
 
-//
-// Deliberately NOT varargs. A mod formats its own text and hands over a
-// finished string; the host's formatter and the mod's need not agree, and a
-// vararg mismatch across this boundary is not diagnosable.
+// Not varargs: a mod formats its own text and hands over a finished string,
+// so a vararg mismatch across the host/mod boundary can't happen.
 extern void wiixl_import__wiixl_core__Log(const char* text);
 extern uint32_t wiixl_import__wiixl_core__AbiVersion(void);
 
-// Bytes from the host heap. Never freed, matching every other allocator in
-// this project. Stage 5 replaces the implementation with a per-module
-// sub-arena; the signature does not change, which is the point of routing mod
-// allocation through a surface now rather than letting mods call the backend.
+// Through the arena, so the allocation is charged to and bounded by the
+// calling module's own grant.
 extern void* wiixl_import__wiixl_core__Alloc(uint32_t size, uint32_t align);
 
-// Reads a whole file from game content. Returns bytes read, or a negative value
-// on failure. `outRead` may be null.
-//
-// The v1.0 spelling of GameReadFile, kept resolvable for mods built against it.
+// The v1.0 spelling of GameReadFile, kept resolvable for old mods.
 extern int32_t wiixl_import__wiixl_core__ReadFile(const char* path, void* buffer, uint32_t maxSize);
-
-// Does a path exist and open? Cheap existence check that does not need a
-// buffer, for a mod deciding whether an optional asset is present.
 extern uint32_t wiixl_import__wiixl_core__FileExists(const char* path);
-
-// The code cave base, so a mod can reason about where it is. Opaque to the mod
-// beyond being an address.
 extern uintptr_t wiixl_import__wiixl_core__ImageBase(void);
 
-//
-// How much this module was actually granted, how much it has spent, and how
-// much is left. Callable DURING the load phase, before allocating.
-//
-// A module on the best-effort path (heapRequest == 0) is told what it got
-// rather than having to discover it by allocating until null. "Allocate until
-// null" is not a design; it is finding out by failing, in a place where failing
-// means a half-initialised mod running in someone's game.
-//
-// A module that stated a heapRequest already knows its size, but not what it
-// has spent, so all three are useful to both.
+// Granted/used/remaining for the calling module's arena. Callable during
+// load, before allocating, so a best-effort module can size a buffer instead
+// of discovering its limit by allocating until null.
 extern uint32_t wiixl_import__wiixl_core__HeapGranted(void);
 extern uint32_t wiixl_import__wiixl_core__HeapUsed(void);
 extern uint32_t wiixl_import__wiixl_core__HeapRemaining(void);
 
-// Installs a hook on behalf of the calling module.
+// Installs a hook on behalf of the calling module. No owner parameter: a mod
+// could otherwise name itself anything, and the conflict report exists
+// precisely so that can't happen. The loader sets the current owner around a
+// module's entry.
 //
-// The owner is NOT a parameter, and that is deliberate: a mod could then name
-// itself anything, and the conflict report - the entire reason the registry is
-// central - would be worth nothing. The loader sets the current owner around a
-// module's entry, so attribution comes from who the host is running, not from
-// what the module claims.
+// Returns the address to call to continue the chain, or 0 if refused.
+// Ignoring the return value replaces the function; that's legal and
+// reported.
 //
-// Returns the address to call to continue the chain, or 0 if the hook was
-// refused. A mod that ignores the return value and never calls it has replaced
-// the function, which is legal and reported.
-//
-// THE SAME PLATFORM DISPATCH THE HOST USES, which this did not do.
-//
-// hook.hpp's InstallVia has always chosen per platform: the chain manager on
-// Cemu, exlaunch on Switch, WUPS on Wii U - because Hooks::InstallHook emits
-// PowerPC, and because its trampoline pool and cache flush are #if WIIXL_CEMU
-// with the host-TEST fallback underneath. This function called the chain
-// manager directly on every platform, so a module got the one path that cannot
-// work anywhere but Cemu while the host beside it took the right one.
-//
-// On Switch that wrote `lis/ori/mtctr/bctr` into aarch64 code and the game died
-// on 0x618C64B4. On Wii U it would have built trampolines in a non-executable
-// static array and flushed nothing - the same bug, wearing the right ISA.
+// Dispatches per platform the same way hook.hpp's InstallVia does for host
+// hooks (Cemu's chain manager, exlaunch, WUPS) rather than calling the chain
+// manager unconditionally, which corrupted non-Cemu builds.
 extern uintptr_t wiixl_import__wiixl_core__InstallHook(uintptr_t target, uintptr_t callback);
 extern uintptr_t wiixl_import__wiixl_core__HookProbeTarget(void);
 extern uint32_t wiixl_import__wiixl_core__HookProbeClaimTag(uint32_t tag);
 extern void wiixl_import__wiixl_core__HookProbeMark(uint32_t tag);
 
-// This module's own directory, and nothing outside it. The identity comes from
-// the host - whichever module it is running - so a mod cannot read another
-// mod's files by naming them.
+// Scoped to the calling module's own directory; identity comes from the
+// host, not a mod-supplied name, so a mod can't read another mod's files.
 extern int32_t wiixl_import__wiixl_core__ModReadFile(const char* path, void* buffer, uint32_t maxSize);
 extern uint32_t wiixl_import__wiixl_core__ModFileExists(const char* path);
 
-// Game content, explicitly. Identical to ReadFile, which is retained only
-// because removing a symbol would be a major bump - this is the name to use,
-// because "GameReadFile" says at the call site what "ReadFile" left implied.
+// Game content, explicitly. Identical to ReadFile, kept as a separate name
+// because removing ReadFile would be a major bump.
 extern int32_t wiixl_import__wiixl_core__GameReadFile(const char* path, void* buffer, uint32_t maxSize);
 
-// Asks to be called once a frame.
-//
-// Returns 1 on success, 0 if refused - and the log names which of the four
-// refusals it was. The callback is attributed to whichever module the host is
-// running, never to anything passed here, so a hang inside a tick names the
-// module that actually registered it.
-//
-// A host with no game module has no frame source and these never run; that is
-// reported at the load point rather than left to be inferred from a mod that
-// quietly does nothing.
+// Registers a per-frame callback. Returns 1 on success, 0 if refused (the
+// log names which of four reasons). Attributed to whichever module the host
+// is running, never to anything passed here.
 extern uint32_t wiixl_import__wiixl_core__RegisterTick(void (*fn)());
 }
 

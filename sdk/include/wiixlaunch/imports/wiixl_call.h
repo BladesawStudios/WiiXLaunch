@@ -19,14 +19,12 @@
 
 extern "C" {
 
-// One offset per platform, and the host picks. A mod that hard-coded the Wii U
-// address would be silently wrong on Switch; this way the wrong-platform case
-// cannot arise at the call site at all.
+// One offset per platform, and the host picks, so the wrong-platform case
+// can't arise at the call site.
 extern uintptr_t wiixl_import__wiixl_call__ResolveTarget(uintptr_t switchOffset, uintptr_t wiiuOffset);
 
-// Where the image starts, for a mod doing its own arithmetic. Same value
-// wiixl.core's ImageBase reports; here so a mod using wiixl.call does not have
-// to declare wiixl.core as well for one number.
+// Same value wiixl.core's ImageBase reports; here so a mod using
+// wiixl.call doesn't have to declare wiixl.core too for one number.
 extern uintptr_t wiixl_import__wiixl_call__ImageBase(void);
 }
 

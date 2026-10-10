@@ -19,21 +19,18 @@
 
 extern "C" {
 
-// int64 through two uint32s. A 64-bit value crosses this boundary perfectly
-// well by ABI, but every other entry in every surface is 32-bit, and one call
-// with a different width is one call whose calling convention has to be right
-// in a place nobody would think to check.
+// int64 through two uint32s, matching every other 32-bit surface entry
+// rather than being the one call with a different calling-convention width.
 extern void wiixl_import__wiixl_time__GetMonotonicTicks(uint32_t* hi, uint32_t* lo);
 extern uint32_t wiixl_import__wiixl_time__TicksPerSecond(void);
 extern uint32_t wiixl_import__wiixl_time__IsWallClockAvailable(void);
 
-// The calendar, flattened. CalendarTime is a struct of ten ints and must not
-// cross; the caller passes an int32[10] and the order is fixed here forever:
+// The calendar, flattened: a struct can't cross the surface boundary, so
+// the caller passes an int32[10] in this fixed order:
 // sec, min, hour, mday, mon, year, wday, yday, msec, usec.
 extern uint32_t wiixl_import__wiixl_time__GetCalendarTime(int32_t* out10);
 
-// "2026-09-05 12:39:29" into a caller-owned buffer, because a mod has no
-// formatter of its own and this is the one string every mod wants.
+// "2026-09-05 12:39:29" into a caller-owned buffer.
 extern uint32_t wiixl_import__wiixl_time__FormatNow(char* out, uint32_t cap);
 }
 

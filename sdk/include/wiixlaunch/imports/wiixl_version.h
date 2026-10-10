@@ -20,14 +20,12 @@
 extern "C" {
 extern uint32_t wiixl_import__wiixl_version__Fingerprint(void);
 
-// Null when unrecognised. NOT "unknown" as a string - a mod comparing names
-// would match a build called "unknown" against every build nobody has enrolled,
-// which is precisely the guess this whole mechanism exists to avoid.
+// Null when unrecognised, not the string "unknown" - a literal name would
+// let a mod match against every unenrolled build.
 extern const char* wiixl_import__wiixl_version__Name(void);
 
-// Whether this host can fingerprint at all. "No identity slice declared" and
-// "declared, and this build is not one I know" are different answers, and a mod
-// deciding what to do about its offsets needs to tell them apart.
+// Whether this host can fingerprint at all, distinct from "it can, and
+// this build isn't one it knows."
 extern uint32_t wiixl_import__wiixl_version__Configured(void);
 }
 

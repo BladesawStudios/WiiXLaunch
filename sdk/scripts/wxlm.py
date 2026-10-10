@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Writes .wxlm module files.
-
-This is one half of a contract; the other is
-include/wiixlaunch/loader/wxlm.hpp. A drift between them is the one failure
-neither side can detect at runtime - the loader would read a plausible garbage
-offset and relocate into it - so the layout below is asserted against that
-header by scripts/test_wxlm.py, which parses the static_asserts out of it.
-
-The relocation extraction is deliberately the same logic scripts/deploy.py uses
-for the host itself: same readelf parsing, same (kind << 24 | offset, value)
-encoding. A module and the host are the same kind of object, so they get the
-same emitter rather than two that drift.
+"""Writes .wxlm module files from compiled ELFs.
 
 Usage:
     python scripts/wxlm.py <input.elf> <output.wxlm> --id <mod-id> [options]
@@ -45,14 +34,7 @@ IMPORT_ENTRY_SIZE = 16
 EXPORT_ENTRY_SIZE = 12
 REQUIRED_ENTRY_SIZE = 8
 
-# Header field order. Keep in step with the struct.
-#
-# The BYTE ORDER is a parameter now, not a property of the format: a PPC32
-# module is big-endian and an AArch64 one is little-endian, and the loader
-# checks the header's endian field against its own before it overlays a single
-# structure. Everything the writer packs - header, relocations, imports,
-# exports, required surfaces - uses the same order, because a file with two
-# orders in it is unreadable by anything.
+# Header field order matching include/wiixlaunch/loader/wxlm.hpp.
 HEADER_BODY = (
     "I"      # magic
     "H"      # formatVersion
@@ -143,11 +125,7 @@ class StringBlob:
         return bytes(self._data)
 
 
-# Where each toolchain's binutils live, and what its tools are called. Two
-# entries rather than a general search: naming the two supported architectures
-# means an unsupported one fails with "no toolchain for X" instead of quietly
-# finding whichever cross-readelf happens to be on PATH and producing a module
-# for the wrong machine.
+# Toolchain binutils configuration for supported target architectures.
 _TOOLCHAINS = {
     MACHINE_PPC32: ("DEVKITPPC", r"C:\devkitPro\devkitPPC",
                     "/opt/devkitpro/devkitPPC", "powerpc-eabi-"),
@@ -389,9 +367,7 @@ def read_patch_table(readelf, elf, byte_order=">"):
     if len(blob) != size:
         raise SystemExit("[wxlm] short read of .wxlm.patches")
 
-    # Validate what the host will validate, here, where the fix is cheap. A
-    # module that ships a patch the loader will always refuse is a build bug,
-    # and finding it at build time costs a script run rather than a boot.
+    # Validate patch declarations at build time.
     count = size // PATCH_ENTRY_SIZE
     for i in range(count):
         rec = blob[i * PATCH_ENTRY_SIZE:(i + 1) * PATCH_ENTRY_SIZE]
@@ -534,22 +510,7 @@ def build(args):
 
     undefined = ppc_relocs.read_undefined_symbols(readelf, args.elf)
 
-    # EVERY undefined symbol, not just the ones a fixed-up relocation points at.
-    #
-    # The check further down catches an undefined symbol reached through a
-    # relocation this writer RESOLVES - ADDR32 on PowerPC, ABS64 on AArch64.
-    # A CALL is neither: a branch relocation is PC-relative, needs no runtime
-    # fixup, and is therefore never looked at. So a module could call a function
-    # that does not exist and be packed without complaint, and the call would
-    # go wherever --unresolved-symbols=ignore-all left it. Which is address 0.
-    #
-    # Measured: AIPuppet was packed with an undefined AIPuppet::Init(), 16
-    # imports, and a cheerful summary - because its second translation unit had
-    # never been compiled and nothing here was looking.
-    #
-    # The link is -nostdlib with libgcc, and imports are the only thing allowed
-    # to stay undefined, so the rule is simply: anything undefined that is not
-    # an import is a bug.
+    # All undefined symbols must be wiixl_import__ prefixed imports.
     stray = sorted(n for n in undefined if not n.startswith("wiixl_import__"))
     if stray:
         raise SystemExit(
@@ -563,7 +524,8 @@ def build(args):
             "mod.json - or that\n"
             "  the mod is calling something it expected the host to provide.\n"
             % (os.path.basename(args.elf), len(stray),
-               "".join("    %s\n" % n for n in stray)))
+               "".join("    %s\n" % s for s in stray[:20]) +
+               ("    ... and %d more\n" % (len(stray) - 20) if len(stray) > 20 else "")))
 
     if machine == MACHINE_AARCH64:
         relocs, discovered = read_relocations_aarch64(
@@ -594,10 +556,7 @@ def build(args):
         required.append((strings.add(surface), major, minor))
         required_names.add(surface)
 
-    # Every surface an import names is required, whether or not it was listed.
-    # Otherwise a module could import from a surface it never declared and get
-    # an UNRESOLVED-IMPORT at the site instead of a MISSING-SURFACE up front,
-    # which is a worse diagnostic for the same problem.
+    # Require all surfaces referenced by imports.
     for surface, _symbol in discovered:
         if surface not in required_names:
             required.append((strings.add(surface), 1, 0))
