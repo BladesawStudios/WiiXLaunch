@@ -16,3 +16,6 @@
 [submodule "vendor/wiixlaunch-botw"]
 	path = vendor/wiixlaunch-botw
 	url = https://github.com/TKVSC-Team/wiixlaunch-botw
+[submodule "vendor/wiixlaunch-totk"]
+	path = vendor/wiixlaunch-totk
+	url = https://github.com/BladesawStudios/wiixlaunch-totk
