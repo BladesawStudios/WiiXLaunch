@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gfx v1.1, 22 symbol(s), from the surface's own table.
+// botw.gfx v1.2, 24 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gfx(IsGX2); }
 //     S::IsGX2(...);
 //
-// so a mod that uses two symbols imports two, not all 22.
+// so a mod that uses two symbols imports two, not all 24.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -76,14 +76,21 @@ extern uint32_t wiixl_import__botw_gfx__EndBatch(void);
 extern uint32_t wiixl_import__botw_gfx__BackdropReady(void);
 extern uint32_t wiixl_import__botw_gfx__BackdropTexture(void);
 extern uintptr_t wiixl_import__botw_gfx__AllocMEM1(uint32_t size, uint32_t align);
+
+// Under the HUD rather than over it: the callback runs after the world and its
+// post effects are drawn and before any HUD or menu pane, on the TV image, in a
+// context state of its own. Same arguments and same rules as RegisterDraw -
+// one per module, and cmdBuf/dstTexture are only valid inside the call.
+extern uint32_t wiixl_import__botw_gfx__SupportsDrawBeforeHud(void);
+extern uint32_t wiixl_import__botw_gfx__RegisterDrawBeforeHud(ModDrawFn fn);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gfx@1.1 when packing,
+// added in a later minor should pass --require botw.gfx@1.2 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gfx {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 1;
+inline constexpr unsigned kVersionMinor = 2;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call

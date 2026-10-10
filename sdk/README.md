@@ -59,7 +59,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `botw.events` | v1.0 |
 | `botw.flyt` | v1.0 |
 | `botw.gamedata` | v1.3 |
-| `botw.gfx` | v1.1 |
+| `botw.gfx` | v1.2 |
 | `botw.gui` | v1.1 |
 | `botw.input` | v1.1 |
 | `botw.map` | v1.1 |
