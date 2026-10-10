@@ -3,6 +3,12 @@
 
     python scripts/target_value.py switch.title_id
     python scripts/target_value.py wiiu.plugin_name
+    python scripts/target_value.py --name     # the resolved target itself
+
+--name is what host build scripts put their output under (build/<target>/),
+so two games' hosts never overwrite each other. Asked rather than worked out
+per script: the scripts disagree on whether they take a target argument, and
+target.py is the one place that already decides.
 """
 import os
 import sys
@@ -18,6 +24,10 @@ def main():
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     name, cfg = target_mod.resolve(root_dir, None, quiet=True)
+
+    if sys.argv[1] == "--name":
+        print(name)
+        return 0
 
     node = cfg
     for key in sys.argv[1].split("."):

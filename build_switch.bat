@@ -21,6 +21,14 @@ echo Generating config...
 python scripts\generate_config.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:: Output goes under build\<target>\, so hosts for two games never overwrite
+:: each other. The name comes from scripts\target.py, the one place that
+:: decides which target is active.
+set TARGET_NAME=
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py --name`) do set "TARGET_NAME=%%i"
+if not defined TARGET_NAME exit /b 1
+set "OUT=build\%TARGET_NAME%\switch"
+
 :: devkitPro's make rules cannot handle spaces in paths, so stage the build in
 :: %TEMP% (space-free) instead of building in-place.
 set STAGE=%TEMP%\wiixlaunch-switch
@@ -64,15 +72,15 @@ set STAGEFWD=%STAGE:\=/%
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: Extract artifacts
-if not exist build\switch mkdir build\switch
-copy /y "%STAGE%\deploy\subsdk9" build\switch\subsdk9 > nul
-copy /y "%STAGE%\deploy\main.npdm" build\switch\main.npdm > nul
+if not exist "%OUT%" mkdir "%OUT%"
+copy /y "%STAGE%\deploy\subsdk9" "%OUT%\subsdk9" > nul
+copy /y "%STAGE%\deploy\main.npdm" "%OUT%\main.npdm" > nul
 :: The linked ELF, kept beside the artifacts. test.bat's test_switch_module gate
 :: reads it to check which nn:: symbols the host imports, and the build stage it
 :: was linked in lives under %TEMP% and is deleted by the next build - so a gate
 :: that reached into the stage was reading whatever the last build happened to
 :: leave there.
-copy /y "%STAGE%\wiixlaunch-switch.elf" build\switch\wiixlaunch-switch.elf > nul
+copy /y "%STAGE%\wiixlaunch-switch.elf" "%OUT%\wiixlaunch-switch.elf" > nul
 
 :: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
 ::
@@ -84,5 +92,5 @@ copy /y "%STAGE%\wiixlaunch-switch.elf" build\switch\wiixlaunch-switch.elf > nul
 ::
 ::   gates and example modules -> test.bat
 ::   packaging and installing  -> python scripts\deploy.py --target <name>
-echo Switch host built: build\switch\subsdk9
+echo Switch host built: %OUT%\subsdk9
 exit /b 0

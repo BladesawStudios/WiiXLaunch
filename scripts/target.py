@@ -68,6 +68,19 @@ def module_includes(root_dir, cfg):
 
     wanted = cfg.get("modules")
     if wanted is None:
+        # "Whatever is in vendor/" is only unambiguous with one candidate. With
+        # two, both provide <wiixlaunch/module.hpp> and include order picks the
+        # winner - the other is silently unregistered and nothing says so.
+        if len(present) > 1:
+            sys.stderr.write(
+                "[target] this target does not say which game module it wants, and "
+                "vendor/ has %d: %s\n"
+                "  Each provides <wiixlaunch/module.hpp>, so include order would pick "
+                "one and drop\n"
+                "  the rest without a word. Add \"modules\": [\"<name>\"] to the "
+                "target file.\n"
+                % (len(present), ", ".join(present)))
+            sys.exit(1)
         chosen = present
     else:
         chosen = []

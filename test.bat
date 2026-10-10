@@ -20,7 +20,7 @@ setlocal enabledelayedexpansion
 ::
 :: Run a host build first if you want the two gates that need a host artifact:
 :: test_host links its own, but test_switch_module reads the Switch host ELF
-:: that build_switch.bat leaves in build\switch.
+:: that build_switch.bat leaves in build\<target>\switch.
 if not "%~1"=="" set "WIIXL_TARGET=%~1"
 if "%WIIXL_TARGET%"=="" set "WIIXL_TARGET=botw"
 
@@ -39,12 +39,13 @@ if not exist build mkdir build
 :: silently join the next deploy.
 if exist build\moddata rmdir /s /q build\moddata
 
-:: Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
-:: base WiiXLaunch, picked up automatically if this mod added one as a
-:: submodule (git submodule add <url> vendor/wiixlaunch-<name>).
+:: The game module(s) the active target builds, as scripts/target.py decides -
+:: see build_cemu.bat. Run once bare so its exit code is seen.
+python scripts\target_modules.py > nul
+if %ERRORLEVEL% NEQ 0 exit /b 1
 set MODULE_FLAGS=
-for /d %%G in (vendor\wiixlaunch-*) do (
-    if exist "%%G\include" set MODULE_FLAGS=!MODULE_FLAGS! -I%%G\include
+for /f "usebackq delims=" %%G in (`python scripts\target_modules.py`) do (
+    set MODULE_FLAGS=!MODULE_FLAGS! -Ivendor\%%G\include
 )
 
 :: Are the gates below actually wired in, and is a failure fatal? Every gate
@@ -236,16 +237,16 @@ if errorlevel 2 (
 :: - it was true for months while wxlm.py wrote MACHINE_PPC32 into every file it
 :: produced.
 ::
-:: Needs the Switch host ELF, which build_switch.bat leaves in build\switch. A
+:: Needs the Switch host ELF, which build_switch.bat leaves in build\<target>\switch. A
 :: MISSING ONE IS A FAILURE: "no host built yet" and "the host is fine" are
 :: different answers and a skip makes them look the same.
-if not exist build\switch\wiixlaunch-switch.elf (
-    echo [test_switch_module] build\switch\wiixlaunch-switch.elf is missing.
+if not exist build\%WIIXL_TARGET%\switch\wiixlaunch-switch.elf (
+    echo [test_switch_module] build\%WIIXL_TARGET%\switch\wiixlaunch-switch.elf is missing.
     echo [test_switch_module] Run build_switch.bat %WIIXL_TARGET% first - this gate
     echo [test_switch_module] reads the host ELF to check the nn:: symbols it imports.
     exit /b 1
 )
-python scripts\test_switch_module.py build\switch\wiixlaunch-switch.elf
+python scripts\test_switch_module.py build\%WIIXL_TARGET%\switch\wiixlaunch-switch.elf
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 

@@ -38,11 +38,23 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
-# base WiiXLaunch, picked up automatically if this mod added one as a
-# submodule (git submodule add <url> vendor/wiixlaunch-<name>).
-file(GLOB WIIXL_MODULE_INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/wiixlaunch-*/include")
-include_directories(${WIIXL_MODULE_INCLUDE_DIRS})
+# The game module(s) the active target builds (vendor/wiixlaunch-<name>), as
+# scripts/target.py decides - NOT a glob of vendor/: two modules both provide
+# <wiixlaunch/module.hpp>, and include order would pick the game.
+execute_process(
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/target_modules.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE WIIXL_MODULE_NAMES
+    RESULT_VARIABLE WIIXL_MODULE_RESULT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(NOT WIIXL_MODULE_RESULT EQUAL 0)
+    message(FATAL_ERROR "scripts/target_modules.py failed - see above for which module and why")
+endif()
+string(REPLACE "\n" ";" WIIXL_MODULE_NAMES "${WIIXL_MODULE_NAMES}")
+foreach(WIIXL_MODULE ${WIIXL_MODULE_NAMES})
+    include_directories(${CMAKE_CURRENT_SOURCE_DIR}/vendor/${WIIXL_MODULE}/include)
+endforeach()
 
 if(PLATFORM STREQUAL "SWITCH")
     message(STATUS "Building WiiXLaunch for Nintendo Switch (ARM64)")

@@ -9,14 +9,18 @@ source scripts/devkitpro_env.sh
 echo "Generating config..."
 python3 scripts/generate_config.py
 
-mkdir -p build
+# Output goes under build/<target>/, so hosts for two games never overwrite
+# each other. The name comes from scripts/target.py.
+TARGET_NAME="$(python3 scripts/target_value.py --name)"
 
-# Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
-# base WiiXLaunch, picked up automatically if this mod added one as a
-# submodule (git submodule add <url> vendor/wiixlaunch-<name>).
+mkdir -p "build/$TARGET_NAME"
+
+# The game module(s) this target builds, as scripts/target.py decides - see
+# build_cemu.bat. Captured first so a failure is fatal rather than an empty list.
+MODULES="$(python3 scripts/target_modules.py)" || exit 1
 MODULE_FLAGS=()
-for d in vendor/wiixlaunch-*/; do
-  [ -d "${d}include" ] && MODULE_FLAGS+=(-I "${d}include")
+for m in $MODULES; do
+  MODULE_FLAGS+=(-I "vendor/$m/include")
 done
 
 echo "Building Cemu payload (PowerPC)..."
@@ -31,7 +35,7 @@ echo "Building Cemu payload (PowerPC)..."
   -I include -I build/generated/include "${MODULE_FLAGS[@]}" \
   -nostartfiles -T scripts/cemu.ld -Wl,-q \
   src/main.cpp src/wiiu_plugin.cpp src/cemu/bootstrap.cpp \
-  -o build/wiixlaunch_cemu
+  -o "build/$TARGET_NAME/wiixlaunch_cemu"
 
 # THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
 #
@@ -42,4 +46,4 @@ echo "Building Cemu payload (PowerPC)..."
 #
 #   gates and example modules -> test.sh
 #   packaging and installing  -> python3 scripts/deploy.py --target <name>
-echo "Cemu host built: build/wiixlaunch_cemu"
+echo "Cemu host built: build/$TARGET_NAME/wiixlaunch_cemu"

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import glob
 import json
 import os
 import re
@@ -87,8 +86,8 @@ def main():
     print(f" WiiXLaunch Deployment Packager for [{project_name}]")
     print("==========================================")
 
-    build_switch_subsdk = os.path.join(root_dir, "build", "switch", subsdk_name)
-    build_switch_npdm = os.path.join(root_dir, "build", "switch", "main.npdm")
+    build_switch_subsdk = os.path.join(root_dir, "build", target_name, "switch", subsdk_name)
+    build_switch_npdm = os.path.join(root_dir, "build", target_name, "switch", "main.npdm")
     
     # Placeholders are only ever written where no deployed file exists yet -
     # a previously deployed real binary must never be clobbered by running
@@ -179,7 +178,7 @@ def main():
 
 
     if want_wiiu:
-        build_wiiu_wps = os.path.join(root_dir, "build", "wiiu", plugin_name)
+        build_wiiu_wps = os.path.join(root_dir, "build", target_name, "wiiu", plugin_name)
         deploy_or_placeholder(build_wiiu_wps,
                               os.path.join(wiiu_deploy_dir, plugin_name),
                               "# WiiXLaunch Wii U Aroma WPS Plugin\n", "Wii U")
@@ -210,9 +209,9 @@ version = 7
 
     cemu_asm_content = f"[{project_name}_{gp_version}]\nmoduleMatches = {mod_matches}\n\n"
     
-    elf_path = os.path.join(root_dir, "build", "wiixlaunch_cemu")
+    elf_path = os.path.join(root_dir, "build", target_name, "wiixlaunch_cemu")
     if os.path.exists(elf_path):
-        bin_path = os.path.join(root_dir, "build", "payload.bin")
+        bin_path = os.path.join(root_dir, "build", target_name, "payload.bin")
         objcopy_cmd = find_devkitppc_tool("powerpc-eabi-objcopy")
         readelf_cmd = find_devkitppc_tool("powerpc-eabi-readelf")
             
@@ -357,9 +356,13 @@ version = 7
         # from the address it finds itself running at and stores it there.
 
         # src/cemu/*.asm goes immediately after wiixlaunch_binary's bytes
+        # Only the target's own game module(s) - the asm is that module's shim
+        # table, and splicing another game's into this payload would be the
+        # same coin flip the include paths were.
         cemu_asm_dirs = [os.path.join(root_dir, "src", "cemu")]
-        for vendor_dir in sorted(glob.glob(os.path.join(root_dir, "vendor", "wiixlaunch-*"))):
-            candidate = os.path.join(vendor_dir, "src", "cemu")
+        _, cemu_modules, _ = target_mod.module_includes(root_dir, config)
+        for module_name in cemu_modules:
+            candidate = os.path.join(root_dir, "vendor", module_name, "src", "cemu")
             if os.path.isdir(candidate):
                 cemu_asm_dirs.append(candidate)
 

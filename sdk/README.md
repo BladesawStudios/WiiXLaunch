@@ -61,7 +61,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `botw.gamedata` | v1.3 |
 | `botw.gfx` | v1.2 |
 | `botw.gui` | v1.1 |
-| `botw.input` | v1.1 |
+| `botw.input` | v1.2 |
 | `botw.map` | v1.1 |
 | `botw.memory` | v1.0 |
 | `botw.player` | v1.1 |

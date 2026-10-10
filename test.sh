@@ -32,12 +32,12 @@ mkdir -p build
 # silently join the next deploy.
 rm -rf build/moddata
 
-# Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
-# base WiiXLaunch, picked up automatically if this mod added one as a
-# submodule (git submodule add <url> vendor/wiixlaunch-<name>).
+# The game module(s) the active target builds, as scripts/target.py decides -
+# see build_cemu.bat. Captured first so a failure is fatal.
+MODULES="$(python3 scripts/target_modules.py)" || exit 1
 MODULE_FLAGS=()
-for d in vendor/wiixlaunch-*/; do
-  [ -d "${d}include" ] && MODULE_FLAGS+=(-I "${d}include")
+for m in $MODULES; do
+  MODULE_FLAGS+=(-I "vendor/$m/include")
 done
 
 # Are the gates below actually wired in, and is a failure fatal? Every gate
@@ -145,16 +145,16 @@ fi
 # it was true for months while wxlm.py wrote MACHINE_PPC32 into every file it
 # produced.
 #
-# Needs the Switch host ELF that build_switch.sh leaves in build/switch. A
+# Needs the Switch host ELF that build_switch.sh leaves in build/<target>/switch. A
 # MISSING ONE IS A FAILURE: "no host built yet" and "the host is fine" are
 # different answers and a skip makes them look the same.
-if [ ! -f build/switch/wiixlaunch-switch.elf ]; then
-    echo "[test_switch_module] build/switch/wiixlaunch-switch.elf is missing."
+if [ ! -f "build/$WIIXL_TARGET/switch/wiixlaunch-switch.elf" ]; then
+    echo "[test_switch_module] build/$WIIXL_TARGET/switch/wiixlaunch-switch.elf is missing."
     echo "[test_switch_module] Run ./build_switch.sh $WIIXL_TARGET first - this gate"
     echo "[test_switch_module] reads the host ELF to check the nn:: symbols it imports."
     exit 1
 fi
-python3 scripts/test_switch_module.py build/switch/wiixlaunch-switch.elf
+python3 scripts/test_switch_module.py "build/$WIIXL_TARGET/switch/wiixlaunch-switch.elf"
 
 # --- the example modules ---------------------------------------------------
 # They exist to be EXERCISED: the two hook mods hook the same address on

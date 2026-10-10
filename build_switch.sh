@@ -7,6 +7,11 @@ source scripts/devkitpro_env.sh
 echo "Generating config..."
 python3 scripts/generate_config.py
 
+# Output goes under build/<target>/, so hosts for two games never overwrite
+# each other. The name comes from scripts/target.py.
+TARGET_NAME="$(python3 scripts/target_value.py --name)"
+OUT="build/$TARGET_NAME/switch"
+
 # devkitPro's make rules cannot handle spaces in paths, so stage the build in
 # a temp dir (space-free) instead of building in-place.
 STAGE="${TMPDIR:-/tmp}/wiixlaunch-switch"
@@ -33,9 +38,9 @@ echo "Building for Switch (ARM64)..."
 make -C "$STAGE"
 
 # Extract artifacts
-mkdir -p build/switch
-cp "$STAGE/deploy/subsdk9" build/switch/subsdk9
-cp "$STAGE/deploy/main.npdm" build/switch/main.npdm
+mkdir -p "$OUT"
+cp "$STAGE/deploy/subsdk9" "$OUT/subsdk9"
+cp "$STAGE/deploy/main.npdm" "$OUT/main.npdm"
 
 # THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
 #
@@ -50,5 +55,5 @@ cp "$STAGE/deploy/main.npdm" build/switch/main.npdm
 # The linked ELF, kept beside the artifacts: test.sh's test_switch_module
 # gate reads it to check which nn:: symbols the host imports, and the build
 # stage it was linked in is deleted by the next build.
-cp "$STAGE/wiixlaunch-switch.elf" build/switch/wiixlaunch-switch.elf
-echo "Switch host built: build/switch/subsdk9"
+cp "$STAGE/wiixlaunch-switch.elf" "$OUT/wiixlaunch-switch.elf"
+echo "Switch host built: $OUT/subsdk9"

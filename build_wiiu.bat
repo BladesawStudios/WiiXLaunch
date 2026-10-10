@@ -8,6 +8,14 @@ echo Generating config...
 python scripts\generate_config.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
+:: Output goes under build\<target>\, so hosts for two games never overwrite
+:: each other. The name comes from scripts\target.py, the one place that
+:: decides which target is active.
+set TARGET_NAME=
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py --name`) do set "TARGET_NAME=%%i"
+if not defined TARGET_NAME exit /b 1
+set "OUT=build\%TARGET_NAME%\wiiu"
+
 :: The plugin filename lives in exactly one place - wiiu.plugin_name in
 :: the active target in targets/ - and is read from there rather than repeated
 :: the Makefile's TARGET (passed on the command line below) and the copy step at
@@ -30,12 +38,14 @@ xcopy /s /e /y /i src "%STAGE%\src" > nul
 xcopy /s /e /y /i include "%STAGE%\include" > nul
 xcopy /s /e /y /i build\generated\include "%STAGE%\generated\include" > nul
 
-:: Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
-:: base WiiXLaunch, staged here if this mod added one as a submodule
-:: (git submodule add <url> vendor/wiixlaunch-<name>). scripts/wiiu/Makefile
-:: picks up modules/*/include automatically.
-for /d %%G in (vendor\wiixlaunch-*) do (
-    if exist "%%G\include" xcopy /s /e /y /i "%%G\include" "%STAGE%\modules\%%~nxG\include" > nul
+:: The game module(s) this target builds, as scripts/target.py decides - see
+:: build_cemu.bat. Only those are staged; scripts/wiiu/Makefile picks up
+:: modules/*/include, so staging is the selection. Run once bare so its exit
+:: code is seen.
+python scripts\target_modules.py > nul
+if %ERRORLEVEL% NEQ 0 exit /b 1
+for /f "usebackq delims=" %%G in (`python scripts\target_modules.py`) do (
+    xcopy /s /e /y /i "vendor\%%G\include" "%STAGE%\modules\%%G\include" > nul
 )
 
 copy /y scripts\wiiu\Makefile "%STAGE%\Makefile" > nul
@@ -48,8 +58,8 @@ set STAGEFWD=%STAGE:\=/%
 "%DKP_BASH%" -lc "cd '%STAGEFWD%' && make TARGET='%WPS_TARGET%'"
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
-if not exist build\wiiu mkdir build\wiiu
-copy /y "%STAGE%\%WPS_NAME%" build\wiiu\%WPS_NAME% > nul
+if not exist "%OUT%" mkdir "%OUT%"
+copy /y "%STAGE%\%WPS_NAME%" "%OUT%\%WPS_NAME%" > nul
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
@@ -61,5 +71,5 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 ::
 ::   gates and example modules -> test.bat
 ::   packaging and installing  -> python scripts\deploy.py --target <name>
-echo Wii U host built: build\wiiu\%WPS_NAME%
+echo Wii U host built: %OUT%\%WPS_NAME%
 exit /b 0

@@ -20,18 +20,28 @@ echo Generating config...
 python scripts\generate_config.py
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
-if not exist build mkdir build
+:: Output goes under build\<target>\, so hosts for two games never overwrite
+:: each other. The name comes from scripts\target.py, the one place that
+:: decides which target is active.
+set TARGET_NAME=
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py --name`) do set "TARGET_NAME=%%i"
+if not defined TARGET_NAME exit /b 1
+
+if not exist build\%TARGET_NAME% mkdir build\%TARGET_NAME%
 :: Module resources are staged fresh every build; a directory left from a
 :: module that has been renamed or removed would otherwise be deployed
 :: forever and silently join the mods directory.
 if exist build\moddata rmdir /s /q build\moddata
 
-:: Optional WiiXLaunch modules (e.g. vendor/wiixlaunch-botw) - not part of
-:: base WiiXLaunch, picked up automatically if this mod added one as a
-:: submodule (git submodule add <url> vendor/wiixlaunch-<name>).
+:: The game module(s) this target builds (vendor/wiixlaunch-<name>), as
+:: scripts/target.py decides - NOT whatever is in vendor/, since two modules
+:: both provide <wiixlaunch/module.hpp>. Run once bare so its exit code is
+:: seen; `for /f` swallows it.
+python scripts\target_modules.py > nul
+if %ERRORLEVEL% NEQ 0 exit /b 1
 set MODULE_FLAGS=
-for /d %%G in (vendor\wiixlaunch-*) do (
-    if exist "%%G\include" set MODULE_FLAGS=!MODULE_FLAGS! -I%%G\include
+for /f "usebackq delims=" %%G in (`python scripts\target_modules.py`) do (
+    set MODULE_FLAGS=!MODULE_FLAGS! -Ivendor\%%G\include
 )
 
 :: Invoke devkitPPC directly instead of CMake: on machines with Visual Studio
@@ -61,7 +71,7 @@ echo Building Cemu payload (PowerPC)...
   -I include -I build\generated\include %MODULE_FLAGS% ^
   -nostartfiles -T scripts\cemu.ld -Wl,-q ^
   src\main.cpp src\wiiu_plugin.cpp src\cemu\bootstrap.cpp ^
-  -o build\wiixlaunch_cemu
+  -o build\%TARGET_NAME%\wiixlaunch_cemu
 if %ERRORLEVEL% NEQ 0 exit /b 1
 
 :: THIS SCRIPT BUILDS ONE HOST FOR ONE GAME. That is all it does.
@@ -73,5 +83,5 @@ if %ERRORLEVEL% NEQ 0 exit /b 1
 ::
 ::   gates and example modules -> test.bat
 ::   packaging and installing  -> python scripts\deploy.py --target <name>
-echo Cemu host built: build\wiixlaunch_cemu
+echo Cemu host built: build\%TARGET_NAME%\wiixlaunch_cemu
 exit /b 0

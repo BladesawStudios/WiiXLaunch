@@ -54,7 +54,10 @@ build_switch.bat totk     # targets/totk.json
 * `memory`: heap/JIT/inline-pool sizes and the Cemu debug log buffer size.
   `jit_size` is hook trampolines; default `0x1000` covers about twenty hooks.
 * `modules`: which `vendor/wiixlaunch-*` game modules to compile in. `[]`
-  means base surfaces only.
+  means base surfaces only. Left out, the one module in `vendor/` is used; with
+  more than one there, that is a build error, since each provides
+  `<wiixlaunch/module.hpp>`. Every build script asks
+  `scripts/target_modules.py` rather than globbing `vendor/`.
 * `patches`: `persist` decides whether declared patches survive the boot
   that applied them.
 * `samples`: whether the framework's example mods belong on this host.
@@ -131,6 +134,16 @@ Each script builds one host for one game. It does not run gates, build
 example modules, package, or deploy. Pass a target to pick the game:
 `build_switch.bat totk`.
 
+Hosts land under the target's name, so building one game never overwrites
+another's:
+
+```
+build/<target>/switch/        subsdk9, main.npdm, wiixlaunch-switch.elf
+build/<target>/wiiu/          the .wps plugin
+build/<target>/wiixlaunch_cemu
+build/<target>/switch-mods/   example modules for AArch64 (test.bat)
+```
+
 CMake directly, Switch only:
 
 ```bash
@@ -150,7 +163,7 @@ from it (see
 [SDK: Distribution](../sdk/distribution.md#shipping-a-mod)), and the example
 modules built for both machine types.
 
-`test_switch_module` needs `build/switch/wiixlaunch-switch.elf` to exist
+`test_switch_module` needs `build/<target>/switch/wiixlaunch-switch.elf` to exist
 first; it says so if missing rather than skipping silently.
 
 ## Deploying

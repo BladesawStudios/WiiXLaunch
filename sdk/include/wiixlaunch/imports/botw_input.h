@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.input v1.1, 21 symbol(s), from the surface's own table.
+// botw.input v1.2, 22 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_input(SupportsInjection); }
 //     S::SupportsInjection(...);
 //
-// so a mod that uses two symbols imports two, not all 21.
+// so a mod that uses two symbols imports two, not all 22.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -93,14 +93,20 @@ extern uint32_t wiixl_import__botw_input__FrameCallbackCount(void);
 // What the frame dispatcher has been doing. Reported at the load point the same
 // way PlayerTick is.
 extern void wiixl_import__botw_input__LogFrameState(void);
+
+// The right stick as the player is really holding it, before any injection,
+// in raw VPAD terms (no deadzone, X not flipped) - exactly what Send takes.
+// GetRightStick reports what the GAME saw, so a mod rewriting one axis from
+// it reads its own last write back and the axis freezes. GamePad only.
+extern uint32_t wiixl_import__botw_input__GetPhysicalRightStick(float* out2);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.input@1.1 when packing,
+// added in a later minor should pass --require botw.input@1.2 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_input {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 1;
+inline constexpr unsigned kVersionMinor = 2;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call

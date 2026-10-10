@@ -20,6 +20,13 @@ setlocal
 :: paths of their own (scripts\deploy.py and the rest) and expect the repo root.
 cd /d "%~dp0"
 
+:: One target for all three, passed down through WIIXL_TARGET. Each host
+:: lands under build\<target>\.
+if not "%~1"=="" set "WIIXL_TARGET=%~1"
+set TARGET_NAME=
+for /f "usebackq delims=" %%i in (`python scripts\target_value.py --name`) do set "TARGET_NAME=%%i"
+if not defined TARGET_NAME exit /b 1
+
 echo ==========================================
 echo Building WiiXLaunch for All Target Platforms
 echo ==========================================
@@ -51,9 +58,9 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo ==========================================
 echo All three hosts built.
-echo   build\switch\subsdk9
-echo   build\wiiu\
-echo   build\wiixlaunch_cemu
+echo   build\%TARGET_NAME%\switch\subsdk9
+echo   build\%TARGET_NAME%\wiiu\
+echo   build\%TARGET_NAME%\wiixlaunch_cemu
 echo.
 echo Verify with  test.bat
 echo Install with python scripts\deploy.py --target ^<name^>
