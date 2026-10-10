@@ -19,28 +19,16 @@
 
 extern "C" {
 
-// 1 on success. 0 when the bytes at the address are not what the caller said
-// they would be - which is the version guard doing its job, not a failure of
-// this call.
-// THROUGH THE PATCH REGISTRY, not past it.
-//
-// This used to verify the origin bytes and then write, recording nothing. So a
-// runtime patch got one of the four checks a DECLARED patch gets: it could land
-// inside the 16 bytes a hook displaced, or on top of another module's patch, or
-// into the module arena, and none of those were looked at - while the surface
-// sat next to Patches, which does all of them and names the other party.
-//
-// That gap is the reason a mod wanting a CONFIGURABLE patch had to choose
-// between the collision report and the config: a declared patch cannot depend on
-// a number read at runtime, and a runtime patch was unregistered. It no longer
-// is - Patches::ApplyAt checks and records, so two mods rewriting the same
-// instruction collide by name whichever way either of them wrote it.
+// 1 on success. 0 when the bytes at the address aren't what the caller
+// said - the version guard doing its job. Goes through Patches::ApplyAt
+// (not around it), so a runtime patch gets the same hooked-window and
+// patch-overlap checks a declared patch gets, and two mods rewriting the
+// same instruction collide by name either way.
 extern uint32_t wiixl_import__wiixl_patch__Write(uintptr_t addr, const void* data, uint32_t size, const void* origin, uint32_t originSize);
 extern uint32_t wiixl_import__wiixl_patch__WriteUnchecked(uintptr_t addr, const void* data, uint32_t size);
 
-// Reads bytes back out of game memory, which is how a mod verifies its own
-// write rather than trusting the return value. The sixth rule in
-// docs/framework/modules.md, made available to mods.
+// Reads bytes back out of game memory, so a mod can verify its own write
+// rather than trust the return value.
 extern uint32_t wiixl_import__wiixl_patch__Read(uintptr_t addr, void* out, uint32_t size);
 }
 

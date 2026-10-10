@@ -20,8 +20,8 @@
 extern "C" {
 extern uint32_t wiixl_import__wiixl_mem__ShimsAvailable(void);
 
-// heap: 0 MEM1, 1 MEM2, 2 FG - matching Mem::BaseHeap. Returned as an opaque
-// address; a mod passes it back and never dereferences it.
+// heap: 0 MEM1, 1 MEM2, 2 FG (matching Mem::BaseHeap). Returned as an
+// opaque address a mod passes back and never dereferences.
 extern uintptr_t wiixl_import__wiixl_mem__GetBaseHeapHandle(uint32_t heap);
 extern uint32_t wiixl_import__wiixl_mem__GetAllocatableSize(uintptr_t heap, int32_t align);
 extern uintptr_t wiixl_import__wiixl_mem__AllocFromExpHeap(uintptr_t heap, uint32_t size, int32_t align);
