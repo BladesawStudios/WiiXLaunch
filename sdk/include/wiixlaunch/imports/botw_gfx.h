@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gfx v1.2, 24 symbol(s), from the surface's own table.
+// botw.gfx v1.4, 30 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gfx(IsGX2); }
 //     S::IsGX2(...);
 //
-// so a mod that uses two symbols imports two, not all 24.
+// so a mod that uses two symbols imports two, not all 30.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -83,14 +83,38 @@ extern uintptr_t wiixl_import__botw_gfx__AllocMEM1(uint32_t size, uint32_t align
 // one per module, and cmdBuf/dstTexture are only valid inside the call.
 extern uint32_t wiixl_import__botw_gfx__SupportsDrawBeforeHud(void);
 extern uint32_t wiixl_import__botw_gfx__RegisterDrawBeforeHud(ModDrawFn fn);
+
+// Builds a shader pass from a GFD. Returns a pass handle, or 0 when the GFD would not parse or no slot is free.
+extern uint32_t wiixl_import__botw_gfx__CreateShaderPass(const void* gsh, uint32_t size);
+
+// Draws a shader pass over the rectangle (x, y, w, h) of dstTexture, in pixels from the top left, blending the result
+// over what is there. `uniforms` are the pass's vec4 parameters (16 bytes each, exactly as many as the vertex shader has
+// attributes after the position), streamed with the vertices; the frame so far is texture 0. Only the rectangle is shaded, so it is the pass's whole cost. dstTexture comes from the draw callback.
+extern uint32_t wiixl_import__botw_gfx__DrawShaderPass(uintptr_t dstTexture, uint32_t pass, const void* uniforms, uint32_t uniformSize, int32_t x, int32_t y, int32_t w, int32_t h);
+
+// GX2 only for now: NVN wants its own compiled shader binaries, which a CafeGLSL GFD is not.
+extern uint32_t wiixl_import__botw_gfx__SupportsShaderPass(void);
+
+// 1 while this frame has a scene depth buffer, which DrawShaderPass binds as texture 1 of the pass: point filtered, the
+// raw [0,1] depth the game wrote, 1 where nothing was drawn (sky). Ask from the draw callback.
+extern uint32_t wiixl_import__botw_gfx__SceneDepthReady(void);
+
+// Like RegisterDraw, but the callback runs before the HUD is drawn, into the scene's finished colour buffer, through a
+// private context state. A draw at scan-out lies over the HUD and menus; this one does not. It runs only on frames
+// PreUiReady allows, so keep a RegisterDraw callback for the frames it does not, and skip it when this one drew.
+extern uint32_t wiixl_import__botw_gfx__RegisterPreUiDraw(ModDrawFn fn);
+
+// 1 once pre-UI drawing is armed. Before that, and wherever it cannot be (no memory for the private context state,
+// Switch), only the scan-out callback runs.
+extern uint32_t wiixl_import__botw_gfx__PreUiReady(void);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gfx@1.2 when packing,
+// added in a later minor should pass --require botw.gfx@1.4 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gfx {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 2;
+inline constexpr unsigned kVersionMinor = 4;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call

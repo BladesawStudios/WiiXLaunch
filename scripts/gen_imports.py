@@ -5,6 +5,7 @@ Usage:
     python scripts/gen_imports.py            # write the headers
     python scripts/gen_imports.py --check    # fail if they are out of date
 """
+import glob
 import io
 import os
 import re
@@ -13,11 +14,31 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Where surface headers live and where generated headers are emitted.
-SOURCES = [
-    os.path.join(ROOT, "include", "wiixlaunch", "loader"),
-    os.path.join(ROOT, "vendor", "wiixlaunch-botw", "include", "wiixlaunch", "botw", "surfaces"),
-    os.path.join(ROOT, "vendor", "wiixlaunch-botw", "include", "wiixlaunch", "botw", "surfaces.hpp"),
-]
+#
+# EVERY game module in vendor/, not the active target's: the import headers are
+# the SDK a mod author builds against, and a TotK mod author needs totk_*.h
+# whichever target this checkout last built. Surface names carry the game
+# (botw.player, totk.player), so two modules' headers cannot collide.
+# A module keeps its surfaces in include/wiixlaunch/<game>/surfaces/ plus
+# <game>/surfaces.hpp - the layout wiixlaunch-botw set and wiixlaunch-totk follows.
+BASE_SOURCE = os.path.join(ROOT, "include", "wiixlaunch", "loader")
+
+
+def module_sources():
+    """(module dir name, [surface paths]) for every vendor/wiixlaunch-* module."""
+    out = []
+    for mod in sorted(glob.glob(os.path.join(ROOT, "vendor", "wiixlaunch-*"))):
+        found = []
+        inc = os.path.join(mod, "include", "wiixlaunch")
+        for game in sorted(glob.glob(os.path.join(inc, "*", ""))):
+            found += sorted(glob.glob(os.path.join(game, "surfaces", "*.hpp")))
+            if os.path.isfile(os.path.join(game, "surfaces.hpp")):
+                found.append(os.path.join(game, "surfaces.hpp"))
+        if found:
+            out.append((os.path.basename(mod), found))
+    return out
+
+
 OUT_DIR = os.path.join(ROOT, "include", "wiixlaunch", "imports")
 
 NAME = re.compile(r'constexpr const char\* k\w*(?:Name|Surface)\s*=\s*"([\w.]+)"')
@@ -284,31 +305,49 @@ def render(surface, major, minor, symbols, callback_types):
 def main():
     check = "--check" in sys.argv
 
-    paths = []
-    for src in SOURCES:
-        if os.path.isfile(src):
-            paths.append(src)
-        elif os.path.isdir(src):
-            paths += [os.path.join(src, n) for n in sorted(os.listdir(src))
-                      if n.endswith(".hpp")]
+    groups = [("base", [os.path.join(BASE_SOURCE, n)
+                        for n in sorted(os.listdir(BASE_SOURCE)) if n.endswith(".hpp")])]
+    groups += module_sources()
+    paths = [p for _, ps in groups for p in ps]
 
+    # Aliases are collected per group, so a type one module defines can never
+    # resolve a symbol in another module's header.
     wanted = {}
-    aliases, callbacks = collect_aliases(paths)
-    for path in paths:
-        found = surfaces_in(path, aliases, callbacks)
-        if found is None:
-            return 1
-        for surface, major, minor, symbols, needed in found:
-            flat = surface.replace(".", "_") + ".h"
-            types = [(n, callbacks[n]) for n in needed]
-            wanted[flat] = render(surface, major, minor, symbols, types)
+    per_group = {}
+    for group, gpaths in groups:
+        aliases, callbacks = collect_aliases(gpaths if group == "base"
+                                             else groups[0][1] + gpaths)
+        count = 0
+        for path in gpaths:
+            found = surfaces_in(path, aliases, callbacks)
+            if found is None:
+                return 1
+            for surface, major, minor, symbols, needed in found:
+                flat = surface.replace(".", "_") + ".h"
+                if flat in wanted:
+                    sys.stderr.write("[gen_imports] surface %s is defined twice - in %s and "
+                                     "an earlier source. One header cannot say both.\n"
+                                     % (surface, os.path.relpath(path, ROOT)))
+                    return 1
+                types = [(n, callbacks[n]) for n in needed]
+                wanted[flat] = render(surface, major, minor, symbols, types)
+                count += 1
+        per_group[group] = count
 
-    # A floor, because "0 surfaces found, nothing to do, exit 0" is the failure
-    # this would otherwise report as success.
+    # Floors, because "0 surfaces found, nothing to do, exit 0" is the failure
+    # this would otherwise report as success. Per group, so a game module whose
+    # surfaces stopped parsing is not hidden by the other module's count.
+    empty = [g for g, n in per_group.items() if n == 0]
+    if empty:
+        sys.stderr.write("[gen_imports] no surfaces parsed from: %s - each of these was "
+                         "found on disk, so the scan is broken, not the tree.\n"
+                         % ", ".join(empty))
+        return 1
     if len(wanted) < 20:
         sys.stderr.write("[gen_imports] only %d surface(s) parsed, expected at least "
                          "20 - the scan is broken, not the tree.\n" % len(wanted))
         return 1
+    print("[gen_imports] sources: %s" % ", ".join("%s %d" % (g, n) for g, n in per_group.items()))
 
     os.makedirs(OUT_DIR, exist_ok=True)
     stale, written = [], 0

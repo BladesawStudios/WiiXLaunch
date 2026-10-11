@@ -48,7 +48,7 @@ sites, which is a handful of lines and says plainly which one is running.
 
 ## What this SDK was cut from
 
-25 surfaces:
+32 surfaces:
 
 | surface | version |
 |---|---|
@@ -59,7 +59,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `botw.events` | v1.0 |
 | `botw.flyt` | v1.0 |
 | `botw.gamedata` | v1.3 |
-| `botw.gfx` | v1.2 |
+| `botw.gfx` | v1.4 |
 | `botw.gui` | v1.1 |
 | `botw.input` | v1.2 |
 | `botw.map` | v1.1 |
@@ -70,6 +70,13 @@ sites, which is a handful of lines and says plainly which one is running.
 | `botw.sound` | v1.0 |
 | `botw.vfx` | v1.0 |
 | `botw.world` | v1.0 |
+| `totk.actor` | v1.0 |
+| `totk.camera` | v1.0 |
+| `totk.frame` | v1.0 |
+| `totk.gamedata` | v1.0 |
+| `totk.input` | v1.1 |
+| `totk.player` | v1.0 |
+| `totk.world` | v1.0 |
 | `wiixl.call` | v1.0 |
 | `wiixl.core` | v1.5 |
 | `wiixl.mem` | v1.0 |
