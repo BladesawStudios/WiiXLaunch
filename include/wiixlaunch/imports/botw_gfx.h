@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gfx v1.4, 30 symbol(s), from the surface's own table.
+// botw.gfx v1.5, 31 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gfx(IsGX2); }
 //     S::IsGX2(...);
 //
-// so a mod that uses two symbols imports two, not all 30.
+// so a mod that uses two symbols imports two, not all 31.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -107,14 +107,20 @@ extern uint32_t wiixl_import__botw_gfx__RegisterPreUiDraw(ModDrawFn fn);
 // 1 once pre-UI drawing is armed. Before that, and wherever it cannot be (no memory for the private context state,
 // Switch), only the scan-out callback runs.
 extern uint32_t wiixl_import__botw_gfx__PreUiReady(void);
+
+// Gives a pass a data texture, for what does not fit in its twelve vec4 parameters: width x height RGBA8 texels, row by
+// row from the top (at most 256 each way). Every later draw of the pass binds it as texture 2 - unorm, point filtered,
+// clamped - so the shader reads texel (x, y) at its centre, ((x, y) + 0.5) / size. Call again whenever the data changes;
+// the size is fixed by the first call. Double-buffered in the host, so an update never disturbs a draw already queued.
+extern uint32_t wiixl_import__botw_gfx__SetShaderPassData(uint32_t pass, const void* rgba, uint32_t width, uint32_t height);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gfx@1.4 when packing,
+// added in a later minor should pass --require botw.gfx@1.5 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gfx {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 4;
+inline constexpr unsigned kVersionMinor = 5;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
