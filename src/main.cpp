@@ -3,6 +3,7 @@
 #include <wiixlaunch/game_version.hpp>
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/net_surface.hpp>
+#include <wiixlaunch/loader/audio_surface.hpp>
 #include <wiixlaunch/loader/base_surfaces.hpp>
 
 // Game module registration, if present in the tree.
@@ -98,6 +99,7 @@ extern "C" void WiiXLaunch_Init() {
     // Register surfaces: core, networking, and base services.
     WiiXLaunch::Core::Register();
     WiiXLaunch::NetSurface::Register();
+    WiiXLaunch::AudioSurface::Register();
     WiiXLaunch::BaseSurfaces::RegisterAll();
 
 #if WIIXL_HAVE_GAME_MODULE

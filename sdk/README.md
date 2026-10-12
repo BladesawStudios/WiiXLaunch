@@ -48,7 +48,7 @@ sites, which is a handful of lines and says plainly which one is running.
 
 ## What this SDK was cut from
 
-33 surfaces:
+34 surfaces:
 
 | surface | version |
 |---|---|
@@ -78,6 +78,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `totk.input` | v1.1 |
 | `totk.player` | v1.0 |
 | `totk.world` | v1.0 |
+| `wiixl.audio` | v1.0 |
 | `wiixl.call` | v1.0 |
 | `wiixl.core` | v1.5 |
 | `wiixl.mem` | v1.0 |
