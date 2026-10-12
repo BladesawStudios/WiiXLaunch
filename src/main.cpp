@@ -4,6 +4,7 @@
 #include <wiixlaunch/loader/core_surface.hpp>
 #include <wiixlaunch/loader/net_surface.hpp>
 #include <wiixlaunch/loader/audio_surface.hpp>
+#include <wiixlaunch/loader/rumble_surface.hpp>
 #include <wiixlaunch/loader/base_surfaces.hpp>
 
 // Game module registration, if present in the tree.
@@ -100,6 +101,7 @@ extern "C" void WiiXLaunch_Init() {
     WiiXLaunch::Core::Register();
     WiiXLaunch::NetSurface::Register();
     WiiXLaunch::AudioSurface::Register();
+    WiiXLaunch::RumbleSurface::Register();
     WiiXLaunch::BaseSurfaces::RegisterAll();
 
 #if WIIXL_HAVE_GAME_MODULE

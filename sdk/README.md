@@ -48,7 +48,7 @@ sites, which is a handful of lines and says plainly which one is running.
 
 ## What this SDK was cut from
 
-34 surfaces:
+35 surfaces:
 
 | surface | version |
 |---|---|
@@ -84,6 +84,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `wiixl.mem` | v1.0 |
 | `wiixl.net` | v1.2 |
 | `wiixl.patch` | v1.0 |
+| `wiixl.rumble` | v1.0 |
 | `wiixl.time` | v1.0 |
 | `wiixl.version` | v1.0 |
 
