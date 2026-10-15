@@ -80,7 +80,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `totk.world` | v1.0 |
 | `wiixl.audio` | v1.0 |
 | `wiixl.call` | v1.0 |
-| `wiixl.core` | v1.5 |
+| `wiixl.core` | v1.6 |
 | `wiixl.mem` | v1.0 |
 | `wiixl.net` | v1.2 |
 | `wiixl.patch` | v1.0 |

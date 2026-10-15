@@ -53,6 +53,9 @@ enum class CemuFsImport : uint32_t {
     FSOpenDir,
     FSReadDir,
     FSCloseDir,
+    // Creating directories, for the mod save directory (wiixl.core's
+    // ModSaveWrite) - /vol/save has no per-mod folder until one is made.
+    FSMakeDir,
     Count
 };
 

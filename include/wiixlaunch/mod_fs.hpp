@@ -145,6 +145,44 @@ inline PathResult Resolve(const char* path, char* out) {
     return PathResult::Ok;
 }
 
+// A mod's SAVE directory: the one place a mod may write, kept apart from its
+// resource directory because that one is read-only content on every target
+// (a Cemu graphic pack, a Wii U title's /vol/content, a Switch romfs).
+//
+// On Cemu and Wii U it sits in the title's own save storage, beside the
+// game's saves - /vol/save/common is shared by every user account and
+// exists for any title that saves. On Switch it is on the SD card, the only
+// writable place a host has.
+#if WIIXL_SWITCH
+constexpr const char* kSaveRoot = "sd:/WiiXLaunch/save";
+#else
+constexpr const char* kSaveRoot = "/vol/save/common/wiixlaunch";
+#endif
+
+// Joins a checked path under the current module's save directory, with the
+// same refusals as Resolve. `out` must hold kMaxScopedPath bytes.
+inline PathResult ResolveSave(const char* path, char* out) {
+    if (out) out[0] = '\0';
+
+    const char* id = ModContext::Current();
+    if (!id || id[0] == '\0') return PathResult::NoModule;
+
+    const PathResult r = CheckScoped(path);
+    if (r != PathResult::Ok) return r;
+
+    const uint32_t need = impl::Len(kSaveRoot) + 1u + impl::Len(id) + 1u + impl::Len(path) + 1u;
+    if (need > kMaxScopedPath) return PathResult::TooLong;
+
+    uint32_t n = 0;
+    for (const char* p = kSaveRoot; *p; ++p) out[n++] = *p;
+    out[n++] = '/';
+    for (const char* p = id; *p; ++p) out[n++] = *p;
+    out[n++] = '/';
+    for (const char* p = path; *p; ++p) out[n++] = *p;
+    out[n] = '\0';
+    return PathResult::Ok;
+}
+
 // The host's own resource directory, for host code rather than for a mod.
 inline void HostPath(const char* path, char* out) {
     uint32_t n = 0;

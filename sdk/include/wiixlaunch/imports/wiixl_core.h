@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// wiixl.core v1.5, 17 symbol(s), from the surface's own table.
+// wiixl.core v1.6, 19 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_wiixl_core(Log); }
 //     S::Log(...);
 //
-// so a mod that uses two symbols imports two, not all 17.
+// so a mod that uses two symbols imports two, not all 19.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -70,14 +70,24 @@ extern int32_t wiixl_import__wiixl_core__GameReadFile(const char* path, void* bu
 // log names which of four reasons). Attributed to whichever module the host
 // is running, never to anything passed here.
 extern uint32_t wiixl_import__wiixl_core__RegisterTick(void (*fn)());
+
+// The calling module's save directory (ModFS::ResolveSave) - the one place a
+// mod can write. Same refusals as ModReadFile; -1 for a file that is not there
+// or could not be read.
+extern int32_t wiixl_import__wiixl_core__ModSaveRead(const char* path, void* buffer, uint32_t maxSize);
+
+// Writes (creating or replacing) a file in the calling module's save
+// directory, making the directories on the way. Returns the bytes written, or
+// a refusal as ModSaveRead; -1 for a write the filesystem refused.
+extern int32_t wiixl_import__wiixl_core__ModSaveWrite(const char* path, const void* data, uint32_t size);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require wiixl.core@1.5 when packing,
+// added in a later minor should pass --require wiixl.core@1.6 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_wiixl_core {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 5;
+inline constexpr unsigned kVersionMinor = 6;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call

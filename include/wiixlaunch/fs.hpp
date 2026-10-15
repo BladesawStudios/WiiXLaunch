@@ -639,6 +639,44 @@ inline bool WriteFile(const char* path, const void* buffer, size_t size, size_t*
 #endif
 }
 
+// Creates one directory. An absolute path only, used as given - no candidate
+// search, for the same reason WriteFile has none. A directory that already
+// exists is success: callers make a chain of parents and should not have to
+// know which links were there before.
+inline bool MakeDir(const char* path) {
+    if (!path || !path[0]) return false;
+    if (!impl::EnsureFSClient()) return false;
+
+    // coreinit's FS_STATUS_EXISTS.
+    constexpr int32_t kExists = -5;
+
+#if WIIXL_CEMU
+    using FnFSMakeDir = int32_t (*)(void* client, void* block, const char* path, uint32_t errorMask);
+    auto makeDir = Backend::ResolveCemuFs<FnFSMakeDir>(Backend::CemuFsImport::FSMakeDir);
+    if (!makeDir) return false;
+    const int32_t status = makeDir(impl::g_FSClient, impl::g_FSCmdBlock, path, 0xFFFFFFFF);
+    if (status == 0 || status == kExists) return true;
+    WIIXL_LOG("WiiXLaunch: FSMakeDir failed for '%s' (status=%d)", path, status);
+    return false;
+#elif WIIXL_WIIU
+    const FSStatus status = FSMakeDir(reinterpret_cast<FSClient*>(impl::g_FSClient),
+                                      reinterpret_cast<FSCmdBlock*>(impl::g_FSCmdBlock),
+                                      path, FS_ERROR_FLAG_ALL);
+    return status == FS_STATUS_OK || static_cast<int32_t>(status) == kExists;
+#elif WIIXL_SWITCH
+    // Writes land only on the SD card (see WriteFile), so directories do too.
+    // CreateDirectory refuses an existing path; that is the success case here,
+    // so its result is not checked - the write that follows is what reports.
+    if (!impl::IsSdPath(path)) return false;
+    nn::fs::CreateDirectory(path);
+    return true;
+#else
+    (void)kExists;
+    WIIXL_LOG("WiiXLaunch: MakeDir is not implemented on this platform - '%s'", path);
+    return false;
+#endif
+}
+
 // An open file that supports positioned reads, for pulling pieces out of
 // archives far too large to ReadFile whole (BotW's Pack/Bootup.pack is ~30 MB;
 // the Cemu payload's built-in heap is the tail of its own code cave, under

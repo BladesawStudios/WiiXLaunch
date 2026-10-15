@@ -34,7 +34,7 @@ namespace WiiXLaunch::Core {
 
 constexpr const char* kSurfaceName = "wiixl.core";
 constexpr uint16_t kVersionMajor = 1;
-constexpr uint16_t kVersionMinor = 5;
+constexpr uint16_t kVersionMinor = 6;
 
 // Bumped when a mod built against an older host would misbehave rather than
 // just miss a symbol. Reported at the load point.
@@ -205,6 +205,77 @@ extern "C" inline int32_t CoreGameReadFile(const char* path, void* buffer,
     return static_cast<int32_t>(read);
 }
 
+// The most a single ModSaveWrite carries. A mod save is state, not an asset:
+// the write is staged through one host buffer so a mod never has to know
+// coreinit's 64-byte alignment rule, and that buffer bounds it.
+constexpr uint32_t kModSaveMaxSize = 4096;
+constexpr int32_t kModSaveTooLarge = -16;
+
+// The calling module's save directory (ModFS::ResolveSave) - the one place a
+// mod can write. Same refusals as ModReadFile; -1 for a file that is not there
+// or could not be read.
+extern "C" inline int32_t CoreModSaveRead(const char* path, void* buffer, uint32_t maxSize) {
+    char full[WiiXLaunch::ModFS::kMaxScopedPath];
+    const WiiXLaunch::ModFS::PathResult r = WiiXLaunch::ModFS::ResolveSave(path, full);
+    if (r != WiiXLaunch::ModFS::PathResult::Ok) {
+        WIIXL_LOG("ModFS: %s save read refused '%s' - %s",
+                  WiiXLaunch::ModContext::Current()
+                      ? WiiXLaunch::ModContext::Current() : "<host>",
+                  path ? path : "(null)", WiiXLaunch::ModFS::PathResultName(r));
+        return ModPathError(r);
+    }
+
+    size_t read = 0;
+    if (!WiiXLaunch::FS::ReadFile(full, buffer, maxSize, &read)) return -1;
+    return static_cast<int32_t>(read);
+}
+
+// Writes (creating or replacing) a file in the calling module's save
+// directory, making the directories on the way. Returns the bytes written, or
+// a refusal as ModSaveRead; -1 for a write the filesystem refused.
+extern "C" inline int32_t CoreModSaveWrite(const char* path, const void* data, uint32_t size) {
+    char full[WiiXLaunch::ModFS::kMaxScopedPath];
+    const WiiXLaunch::ModFS::PathResult r = WiiXLaunch::ModFS::ResolveSave(path, full);
+    if (r != WiiXLaunch::ModFS::PathResult::Ok) {
+        WIIXL_LOG("ModFS: %s save write refused '%s' - %s",
+                  WiiXLaunch::ModContext::Current()
+                      ? WiiXLaunch::ModContext::Current() : "<host>",
+                  path ? path : "(null)", WiiXLaunch::ModFS::PathResultName(r));
+        return ModPathError(r);
+    }
+    if (!data || size == 0) return kModReadEmpty;
+    if (size > kModSaveMaxSize) {
+        WIIXL_LOG("ModFS: %s save write '%s' refused - %u B is over the %u B limit",
+                  WiiXLaunch::ModContext::Current(), path,
+                  static_cast<unsigned>(size), static_cast<unsigned>(kModSaveMaxSize));
+        return kModSaveTooLarge;
+    }
+
+    // Every directory from the save root down to the file's own. The parent of
+    // the save root (/vol/save/common, or the SD card root) is the platform's.
+    uint32_t start = 0;
+    while (WiiXLaunch::ModFS::kSaveRoot[start]) ++start;
+    while (start > 0 && WiiXLaunch::ModFS::kSaveRoot[start - 1] != '/') --start;
+    for (uint32_t i = start; full[i]; ++i) {
+        if (full[i] != '/') continue;
+        full[i] = '\0';
+        const bool made = WiiXLaunch::FS::MakeDir(full);
+        full[i] = '/';
+        if (!made) return -1;
+    }
+
+    static_assert(sizeof(WiiXLaunch::FS::impl::g_FSStaging) >= kModSaveMaxSize,
+                  "the staging buffer bounds a mod save");
+    const uint8_t* src = static_cast<const uint8_t*>(data);
+    for (uint32_t i = 0; i < size; ++i) WiiXLaunch::FS::impl::g_FSStaging[i] = src[i];
+
+    size_t written = 0;
+    if (!WiiXLaunch::FS::WriteFile(full, WiiXLaunch::FS::impl::g_FSStaging, size, &written)) {
+        return -1;
+    }
+    return static_cast<int32_t>(written);
+}
+
 // Registers a per-frame callback. Returns 1 on success, 0 if refused (the
 // log names which of four reasons). Attributed to whichever module the host
 // is running, never to anything passed here.
@@ -259,6 +330,9 @@ inline const Surface::Symbol kSymbols[] = {
     WIIXL_SURFACE_SYMBOL("ModFileExists", &CoreModFileExists),
     WIIXL_SURFACE_SYMBOL("GameReadFile",  &CoreGameReadFile),
     WIIXL_SURFACE_SYMBOL("RegisterTick",  &CoreRegisterTick),
+    // v1.6
+    WIIXL_SURFACE_SYMBOL("ModSaveRead",   &CoreModSaveRead),
+    WIIXL_SURFACE_SYMBOL("ModSaveWrite",  &CoreModSaveWrite),
 };
 
 } // namespace impl

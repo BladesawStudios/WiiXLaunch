@@ -37,6 +37,7 @@ wiixlaunch_cemu_fs_shim_table:
   .int wiixlaunch_cemu_fs_shim_FSOpenDir
   .int wiixlaunch_cemu_fs_shim_FSReadDir
   .int wiixlaunch_cemu_fs_shim_FSCloseDir
+  .int wiixlaunch_cemu_fs_shim_FSMakeDir
 
 # None of these are variadic, so unlike the OSReport shim they need no
 # CR-bit-6 setup; a plain tail call passes the arguments through untouched.
@@ -65,3 +66,5 @@ wiixlaunch_cemu_fs_shim_FSReadDir:
   b import.coreinit.FSReadDir
 wiixlaunch_cemu_fs_shim_FSCloseDir:
   b import.coreinit.FSCloseDir
+wiixlaunch_cemu_fs_shim_FSMakeDir:
+  b import.coreinit.FSMakeDir
