@@ -19,17 +19,27 @@
 // NVN::Init installs the swap hook - the frame source behind wiixl.core's
 // RegisterTick and the botw.gfx / botw.gui draw callbacks - so a host built
 // with WIIXL_NO_DEMO lost every per-frame mod callback along with the logo.
-// WIIXL_NO_DEMO now removes the logo and nothing else.
+// The logo is now off unless a build defines WIIXL_DEMO: it was drawn over
+// gameplay, not only on the title screen, and it holds 640 KB of the host
+// arena that the GUI and shader passes need. WIIXL_DEMO removes nothing else.
 #if __has_include(<wiixlaunch/botw/botw.hpp>)
 #include <wiixlaunch/botw/botw.hpp>
 #define WIIXL_BOTW_GRAPHICS 1
 using namespace WiiXLaunch::BotW;
-#if !defined(WIIXL_NO_DEMO)
+#if defined(WIIXL_DEMO)
 #define WIIXL_BOTW_DEMO 1
 #endif
 #endif
 
 #if WIIXL_BOTW_DEMO
+// The logo belongs to the title screen only. The map manager is the cheapest
+// "a game is loaded" signal: it does not exist until a save is loaded (so this
+// also covers early boot), and on Switch Map::IsAvailable is always false, so
+// the logo there is drawn as before.
+static bool OnTitleScreen() {
+    return !Map::IsAvailable();
+}
+
 #if WIIXL_SWITCH
 // Compiled-in NVN packaged texture.
 #include <testpic_texture_bytes.hpp>
@@ -37,7 +47,7 @@ using namespace WiiXLaunch::BotW;
 static NVN::TextureHandle g_LogoTexture = 0;
 
 void OnRender(NVN::CommandBuffer* cmdBuf, void* dstTexture, int width, int height) {
-    if (g_LogoTexture) {
+    if (g_LogoTexture && OnTitleScreen()) {
         NVN::DrawSprite(cmdBuf, dstTexture, g_LogoTexture, -0.92f, 0.50f, 0.225f, 0.40f);
     }
 }
@@ -45,7 +55,7 @@ void OnRender(NVN::CommandBuffer* cmdBuf, void* dstTexture, int width, int heigh
 static GX2::TextureHandle g_LogoTexture = 0;
 
 void OnRender(GX2::CommandBuffer* cmdBuf, void* dstTexture, int width, int height) {
-    if (g_LogoTexture) {
+    if (g_LogoTexture && OnTitleScreen()) {
         GX2::DrawSprite(cmdBuf, dstTexture, g_LogoTexture, -0.92f, 0.50f, 0.225f, 0.40f);
     }
 }
@@ -53,6 +63,7 @@ void OnRender(GX2::CommandBuffer* cmdBuf, void* dstTexture, int width, int heigh
 static GX2::TextureHandle g_LogoTexture = 0;
 
 void OnRender(GX2::CommandBuffer* cmdBuf, void* dstTexture, int width, int height) {
+    if (!OnTitleScreen()) return;
     GX2::DrawSprite(cmdBuf, dstTexture, g_LogoTexture, -0.92f, 0.50f, 0.225f, 0.40f);
 }
 #endif
