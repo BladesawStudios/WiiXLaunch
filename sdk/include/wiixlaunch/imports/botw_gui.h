@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.gui v1.1, 90 symbol(s), from the surface's own table.
+// botw.gui v1.2, 91 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_gui(Init); }
 //     S::Init(...);
 //
-// so a mod that uses two symbols imports two, not all 90.
+// so a mod that uses two symbols imports two, not all 91.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -137,14 +137,20 @@ extern uint32_t wiixl_import__botw_gui__SetLoadBudget(uint32_t bytesPerFrame);
 extern uint32_t wiixl_import__botw_gui__FontSheetBytes(int32_t fontId);
 extern uint32_t wiixl_import__botw_gui__SetFocus(int32_t index);
 extern uint32_t wiixl_import__botw_gui__ClaimFocus(void);
+
+// Where what this module draws next goes, until it calls this again or its
+// frame callback returns: 0 over everything (the default), 1 into the map -
+// over the map itself, under its icons, cursor and the Sheikah Slate frame,
+// drawn only while the map is. Anything else is refused.
+extern uint32_t wiixl_import__botw_gui__SetLayer(uint32_t layer);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.gui@1.1 when packing,
+// added in a later minor should pass --require botw.gui@1.2 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_gui {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 1;
+inline constexpr unsigned kVersionMinor = 2;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
