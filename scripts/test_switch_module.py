@@ -36,6 +36,8 @@ ALLOWED_NN_IMPORTS = {
     "nn::fs::WriteOption const&)",
     "nn::fs::FlushFile(nn::fs::FileHandle)",
     "nn::fs::SetFileSize(nn::fs::FileHandle, long)",
+    # FS::MakeDir. Confirmed defined in BotW's exefs/sdk dynamic symbol table.
+    "nn::fs::CreateDirectory(char const*)",
     # Romfs for the load (src/switch_entry.cpp). All three confirmed in BotW
     # 1.5.0's exefs/sdk dynamic symbol table.
     "nn::fs::QueryMountRomCacheSize(unsigned long*)",

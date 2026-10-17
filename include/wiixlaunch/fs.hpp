@@ -667,6 +667,7 @@ inline bool MakeDir(const char* path) {
     // Writes land only on the SD card (see WriteFile), so directories do too.
     // CreateDirectory refuses an existing path; that is the success case here,
     // so its result is not checked - the write that follows is what reports.
+    (void)kExists;   // coreinit's; nn::fs reports its own way
     if (!impl::IsSdPath(path)) return false;
     nn::fs::CreateDirectory(path);
     return true;

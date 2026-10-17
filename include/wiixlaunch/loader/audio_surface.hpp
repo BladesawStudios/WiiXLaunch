@@ -67,7 +67,11 @@ struct AxVoiceOffsets {
     uint32_t currentOffset;
     const void* data;
 };
+// sndcore2 is the Wii U's, so its layout only holds where pointers are 32-bit.
+// Elsewhere the surface is unsupported and this struct is never handed to AX.
+#if WIIXL_CEMU || WIIXL_WIIU
 static_assert(sizeof(AxVoiceOffsets) == 0x14, "AXVoiceOffsets");
+#endif
 
 struct AxMix {                // AXVoiceDeviceMixData: one per output channel, four buses each
     struct { uint16_t volume; int16_t delta; } bus[4];
