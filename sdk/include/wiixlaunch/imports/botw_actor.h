@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.actor v1.0, 49 symbol(s), from the surface's own table.
+// botw.actor v1.1, 52 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_actor(Init); }
 //     S::Init(...);
 //
-// so a mod that uses two symbols imports two, not all 49.
+// so a mod that uses two symbols imports two, not all 52.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -103,14 +103,51 @@ extern uint32_t wiixl_import__botw_actor__SetMtx(uint32_t handle, const float* m
 extern uint32_t wiixl_import__botw_actor__Spawn(const char* actorName, uint32_t anchorHandle, float x, float y, float z);
 extern uint32_t wiixl_import__botw_actor__SpawnScaled(const char* actorName, uint32_t anchorHandle, float x, float y, float z, float scaleX, float scaleY, float scaleZ);
 extern uint32_t wiixl_import__botw_actor__Delete(uint32_t handle, uint32_t reason);
+
+// v1.1. Every actor the ray passes within maxMiss of, between minAlong and
+// maxAlong along it, NEAREST FIRST - the order matters more than it looks:
+// when more than kMaxQueryResults match, the farthest are the ones dropped,
+// so the cap costs a picker the actors it was least likely to want.
+//
+// origin3/dir3 are float[3]; dir need not be unit length, it is normalised
+// here. kind is Query's selector (0 dynamic, 1 static, 2 all). Read the
+// results with QueryAt, QueryMatched and QueryScanned, exactly as Query's.
+//
+// flags is a mask. 1 (kRayHorizontal) flattens both the ray and each offset
+// onto the ground plane, for an aim direction that has a yaw and no pitch: the
+// miss is then measured sideways only, and height is the mod's to judge.
+//
+// 2 (kRaySkipOrigin) exists because the cap would otherwise be spent on noise.
+// Event tags, system actors and anything never placed report (0,0,0), and
+// they are most of the live list - one debug-tool dump found 3380 of 4278
+// actors "on the ray" because the player faced the map centre. A real actor
+// at exactly the origin is lost with them.
+//
+// The handles are made after the walk, outside the proc manager's lock, so an
+// actor can die between being measured and being handed out. That is the same
+// promise every handle makes - a generation check, not a liveness guarantee -
+// and IsValid answers the rest.
+extern int32_t wiixl_import__botw_actor__QueryRay(const float* origin3, const float* dir3, float minAlong, float maxAlong, float maxMiss, int32_t kind, uint32_t flags);
+
+// v1.1. How many actors the last Query or QueryRay visited, matched or not. A
+// picker reporting "nothing on the ray" needs to say whether it looked at
+// four thousand actors or at none - an empty world and a broken walk give the
+// same empty result otherwise.
+extern int32_t wiixl_import__botw_actor__QueryScanned(void);
+
+// v1.1. The physics object behind a live actor, from the actor's own vtable
+// slot 0x30C - a game call, which is why it is here and not left to a mod
+// holding a raw pointer. 0 for a placement, a dead handle, or an actor
+// without physics.
+extern uintptr_t wiixl_import__botw_actor__GetPhysicsObject(uint32_t handle);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.actor@1.0 when packing,
+// added in a later minor should pass --require botw.actor@1.1 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_actor {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 0;
+inline constexpr unsigned kVersionMinor = 1;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call

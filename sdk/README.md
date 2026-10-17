@@ -52,7 +52,7 @@ sites, which is a handful of lines and says plainly which one is running.
 
 | surface | version |
 |---|---|
-| `botw.actor` | v1.0 |
+| `botw.actor` | v1.1 |
 | `botw.armour` | v1.2 |
 | `botw.camera` | v1.0 |
 | `botw.display` | v1.0 |
@@ -61,7 +61,7 @@ sites, which is a handful of lines and says plainly which one is running.
 | `botw.gamedata` | v1.3 |
 | `botw.gfx` | v1.5 |
 | `botw.gui` | v1.2 |
-| `botw.input` | v1.2 |
+| `botw.input` | v1.3 |
 | `botw.map` | v1.1 |
 | `botw.memory` | v1.0 |
 | `botw.player` | v1.1 |

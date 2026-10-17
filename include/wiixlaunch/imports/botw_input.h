@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// botw.input v1.2, 22 symbol(s), from the surface's own table.
+// botw.input v1.3, 24 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_botw_input(SupportsInjection); }
 //     S::SupportsInjection(...);
 //
-// so a mod that uses two symbols imports two, not all 22.
+// so a mod that uses two symbols imports two, not all 24.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -99,14 +99,33 @@ extern void wiixl_import__botw_input__LogFrameState(void);
 // GetRightStick reports what the GAME saw, so a mod rewriting one axis from
 // it reads its own last write back and the axis freezes. GamePad only.
 extern uint32_t wiixl_import__botw_input__GetPhysicalRightStick(float* out2);
+
+// v1.3. Capture for chosen buttons only: hides the buttons in `mask` (MaskFor
+// bits, OR'd together) from the game for `frames` game frames, 8 if 0, on the
+// GamePad, a Pro Controller and a Wii Remote alike. This mod - and every
+// other - still reads them through IsPressed and HeldButtons.
+//
+// For a mod that wants a button for itself without the game also acting on
+// it: the debug tool keeps A masked while the scope is up, so pressing A to
+// dump an actor does not also drop a map pin. Whole capture would do that
+// too, and freeze the scope's aim with it.
+//
+// Arm it before the press it should hide, and re-arm it every frame it should
+// stay on - it takes effect from the next input read, so a mask set in
+// reaction to a press lets that press's first frame through. Masks from
+// several mods combine and share one countdown.
+extern uint32_t wiixl_import__botw_input__HoldButtonCapture(uint32_t mask, uint32_t frames);
+
+// v1.3. The buttons hidden from the game right now, 0 when none are.
+extern uint32_t wiixl_import__botw_input__ButtonCaptureMask(void);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require botw.input@1.2 when packing,
+// added in a later minor should pass --require botw.input@1.3 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_botw_input {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 2;
+inline constexpr unsigned kVersionMinor = 3;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
