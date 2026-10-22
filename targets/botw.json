@@ -38,6 +38,9 @@
     ]
   },
   "modules": ["wiixlaunch-botw"],
+  "patches": {
+    "persist": true
+  },
   "switch": {
     "title_id": "01007EF00011E000",
     "title_id_range_min": "0x0100000000010000",
