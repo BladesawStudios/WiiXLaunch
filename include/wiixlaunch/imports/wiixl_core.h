@@ -1,7 +1,7 @@
 // GENERATED FILE - do not edit.
 // Regenerate with: python scripts/gen_imports.py
 //
-// wiixl.core v1.6, 19 symbol(s), from the surface's own table.
+// wiixl.core v1.7, 23 symbol(s), from the surface's own table.
 //
 // Declaring a symbol here costs nothing. BINDING one is what makes it an
 // import, and that is opt-in:
@@ -9,7 +9,7 @@
 //     namespace S { WXL_USE_wiixl_core(Log); }
 //     S::Log(...);
 //
-// so a mod that uses two symbols imports two, not all 19.
+// so a mod that uses two symbols imports two, not all 23.
 //
 // The comments are the SURFACE's own, carried across - they say why a
 // symbol behaves as it does, which is the half a signature cannot.
@@ -80,14 +80,30 @@ extern int32_t wiixl_import__wiixl_core__ModSaveRead(const char* path, void* buf
 // directory, making the directories on the way. Returns the bytes written, or
 // a refusal as ModSaveRead; -1 for a write the filesystem refused.
 extern int32_t wiixl_import__wiixl_core__ModSaveWrite(const char* path, const void* data, uint32_t size);
+
+// A hook placed inside a function rather than at its entry. The callback is called with a pointer to the saved register file
+// (x0..x30 as 31 u64) and returns nothing; whatever it writes to the registers is what the game continues with. 1 on success,
+// 0 when refused. Switch only; the Wii U and Cemu hosts have no equivalent and return 0.
+extern uint32_t wiixl_import__wiixl_core__InstallInlineHook(uintptr_t target, uintptr_t callback);
+
+// How many bytes starting at `addr` are mapped and readable, up to `max`. Lets a mod look at memory it was handed a pointer to
+// without risking a fault on a bad one. Switch only; elsewhere it answers `max` (nothing to ask).
+extern uint64_t wiixl_import__wiixl_core__ReadableBytes(uintptr_t addr, uint64_t max);
+
+// Like ReadableBytes, for memory that can also be written. Switch only; elsewhere it answers 0.
+extern uint64_t wiixl_import__wiixl_core__WritableBytes(uintptr_t addr, uint64_t max);
+
+// Puts the calling thread to sleep for at least this long, so a mod that must wait on another thread does not spin on the game's
+// core. Switch only.
+extern void wiixl_import__wiixl_core__SleepNanos(int64_t nanos);
 }
 
 // The version this header was generated from. A mod that needs a symbol
-// added in a later minor should pass --require wiixl.core@1.6 when packing,
+// added in a later minor should pass --require wiixl.core@1.7 when packing,
 // so an older host refuses it by name instead of resolving short.
 namespace wiixl_surface_wiixl_core {
 inline constexpr unsigned kVersionMajor = 1;
-inline constexpr unsigned kVersionMinor = 6;
+inline constexpr unsigned kVersionMinor = 7;
 }
 
 // VOLATILE is not style. Without it the compiler folds the indirect call
