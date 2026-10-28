@@ -8,9 +8,8 @@
 //                  linking; the plugin is a real module.
 //   Cemu:          nsysnet resolved at runtime through coreinit's dynamic
 //                  loader, not a static import shim (see cemu_dynload.hpp).
-//   Switch:        no implementation. Supported is false, wiixl.net is
-//                  never registered, and a mod requiring it is refused by
-//                  name at load.
+//   Switch:        bsd:u spoken over raw IPC (switch/bsd_client.hpp), so it
+//                  does not depend on the title exporting nn::socket.
 //   Host test:     an installable fake, so tools/net_test can drive
 //                  ownership logic including file-descriptor reuse, which
 //                  no real platform reproduces on demand.
@@ -26,6 +25,8 @@
 
 #if WIIXL_CEMU
 #include <wiixlaunch/cemu/cemu_dynload.hpp>
+#elif WIIXL_SWITCH
+#include <wiixlaunch/switch/bsd_client.hpp>
 #elif WIIXL_WIIU
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -39,7 +40,7 @@ namespace WiiXLaunch::Net::Transport {
 // Can this build open a socket at all? Compile-time, and decides whether
 // wiixl.net is registered, so a Switch mod's dependency fails at load, by
 // name.
-constexpr bool Supported = !WIIXL_SWITCH;
+constexpr bool Supported = true;
 
 // nsysnet socket constants (from wut's socket.h/netinet/in.h), spelled out
 // rather than #if'd since the Cemu build has no SDK headers.
@@ -217,6 +218,8 @@ inline const NsysnetTable* Nsysnet() {
 inline bool Available() {
 #if WIIXL_CEMU
     return impl::Nsysnet() != nullptr;
+#elif WIIXL_SWITCH
+    return Bsd::Available();
 #elif WIIXL_WIIU
     return true;
 #elif WIIXL_HOST
@@ -237,6 +240,8 @@ inline bool Init() {
     const impl::NsysnetTable* net = impl::Nsysnet();
     if (!net) return false;
     net->socket_lib_init();
+#elif WIIXL_SWITCH
+    // bsd:u is registered by Available() above.
 #elif WIIXL_WIIU
     socket_lib_init();
 #elif WIIXL_HOST
@@ -259,6 +264,8 @@ inline int Open() {
     if (!Available()) return kInvalidFd;
 #if WIIXL_CEMU
     return impl::Nsysnet()->socket(kAfInet, kSockStream, kIpProtoTcp);
+#elif WIIXL_SWITCH
+    return Bsd::Socket(Bsd::kAfInet, Bsd::kSockStream, 0);
 #elif WIIXL_WIIU
     return ::socket(kAfInet, kSockStream, kIpProtoTcp);
 #elif WIIXL_HOST
@@ -272,6 +279,8 @@ inline bool SetOptInt(int fd, int32_t level, int32_t option, int32_t value) {
     if (fd < 0 || !Available()) return false;
 #if WIIXL_CEMU
     return impl::Nsysnet()->setsockopt(fd, level, option, &value, sizeof(value)) == 0;
+#elif WIIXL_SWITCH
+    return Bsd::SetOptInt(fd, level == kSolSocket ? Bsd::kSolSocket : level, option, value) == 0;
 #elif WIIXL_WIIU
     return ::setsockopt(fd, level, option, &value, sizeof(value)) == 0;
 #elif WIIXL_HOST
@@ -305,6 +314,9 @@ inline bool GetOptInt(int fd, int32_t level, int32_t option, int32_t* out) {
 // nsysnet has no fcntl(); this is the only way to stop accept()/recv()/
 // send() from parking the game thread on a slow or idle client.
 inline bool SetNonBlocking(int fd) {
+#if WIIXL_SWITCH
+    return fd >= 0 && Available() && Bsd::SetNonBlocking(fd) == 0;
+#endif
     return SetOptInt(fd, kSolSocket, kSoNonBlock, 1);
 }
 
@@ -324,6 +336,8 @@ inline bool Bind(int fd, uint16_t port) {
 
 #if WIIXL_CEMU
     return impl::Nsysnet()->bind(fd, &addr, sizeof(addr)) == 0;
+#elif WIIXL_SWITCH
+    return Bsd::Bind(fd, port) == 0;
 #elif WIIXL_WIIU
     return ::bind(fd, reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr)) == 0;
 #elif WIIXL_HOST
@@ -338,6 +352,8 @@ inline bool Listen(int fd, int32_t backlog) {
     if (fd < 0 || !Available()) return false;
 #if WIIXL_CEMU
     return impl::Nsysnet()->listen(fd, backlog) == 0;
+#elif WIIXL_SWITCH
+    return Bsd::Listen(fd, backlog) == 0;
 #elif WIIXL_WIIU
     return ::listen(fd, backlog) == 0;
 #elif WIIXL_HOST
@@ -357,6 +373,8 @@ inline int Accept(int fd) {
     SockAddrIn peer = {};
     int32_t peerLen = sizeof(peer);
     return impl::Nsysnet()->accept(fd, &peer, &peerLen);
+#elif WIIXL_SWITCH
+    return Bsd::Accept(fd);
 #elif WIIXL_WIIU
     SockAddrIn peer = {};
     socklen_t peerLen = sizeof(peer);
@@ -373,6 +391,8 @@ inline int Recv(int fd, void* buf, uint32_t len) {
     if (fd < 0 || !buf || len == 0 || !Available()) return -1;
 #if WIIXL_CEMU
     return impl::Nsysnet()->recv(fd, buf, len, 0);
+#elif WIIXL_SWITCH
+    return Bsd::Recv(fd, buf, len);
 #elif WIIXL_WIIU
     return static_cast<int>(::recv(fd, buf, len, 0));
 #elif WIIXL_HOST
@@ -387,6 +407,8 @@ inline int Send(int fd, const void* buf, uint32_t len) {
     if (fd < 0 || !buf || len == 0 || !Available()) return -1;
 #if WIIXL_CEMU
     return impl::Nsysnet()->send(fd, buf, len, 0);
+#elif WIIXL_SWITCH
+    return Bsd::Send(fd, buf, len);
 #elif WIIXL_WIIU
     return static_cast<int>(::send(fd, buf, len, 0));
 #elif WIIXL_HOST
@@ -401,6 +423,8 @@ inline bool Shutdown(int fd, int32_t how) {
     if (fd < 0 || !Available()) return false;
 #if WIIXL_CEMU
     return impl::Nsysnet()->shutdown(fd, how) == 0;
+#elif WIIXL_SWITCH
+    return Bsd::Shutdown(fd, how) == 0;
 #elif WIIXL_WIIU
     return RPLWRAP(shutdown)(fd, how) == 0;
 #elif WIIXL_HOST
@@ -415,6 +439,8 @@ inline void Close(int fd) {
     if (fd < 0 || !Available()) return;
 #if WIIXL_CEMU
     impl::Nsysnet()->socketclose(fd);
+#elif WIIXL_SWITCH
+    Bsd::Close(fd);
 #elif WIIXL_WIIU
     RPLWRAP(socketclose)(fd);
 #elif WIIXL_HOST
@@ -429,6 +455,8 @@ inline int32_t LastError() {
 #if WIIXL_CEMU
     const impl::NsysnetTable* net = impl::Nsysnet();
     return net ? net->socketlasterr() : 0;
+#elif WIIXL_SWITCH
+    return Bsd::LastErrno();
 #elif WIIXL_WIIU
     return RPLWRAP(socketlasterr)();
 #elif WIIXL_HOST

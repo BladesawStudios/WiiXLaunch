@@ -29,6 +29,32 @@ namespace WiiXLaunch::Backend {
         return reinterpret_cast<uintptr_t>(orig);
     }
 
+    // A hook in the middle of a function: the callback gets the register file (exl::hook::InlineCtx*) and may
+    // change it. Absolute address; 1 on success. The call-site probes of purah-protocol use this.
+    inline uint32_t InstallInlineAbsolute(uintptr_t targetAddr, uintptr_t callback) {
+        if (targetAddr == 0 || callback == 0) return 0;
+        exl::hook::HookInline(targetAddr, reinterpret_cast<exl::hook::InlineCallback>(callback));
+        return 1;
+    }
+
+    // How many bytes from `addr` can be read before the first page that is unmapped or unreadable, up to `max`.
+    inline uint64_t AccessibleBytes(uintptr_t addr, uint64_t max, uint32_t needed) {
+        uint64_t total = 0;
+        while (total < max) {
+            MemoryInfo info{};
+            u32 page = 0;
+            if (svcQueryMemory(&info, &page, addr + total) != 0) break;
+            if (info.type == 0 || (info.perm & needed) != needed) break;
+            total += info.addr + info.size - (addr + total);
+        }
+        return total < max ? total : max;
+    }
+
+    inline uint64_t ReadableBytes(uintptr_t addr, uint64_t max) { return AccessibleBytes(addr, max, Perm_R); }
+    inline uint64_t WritableBytes(uintptr_t addr, uint64_t max) { return AccessibleBytes(addr, max, Perm_Rw); }
+
+    inline void SleepNanos(int64_t nanos) { svcSleepThread(nanos); }
+
     template<typename Ret, typename... Args>
     inline void InstallHook(uptr offset, Ret(*callback)(Args...), Ret(**outOriginal)(Args...)) {
         uptr targetAddr = exl::util::modules::GetTargetStart() + offset;

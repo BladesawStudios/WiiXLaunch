@@ -34,7 +34,7 @@ namespace WiiXLaunch::Core {
 
 constexpr const char* kSurfaceName = "wiixl.core";
 constexpr uint16_t kVersionMajor = 1;
-constexpr uint16_t kVersionMinor = 6;
+constexpr uint16_t kVersionMinor = 7;
 
 // Bumped when a mod built against an older host would misbehave rather than
 // just miss a symbol. Reported at the load point.
@@ -306,8 +306,56 @@ extern "C" inline uint32_t CoreFileExists(const char* path) {
 extern "C" inline uintptr_t CoreImageBase() {
 #if WIIXL_CEMU
     return WiiXLaunch::Backend::g_CodeCaveBase;
+#elif WIIXL_SWITCH
+    return exl::util::modules::GetTargetStart();
 #else
     return 0;
+#endif
+}
+
+// A hook placed inside a function rather than at its entry. The callback is called with a pointer to the saved register file
+// (x0..x30 as 31 u64) and returns nothing; whatever it writes to the registers is what the game continues with. 1 on success,
+// 0 when refused. Switch only; the Wii U and Cemu hosts have no equivalent and return 0.
+extern "C" inline uint32_t CoreInstallInlineHook(uintptr_t target, uintptr_t callback) {
+    const char* owner = WiiXLaunch::Hooks::CurrentOwner();
+    if (!owner) owner = "unattributed";
+#if WIIXL_SWITCH
+    WiiXLaunch::Hooks::Note(target, callback, owner);
+    return WiiXLaunch::Backend::InstallInlineAbsolute(target, callback);
+#else
+    (void)target; (void)callback; (void)owner;
+    return 0;
+#endif
+}
+
+// How many bytes starting at `addr` are mapped and readable, up to `max`. Lets a mod look at memory it was handed a pointer to
+// without risking a fault on a bad one. Switch only; elsewhere it answers `max` (nothing to ask).
+extern "C" inline uint64_t CoreReadableBytes(uintptr_t addr, uint64_t max) {
+#if WIIXL_SWITCH
+    return WiiXLaunch::Backend::ReadableBytes(addr, max);
+#else
+    (void)addr;
+    return max;
+#endif
+}
+
+// Like ReadableBytes, for memory that can also be written. Switch only; elsewhere it answers 0.
+extern "C" inline uint64_t CoreWritableBytes(uintptr_t addr, uint64_t max) {
+#if WIIXL_SWITCH
+    return WiiXLaunch::Backend::WritableBytes(addr, max);
+#else
+    (void)addr; (void)max;
+    return 0;
+#endif
+}
+
+// Puts the calling thread to sleep for at least this long, so a mod that must wait on another thread does not spin on the game's
+// core. Switch only.
+extern "C" inline void CoreSleepNanos(int64_t nanos) {
+#if WIIXL_SWITCH
+    WiiXLaunch::Backend::SleepNanos(nanos);
+#else
+    (void)nanos;
 #endif
 }
 
@@ -333,6 +381,11 @@ inline const Surface::Symbol kSymbols[] = {
     // v1.6
     WIIXL_SURFACE_SYMBOL("ModSaveRead",   &CoreModSaveRead),
     WIIXL_SURFACE_SYMBOL("ModSaveWrite",  &CoreModSaveWrite),
+    // v1.7
+    WIIXL_SURFACE_SYMBOL("InstallInlineHook", &CoreInstallInlineHook),
+    WIIXL_SURFACE_SYMBOL("ReadableBytes", &CoreReadableBytes),
+    WIIXL_SURFACE_SYMBOL("WritableBytes", &CoreWritableBytes),
+    WIIXL_SURFACE_SYMBOL("SleepNanos",    &CoreSleepNanos),
 };
 
 } // namespace impl
